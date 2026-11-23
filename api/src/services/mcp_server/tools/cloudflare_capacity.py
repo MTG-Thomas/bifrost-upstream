@@ -32,11 +32,13 @@ async def bifrost_cloudflare_capacity_get(context: Any) -> ToolResult:
 async def bifrost_cloudflare_preflight_validate(
     context: Any, credential_ref: UUID, account_id: str | None = None, zone_id: str | None = None,
     reachability_mode: CloudflareReachabilityMode | None = None, worker_ingress_origin: str | None = None,
-    policy: CloudflareCapacityPolicy | None = None,
+    policy: CloudflareCapacityPolicy | None = None, containers: bool = False,
+    container_instance_hours: int | None = None,
 ) -> ToolResult:
     request = CloudflarePreflightRequest(
         credential_ref=credential_ref, account_id=account_id, zone_id=zone_id,
         reachability_mode=reachability_mode, worker_ingress_origin=worker_ingress_origin, policy=policy,
+        containers=containers, container_instance_hours=container_instance_hours,
     )
     status, body = await call_rest(
         context, "POST", f"{_PATH}/preflight", json_body=request.model_dump(mode="json", exclude_none=True),

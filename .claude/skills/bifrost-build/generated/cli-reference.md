@@ -685,6 +685,11 @@ Options:
   --worker-ingress-origin TEXT
   --credential-ref UUID
   --policy FILENAME               Advanced capacity policy JSON file.
+  --containers                    Include the paid Containers pilot in the
+                                  preflight.
+  --container-instance-hours INTEGER RANGE
+                                  Monthly Container instance-hours.
+                                  [1<=x<=1488]
   --monthly-limit-usd TEXT        Confirmed monthly estimated usage limit in
                                   USD.  [required]
   --wait                          Wait for completion through the platform
@@ -753,6 +758,11 @@ Options:
   --worker-ingress-origin TEXT
   --credential-ref UUID
   --policy FILENAME               Advanced capacity policy JSON file.
+  --containers                    Include the paid Containers pilot in the
+                                  preflight.
+  --container-instance-hours INTEGER RANGE
+                                  Monthly Container instance-hours.
+                                  [1<=x<=1488]
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```

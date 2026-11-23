@@ -23,6 +23,8 @@ SEMVER_PATTERN = (
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
+CONTAINERS_PILOT_INSTANCE_HOURS = 100
+
 
 class CloudflareWorkersPolicy(BaseModel):
     """Launch limits for the Phase 1 Workers scope."""
@@ -52,6 +54,7 @@ class CloudflareCapacityPolicy(BaseModel):
         description="Monthly admission target for Bifrost's estimated usage. The Workers Paid subscription is separate.",
     )
     shared_managed_worker_cap: int | None = Field(default=None, ge=1, le=1000)
+    container_instance_hours: int | None = Field(default=None, ge=1, le=1488)
 
 
 class CloudflareUsageAdvisory(BaseModel):
@@ -85,6 +88,7 @@ CloudflarePlacementCode = Literal[
     "primary_limited_by_cloudflare_drain",
     "container_readiness_unverified", "container_egress_stale", "container_allocation_cooldown",
     "container_receipt_limit",
+    "container_instance_budget_exhausted",
     "container_egress_refresh_failed",
 ]
 
@@ -147,6 +151,8 @@ class CloudflareInstallationStatus(BaseModel):
     fleet_envelope_usd: Decimal = Field(description="Estimated fleet usage for the configured lifetime and cleanup margin.")
     owned_resources_pending: int
     spend: CloudflareSpendStatus | None = None
+    containers_remaining_instance_hours: Decimal | None = None
+    containers_instance_budget_resets_at: datetime | None = None
 
 
 class CloudflareCapacityStatus(BaseModel):
@@ -229,12 +235,32 @@ class CloudflareCredentialInput(BaseModel):
         return self
 
 
+class ContainersPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    enabled: bool = False
+    instance_type: Literal["standard-1"] = "standard-1"
+    installation_instances: int = Field(default=2, ge=1, le=2)
+    tenant_instances: Literal[1] = 1
+    workflow_slots: Literal[1] = 1
+    idle_seconds: int = Field(default=120, ge=1, le=120)
+    monthly_instance_hours: int = Field(default=CONTAINERS_PILOT_INSTANCE_HOURS, ge=1, le=1488)
+    start_timeout_seconds: int = Field(ge=1, le=3600)
+    lifetime_seconds: int = Field(ge=121, le=86400)
+    queue_wait_seconds: int = Field(ge=1, le=3600)
+    queue_depth: int = Field(ge=1, le=1000)
+    ingress_bytes: int = Field(ge=1, le=10**9)
+    outbound_bytes: int = Field(ge=1, le=10**9)
+
+
 class CloudflarePreflightRequest(CloudflareCredentialInput):
     account_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
     zone_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
     reachability_mode: CloudflareReachabilityMode | None = None
     worker_ingress_origin: str | None = Field(default=None, max_length=255)
     policy: CloudflareCapacityPolicy | None = None
+    containers: bool | None = None
+    container_instance_hours: int | None = Field(default=None, ge=1, le=1488)
 
 
 class CloudflareDiscoveryChoice(BaseModel):
@@ -248,6 +274,9 @@ class CloudflareActivationPreview(BaseModel):
     estimated_usage_min_usd: Decimal | None = None
     estimated_usage_max_usd: Decimal | None = None
     workers_paid_subscription_usd: Decimal
+    containers_policy: ContainersPolicy | None = None
+    containers_fleet_envelope_usd: Decimal | None = None
+    containers_remaining_instance_hours: Decimal | None = None
 
 
 class CloudflarePreflight(BaseModel):

@@ -64,7 +64,7 @@ from src.services.worker_ingress_probes import CanaryFailure, probe_worker_ingre
 from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_admission import PrimaryPool, joint_container_readiness
 from src.services.worker_pool.cloudflare_canary import CANARY_DEADLINE_SECONDS, canary_session_failure, run_workers_canary
-from src.services.worker_pool.cloudflare_containers_admission import reserve_container_canary
+from src.services.worker_pool.cloudflare_containers_admission import ContainerAdmissionRefused, reserve_container_canary
 from src.services.worker_pool.cloudflare_containers_control import reconcile_container_stop
 from src.services.worker_pool.cloudflare_containers_egress import (
     EGRESS_PROOF_MAX_AGE,
@@ -639,6 +639,11 @@ async def _qualify_container_revision(
     if not isinstance(reserved, CloudflareWorkerReservation):
         if refresh:
             return None
+        if isinstance(reserved, ContainerAdmissionRefused) and reserved.code == "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED":
+            raise PlatformJobRequiresAction("Container Instance Budget Exhausted", {
+                "code": reserved.code,
+                "retry_at": reserved.retry_at.isoformat() if reserved.retry_at is not None else None,
+            })
         raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
     verified = None
     failure = None

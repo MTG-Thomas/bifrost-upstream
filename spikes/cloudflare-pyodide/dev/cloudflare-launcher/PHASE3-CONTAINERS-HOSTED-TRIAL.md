@@ -33,10 +33,12 @@ Obtain explicit owner approval for each outward-facing effect before starting.
 
 ## Spend and abort
 
-The provisional Containers-only monthly floor is approximately **$180**
-for two `standard-1` instances. Add the approved Workers fleet floor.
-Recompute the exact combined admission minimum from both signed releases and
-the selected policy. The existing Workers Paid subscription is **$5/month**.
+The suggested shared limit is **$75/month**, including a **100 instance-hour**
+Container budget. Two `standard-1` instances may run concurrently.
+At the pinned compute rate, 100 hours costs about **$7.40** before fixed
+control and outbound holds. Use the signed release and the selected policy
+to calculate the Container floor and add the Workers fleet floor.
+The existing Workers Paid subscription is **$5/month**.
 Compare provider instance-seconds, outbound bytes, requests and CPU against
 the Bifrost ledger. Included allowances can make the incremental invoice $0.
 

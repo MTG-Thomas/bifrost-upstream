@@ -1,10 +1,13 @@
 """Update policy for an existing Cloudflare installation."""
 
+import httpx
 from shared.models import CloudflareCapacityStatus, CloudflarePolicyUpdate
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import Caller
+from src.services.worker_pool.cloudflare_containers_release import load_containers_release
 from src.services.worker_pool.cloudflare_policy import (
     get_cloudflare_capacity_status,
     release_meter_bounds,
@@ -16,10 +19,16 @@ from src.services.worker_pool.cloudflare_release import load_workers_release
 async def configure_cloudflare(
     db: AsyncSession, caller: Caller, body: CloudflarePolicyUpdate,
 ) -> CloudflareCapacityStatus:
-    bounds = release_meter_bounds(load_workers_release())
+    workers_release = load_workers_release()
+    bounds = release_meter_bounds(workers_release)
+    installation = await db.get(CloudflareInstallation, body.installation_id)
+    containers_release = None
+    if installation is not None and installation.containers_policy.get("enabled") is True:
+        async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
+            containers_release = await load_containers_release(http, workers_release)
     revision = await save_cloudflare_policy(
         db, installation_id=body.installation_id, expected_revision=body.expected_revision,
-        policy=body.policy, bounds=bounds,
+        policy=body.policy, bounds=bounds, containers_release=containers_release,
     )
     if revision != body.expected_revision:
         await emit_audit(db, "capacity.cloudflare_policy_updated", resource_type="cloudflare_installation",

@@ -48,6 +48,7 @@ from src.services.worker_pool.cloudflare_policy import (
     get_cloudflare_capacity_status,
 )
 from src.services.worker_pool.cloudflare_provisioning import ObservationPending, OwnershipConflict
+from src.services.worker_pool.cloudflare_containers_release import ContainersReleaseFetchError, ContainersReleaseUnavailable
 from src.services.worker_pool.cloudflare_release import WorkersReleaseUnavailable
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
@@ -135,6 +136,10 @@ def _configuration_errors(
         }) from None
     except WorkersReleaseUnavailable:
         raise HTTPException(503, "Install a qualified Workers release with metering ceilings.") from None
+    except ContainersReleaseFetchError:
+        raise HTTPException(503, "The signed Cloudflare Containers release is temporarily unavailable.") from None
+    except ContainersReleaseUnavailable:
+        raise HTTPException(503, "Install the matched, signed Cloudflare Containers release.") from None
     except WorkersPaidUnverified as exc:
         raise _configuration_refusal(
             "CF_WORKERS_PAID_UNVERIFIED", str(exc), "account_id",

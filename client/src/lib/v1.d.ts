@@ -16518,6 +16518,11 @@ export interface components {
             estimated_usage_max_usd?: string | null;
             /** Workers Paid Subscription Usd */
             workers_paid_subscription_usd: string;
+            containers_policy?: components["schemas"]["ContainersPolicy"] | null;
+            /** Containers Fleet Envelope Usd */
+            containers_fleet_envelope_usd?: string | null;
+            /** Containers Remaining Instance Hours */
+            containers_remaining_instance_hours?: string | null;
         };
         /** CloudflareApprovalAccept */
         CloudflareApprovalAccept: {
@@ -16697,6 +16702,8 @@ export interface components {
             monthly_limit_usd: number | string;
             /** Shared Managed Worker Cap */
             shared_managed_worker_cap?: number | null;
+            /** Container Instance Hours */
+            container_instance_hours?: number | null;
         };
         /** CloudflareCapacityPolicy */
         "CloudflareCapacityPolicy-Output": {
@@ -16714,6 +16721,8 @@ export interface components {
             monthly_limit_usd: string;
             /** Shared Managed Worker Cap */
             shared_managed_worker_cap?: number | null;
+            /** Container Instance Hours */
+            container_instance_hours?: number | null;
         };
         /** CloudflareCapacityStatus */
         CloudflareCapacityStatus: {
@@ -16814,6 +16823,10 @@ export interface components {
             /** Owned Resources Pending */
             owned_resources_pending: number;
             spend?: components["schemas"]["CloudflareSpendStatus"] | null;
+            /** Containers Remaining Instance Hours */
+            containers_remaining_instance_hours?: string | null;
+            /** Containers Instance Budget Resets At */
+            containers_instance_budget_resets_at?: string | null;
         };
         /** CloudflareLaneStatus */
         CloudflareLaneStatus: {
@@ -16845,7 +16858,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "setup_required" | "workflow_review_required" | "waiting_for_demand" | "primary_has_capacity" | "primary_capacity_unverified" | "waiting_for_launch_gate" | "tenant_limit_reached" | "installation_slots_full" | "spend_guard_closed" | "cleanup_pending" | "cloudflare_capacity_unavailable" | "release_mismatch" | "connector_unavailable" | "eligible_for_overflow" | "primary_limited_by_cloudflare_cleanup" | "primary_limited_by_cloudflare_drain" | "container_readiness_unverified" | "container_egress_stale" | "container_allocation_cooldown" | "container_receipt_limit" | "container_egress_refresh_failed";
+            code: "setup_required" | "workflow_review_required" | "waiting_for_demand" | "primary_has_capacity" | "primary_capacity_unverified" | "waiting_for_launch_gate" | "tenant_limit_reached" | "installation_slots_full" | "spend_guard_closed" | "cleanup_pending" | "cloudflare_capacity_unavailable" | "release_mismatch" | "connector_unavailable" | "eligible_for_overflow" | "primary_limited_by_cloudflare_cleanup" | "primary_limited_by_cloudflare_drain" | "container_readiness_unverified" | "container_egress_stale" | "container_allocation_cooldown" | "container_receipt_limit" | "container_instance_budget_exhausted" | "container_egress_refresh_failed";
             /** Label */
             label: string;
             /** Remedy */
@@ -16934,6 +16947,10 @@ export interface components {
             /** Worker Ingress Origin */
             worker_ingress_origin?: string | null;
             policy?: components["schemas"]["CloudflareCapacityPolicy-Input"] | null;
+            /** Containers */
+            containers?: boolean | null;
+            /** Container Instance Hours */
+            container_instance_hours?: number | null;
         };
         /** CloudflareReconcileAction */
         CloudflareReconcileAction: {
@@ -17378,6 +17395,59 @@ export interface components {
             proposed_prompt: string;
             /** Affected Run Ids */
             affected_run_ids: string[];
+        };
+        /** ContainersPolicy */
+        ContainersPolicy: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Instance Type
+             * @default standard-1
+             * @constant
+             */
+            instance_type: "standard-1";
+            /**
+             * Installation Instances
+             * @default 2
+             */
+            installation_instances: number;
+            /**
+             * Tenant Instances
+             * @default 1
+             * @constant
+             */
+            tenant_instances: 1;
+            /**
+             * Workflow Slots
+             * @default 1
+             * @constant
+             */
+            workflow_slots: 1;
+            /**
+             * Idle Seconds
+             * @default 120
+             */
+            idle_seconds: number;
+            /**
+             * Monthly Instance Hours
+             * @default 100
+             */
+            monthly_instance_hours: number;
+            /** Start Timeout Seconds */
+            start_timeout_seconds: number;
+            /** Lifetime Seconds */
+            lifetime_seconds: number;
+            /** Queue Wait Seconds */
+            queue_wait_seconds: number;
+            /** Queue Depth */
+            queue_depth: number;
+            /** Ingress Bytes */
+            ingress_bytes: number;
+            /** Outbound Bytes */
+            outbound_bytes: number;
         };
         /**
          * ContextWarning

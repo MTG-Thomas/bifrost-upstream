@@ -7693,11 +7693,42 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
 
 
 @pytest.mark.asyncio
-async def test_preflight_and_activation_share_one_enable_job(db_session, monkeypatch, lifecycle_audit_actor):
+async def test_container_policy_save_checks_the_signed_hours_envelope(db_session, installation):
+    from dataclasses import replace
+
+    release, _, _ = make_release()
+    installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
+    await db_session.flush()
+    zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
+    bounds = WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000, TEST_ORDER)
+    release = replace(release, manifest=release.manifest.model_copy(update={"workers_release_digest": bounds.release}))
+    policy = CloudflareCapacityPolicy.model_validate({
+        **installation.policy["limits"], "monthly_limit_usd": "75", "container_instance_hours": 1488,
+    })
+    with pytest.raises(CloudflareBudgetTooLow):
+        await save_cloudflare_policy(
+            db_session, installation_id=installation.id, expected_revision=1, policy=policy,
+            bounds=bounds, containers_release=release,
+        )
+    assert installation.desired_revision == 1
+    policy.container_instance_hours = 100
+    assert await save_cloudflare_policy(
+        db_session, installation_id=installation.id, expected_revision=1, policy=policy,
+        bounds=bounds, containers_release=release,
+    ) == 2
+    assert installation.containers_policy["monthly_instance_hours"] == 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("containers", [False, True])
+async def test_preflight_and_activation_share_one_enable_job(db_session, monkeypatch, lifecycle_audit_actor, containers):
     from src.services.worker_pool import cloudflare_activation
 
     release = _release(lifetime_meters=True)
     monkeypatch.setattr(cloudflare_activation, "load_workers_release", lambda: release)
+    linux_release, _, _ = make_release()
+    load_linux = AsyncMock(return_value=linux_release)
+    monkeypatch.setattr(cloudflare_activation, "load_containers_release", load_linux)
     monkeypatch.setattr(cloudflare_policy, "load_workers_release", lambda: release)
     monkeypatch.setattr(cloudflare_activation, "connector_channel_ready", AsyncMock(return_value=False))
     cloudflare_policy._qualified_workers_suggestion.cache_clear()
@@ -7746,17 +7777,25 @@ async def test_preflight_and_activation_share_one_enable_job(db_session, monkeyp
             ref = staged.json()["credential_ref"]
             preview = await http.post(f"{base}/preflight", json={
                 "credential_ref": ref, "worker_ingress_origin": "https://workers.example.test",
+                "containers": containers,
             })
             assert preview.status_code == 200, preview.text
             limit_preflight.assert_awaited_once_with("capacity.cloudflare_preflight", str(caller.principal.user_id))
             assert token not in preview.text and ref not in preview.text
             plan = preview.json()
             assert datetime.fromisoformat(plan["expires_at"]) == datetime.fromisoformat(staged.json()["expires_at"])
-            assert plan["preview"]["fleet_envelope_usd"] == "32.13"
+            floor = Decimal(plan["preview"]["fleet_envelope_usd"])
+            if containers:
+                assert plan["preview"]["containers_policy"]["enabled"] is True
+                assert floor == Decimal("32.13") + Decimal(plan["preview"]["containers_fleet_envelope_usd"])
+                assert "paid Cloudflare Containers" in plan["consent_text"]
+            else:
+                assert floor == Decimal("32.13") and plan["preview"]["containers_policy"] is None
             assert await db_session.scalar(select(CloudflareInstallation.id)) is None
             activation_body = {
                 "credential_ref": ref, "preflight_receipt": plan["preflight_receipt"],
-                "monthly_limit_usd": "75.00", "consent_version": plan["consent_version"], "consent": True,
+                "monthly_limit_usd": "75.00",
+                "consent_version": plan["consent_version"], "consent": True,
             }
             saved_reference = await db_session.get(CloudflareStagedToken, UUID(ref))
             assert saved_reference is not None
@@ -7769,7 +7808,9 @@ async def test_preflight_and_activation_share_one_enable_job(db_session, monkeyp
             assert "Stage the Cloudflare credential again" in expired.json()["details"]["remedy"]
             saved_reference.expires_at = expiry
             await db_session.flush()
-            under_budget = await http.post(f"{base}/activate", json={**activation_body, "monthly_limit_usd": "32.12"})
+            under_budget = await http.post(f"{base}/activate", json={
+                **activation_body, "monthly_limit_usd": str(floor - Decimal("0.01")),
+            })
             assert under_budget.status_code == 422, under_budget.text
             assert set(under_budget.json()["details"]["fields"]) == {"monthly_limit_usd"}
             accepted = await http.post(f"{base}/activate", json=activation_body)
@@ -7777,11 +7818,11 @@ async def test_preflight_and_activation_share_one_enable_job(db_session, monkeyp
             identity = accepted.json()
             assert not identity["reused"]
             assert accepted.headers["Location"] == f"/api/platform-jobs/{identity['job_id']}"
+            activation_reads = [f"/client/v4/accounts/{account_id}", f"/client/v4/accounts/{account_id}/entitlements"]
             assert reads == [
                 "/client/v4/accounts", f"/client/v4/accounts/{account_id}",
                 f"/client/v4/accounts/{account_id}/entitlements", "/client/v4/zones",
-                f"/client/v4/accounts/{account_id}", f"/client/v4/accounts/{account_id}/entitlements",
-            ]
+            ] + activation_reads * (2 if containers else 1)
             replay = await http.post(f"{base}/activate", json=activation_body)
             assert replay.status_code == 202, replay.text
             assert replay.json() == {**identity, "reused": True}
@@ -7809,12 +7850,63 @@ async def test_preflight_and_activation_share_one_enable_job(db_session, monkeyp
             assert restarted.json()["job_id"] not in {identity["job_id"], second["job_id"]}
             assert not restarted.json()["reused"]
         assert saved.desired_state == "enabled" and saved.desired_revision == 1
-        assert saved.policy["limits"]["monthly_limit_usd"] == "75.00"
+        assert saved.policy["limits"]["monthly_limit_usd"] == activation_body["monthly_limit_usd"]
+        assert saved.containers_policy.get("enabled", False) is containers
+        if containers:
+            assert saved.containers_policy["monthly_instance_hours"] == 100
+            assert plan["preview"]["containers_remaining_instance_hours"] == "100"
+        assert load_linux.await_count == (3 if containers else 0)
         assert await db_session.scalar(select(func.count()).select_from(PlatformJob).where(
             PlatformJob.job_type == "capacity.cloudflare_enable", PlatformJob.resource_id == str(saved.id),
         )) == 3
     finally:
         cloudflare_policy._qualified_workers_suggestion.cache_clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra_seconds", [-1, 0, 1])
+async def test_container_instance_hour_budget_reserves_and_settles(
+    db_session, installation, extra_seconds,
+):
+    from src.services.worker_pool.cloudflare_containers_admission import (
+        ContainerAdmissionRefused,
+        _create_container_reservation,
+    )
+    from src.services.worker_pool.cloudflare_containers_policy import container_account_usage, container_envelope
+
+    release, _, _ = make_release()
+    limits = container_policy().model_copy(update={"monthly_instance_hours": 1})
+    start = datetime(2026, 11, 2, tzinfo=UTC)
+    now = start + timedelta(hours=2)
+    reserve = container_envelope(limits, release.manifest.rates)
+    prior_seconds = 3600 - int(reserve["seconds"]) + extra_seconds
+    prior = ExecutionWorker(id=uuid4(), form="external", state="retired", capacity_scope="containers")
+    db_session.add(prior)
+    await db_session.flush()
+    usage = CloudflareWorkerReservation(
+        worker_id=prior.id, installation_id=installation.id, scope="containers", deployment_revision=1,
+        control_root_version=installation.control_root_version, container_tenant="fixture",
+        container_release=release.digest, container_reserved_at=start,
+        container_stopped_at=start + timedelta(seconds=prior_seconds), container_envelope=reserve,
+    )
+    db_session.add(usage)
+    await db_session.flush()
+    capacity = SimpleNamespace(
+        now=now, installation=installation, limits=limits, monthly_limit=Decimal("75"),
+        scope=SimpleNamespace(deployment_revision=1, bearer_version=1),
+    )
+    result = await _create_container_reservation(db_session, capacity, release, controller_id=uuid4(), tenant="fixture")
+    if extra_seconds > 0:
+        assert result == ContainerAdmissionRefused("CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED", usage_period(now)[1])
+        usage.container_stopped_at -= timedelta(seconds=1)
+        await db_session.flush()
+        result = await _create_container_reservation(db_session, capacity, release, controller_id=uuid4(), tenant="fixture")
+    assert isinstance(result, CloudflareWorkerReservation)
+    for at, expected in ((now, min(3600, 3600 + extra_seconds)), (usage_period(now)[1], 0)):
+        used = await db_session.scalar(select(container_account_usage(
+            at, account_id=installation.account_id, instance_seconds=True,
+        )))
+        assert used == expected
 
 
 @pytest.mark.asyncio

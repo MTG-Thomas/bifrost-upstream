@@ -133,6 +133,10 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
     "container_receipt_limit": (
         "Container Receipt Limit Reached", "Wait for expired registry receipts to clear and verify any outstanding cleanup.",
     ),
+    "container_instance_budget_exhausted": (
+        "Container Instance Budget Exhausted",
+        "Wait for next month's budget reset or review the Container instance-hour budget in Capacity.",
+    ),
 }
 
 
@@ -169,6 +173,7 @@ def recovery_for_job(
         "CF_PRIOR_WORKERS_LIVE": PLACEMENT["cleanup_pending"][1],
         "CF_PROVIDER_UNAVAILABLE": PLACEMENT["cloudflare_capacity_unavailable"][1],
         "CF_CONTAINERS_UNVERIFIED": PLACEMENT["container_readiness_unverified"][1],
+        "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED": PLACEMENT["container_instance_budget_exhausted"][1],
         "CF_CONTAINERS_CLEANUP_PENDING": "Wait for the Container canary to retire, then retry Enable.",
         QUALIFICATION_BACKOFF_CODE: "Retry this capacity action after the Container qualification backoff.",
         "CF_CONTAINERS_RELEASE_UNAVAILABLE": PLACEMENT["release_mismatch"][1],
@@ -203,7 +208,7 @@ def recovery_for_job(
             )
         elif pending is not None:
             remedy = "Retry Enable within 45 minutes of verification to reuse the proof. Scale In invalidates it."
-    if code == QUALIFICATION_BACKOFF_CODE:
+    if code in (QUALIFICATION_BACKOFF_CODE, "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED"):
         retry_at = result.get("retry_at")
         if isinstance(retry_at, str):
             try:
@@ -331,10 +336,15 @@ async def _container_controller_reason(installation: CloudflareInstallation) -> 
     code = data.get("placement_code")
     if code is None and data.get("cooldown"):
         return reason("cloudflare_capacity_unavailable", datetime.fromisoformat(data["cooldown"]))
-    if code not in ("container_allocation_cooldown", "container_receipt_limit", "cleanup_pending"):
+    if code not in (
+        "container_allocation_cooldown", "container_receipt_limit", "cleanup_pending", "container_instance_budget_exhausted",
+    ):
         return None
     retry = data.get("next_eligible_at")
-    return reason(code, datetime.fromisoformat(retry) if retry else None)
+    retry_at = datetime.fromisoformat(retry) if retry else None
+    if code == "container_instance_budget_exhausted" and retry_at is not None and retry_at <= datetime.now(UTC):
+        return None
+    return reason(code, retry_at)
 
 
 async def deployment_evidence(db: AsyncSession, installation: CloudflareInstallation) -> CloudflareDeploymentEvidence:

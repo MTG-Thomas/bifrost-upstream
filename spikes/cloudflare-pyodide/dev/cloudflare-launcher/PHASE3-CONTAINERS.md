@@ -342,8 +342,14 @@ Billable duty cycle includes boot, execution, idle and stop time relative
 to both instances running continuously. For illustration, 10% yields
 $10.66 of compute and 25% yields $26.65. Add the measured control budget and
 bounded ingress-route egress, and show the $5 Workers Paid fee separately.
-The monthly target and default forecast duty cycle remain open. Enforce
-the reserved ceiling on each start.
+The pilot suggests a $75 shared monthly limit and 100 Container
+instance-hours. Policy save prices the instance-hour allocation using the
+signed release and checks it with the Workers fleet envelope. Both
+workflow starts and canaries reserve start, lifetime and cleanup seconds
+against the same ledger. Settlement replaces the hold with independently
+witnessed runtime. The budget resets with the UTC spend window. A Container
+reservation that would exceed the hours budget is refused with the reset
+time, and Workers remain eligible under the shared dollar limit.
 
 ## Joint drain, replacement and teardown
 

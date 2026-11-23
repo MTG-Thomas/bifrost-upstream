@@ -47,9 +47,11 @@ from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_CLEANUP_PENDING,
     CONTAINERS_SCOPE,
     ContainersPolicy,
+    container_account_usage,
     container_deadline_sql,
     container_envelope,
     container_reserve_cost,
+    container_reserve_seconds,
     fleet_envelope,
     overdue_container_reservations,
 )
@@ -219,7 +221,9 @@ def primary_has_no_fit(
 
 @dataclass(frozen=True, slots=True)
 class ContainerAdmissionRefused:
-    code: Literal["CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_COOLDOWN"] = CONTAINERS_CLEANUP_PENDING
+    code: Literal[
+        "CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_COOLDOWN", "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED",
+    ] = CONTAINERS_CLEANUP_PENDING
     retry_at: datetime | None = None
 
 
@@ -496,7 +500,7 @@ async def reserve_container_canary(
         db, capacity, release, controller_id=controller_id, tenant=QUALIFICATION_CANARY_TENANT,
         canary=(job_id, lease_token),
     )
-    if reserved is not None and refresh_primary is None:
+    if isinstance(reserved, CloudflareWorkerReservation) and refresh_primary is None:
         # Persist the next paid-start boundary before the canary can run,
         # even if this attempt loses its lease or cleanup never settles.
         record_egress_refresh_failure(capacity.installation, capacity.now, qualification=True)
@@ -507,7 +511,7 @@ async def _create_container_reservation(
     db: AsyncSession, capacity: _ContainerCapacity, release: VerifiedContainerRelease, *,
     controller_id: UUID, tenant: str, dispatch_id: UUID | None = None, execution_id: UUID | None = None,
     approval: str | None = None, canary: tuple[UUID, UUID] | None = None,
-) -> CloudflareWorkerReservation | None:
+) -> CloudflareWorkerReservation | ContainerAdmissionRefused | None:
     now, installation, scope = capacity.now, capacity.installation, capacity.scope
     limits = capacity.limits
     if canary is not None:
@@ -517,9 +521,17 @@ async def _create_container_reservation(
     envelope = container_envelope(limits, release.manifest.rates)
     period = usage_period(now)
     for start, end in (period, usage_period(period[1])):
-        cost = container_reserve_cost(envelope, now, start, end)
-        if not cost:
+        reservation_seconds = container_reserve_seconds(envelope, now, start, end)
+        if not reservation_seconds:
             continue
+        usage = await db.scalar(select(container_account_usage(max(now, start), instance_seconds=True)).where(
+            CloudflareInstallation.id == installation.id,
+        ))
+        if usage is None:
+            return None
+        if Decimal(usage) + reservation_seconds > limits.monthly_instance_hours * 3600:
+            return ContainerAdmissionRefused("CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED", end)
+        cost = container_reserve_cost(envelope, now, start, end)
         estimate = await db.scalar(select(cloudflare_estimated_usage(max(now, start))).where(
             CloudflareInstallation.id == installation.id,
         ))

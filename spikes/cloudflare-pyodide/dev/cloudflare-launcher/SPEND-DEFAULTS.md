@@ -2,6 +2,15 @@
 
 Decision brief for Gap 4 in [ONE-BUTTON-GAP.md](ONE-BUTTON-GAP.md) and the open spend defaults in [PHASE3-CONTAINERS.md](PHASE3-CONTAINERS.md). Evidence is pinned to spike commit `83783a42e`. All figures are USD at the repository's gross rates. The **$5/month Workers Paid subscription** is billed separately by Cloudflare and is excluded from the forecasts and the admission limit. Forecasts model a 30-day month. The ledger uses UTC calendar months and the fleet validation allows for 31 days.
 
+The Containers pilot shares the $75 monthly limit with Workers. The
+suggested 100 instance-hours allow two concurrent `standard-1` instances
+within a monthly allocation. The ledger books startup, lifetime and cleanup
+seconds for each reservation, including canaries, then settles from receipts.
+The budget resets at the UTC month boundary. Exhausting it pauses Container
+admission only. The signed release rates price the Container allocation for
+the joint fleet check. Compute for 100 hours is about $7.40 before outbound
+and control holds.
+
 ## Per-Workflow Cost Model
 
 These units model approved overflow from a Provider organization or Global. Global is one tenant. Cold starts are normal when bursts are separated or the relevant launcher or engine has expired. Warm reuse requires the same live engine and tenant within its 90-second linger and the launcher's own lifetime. Keep-warm and queue pre-warm are both off. Count only workflows that reach the overflow lane in the forecast.
@@ -47,7 +56,7 @@ Each limit is a suggested USD amount per UTC month for the **shared Bifrost esti
 | A | **$30**, Light, **0.012%** Workers duty. Workers only. | One launcher × two slots, 3,600 s lifetime, nine installation slots configured and two physically reachable. **$17.61** envelope using the checked-in release inputs. | Two slots may leave a concentrated burst on the primary before spend is material. Cold churn and unsettled usage can close admission later in the month. $30 is still much larger than the light forecast, but limits the authorized Bifrost exposure compared with the nine-slot options. |
 | B | **$75**, Moderate, **0.077%** Workers duty. Workers only. | Three launchers × four slots capped at nine total, **3,600 s** lifetime. **$32.13** modeled envelope with the same inputs. This preset requires the requalified Workers bundle. | A fresh launcher can admit workflows with the default 1,800 s timeout. The claim window narrows as the launcher ages. TenantHost linger remains 90 s, and idle launchers retire under the worker pool's idle policy. High demand or churn can exhaust $75 during a month. |
 | C | **$425**, Heavy, **1.93%** Workers duty. Workers only. | Three launchers × four slots capped at nine total, **120 s** lifetime. **$415.59** qualified envelope. | Preserves the existing pilot geometry and lifetime. Short incarnations can reduce warm reuse, and $425 can still close admission if usage and reserves exceed the modeled workload. It authorizes hundreds of dollars of estimated usage even if expected spend is much lower. |
-| D | **$600 conditional**, Containers-inclusive, **0.077%** Workers duty and **9.6%** Containers duty. | Option C's Workers geometry plus up to two `standard-1` instances. Present $600 only where a verified Containers release and its actual policy produce a combined envelope ≤ $600. Illustrative combined floor **$557.95** with the assumptions below. | Both lanes draw against the same limit. Repeated starts, slow settlement or tight byte caps can leave Linux work on the primary and can consume headroom for Workers. Larger outbound caps or control reserves can make $600 invalid. The suggested limit exposes a much larger Bifrost allowance than the forecast and needs explicit approval. |
+| D | **$75 conditional**, Containers-inclusive pilot with **100 Container instance-hours**. | Preset B Workers with up to two concurrent `standard-1` instances. The verified Workers and Container envelopes must fit the combined limit. | Both lanes draw against the dollar limit. Exhausting instance-hours alone pauses Container starts, including canaries, while Workers remain eligible. |
 
 ### Preserve Fleet Validation
 
@@ -62,7 +71,13 @@ passing rehearsal spend gate for that trial plan. [Preset B follow-up](../../res
 
 Workers save rejects a monthly limit below the selected release's computed envelope. The formula prices the bounded launcher fleet at `launcher cap × (max lifetime + cleanup margin)` plus fixed meter allowances, then adds `$0.002 × reachable slots × 31 × (ceil(86,400 / max lifetime) + 1)` for identity rotation. It uses the manifest's qualified CPU inputs for the fleet price and rounds the result up to cents. In Option C, rotation alone is `$402.318` and the other bounded meters add about `$13.267`. The protected Connect test passes with `$50` against a `$45.26` fixture envelope generated from different fixture bounds and geometry. The relevant floor for any option comes from the exact selected release and policy. [Policy pricing](../../../../api/src/services/worker_pool/cloudflare_policy.py) · [Fleet calculation](../../../../api/src/services/worker_pool/cloudflare_spend.py) · [Hosted preparation receipt](../../results/cloudflare-scaleout-meter-hosted-prep.json) · [Protected Connect fixture](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py)
 
-For Containers, apply the same fleet-fit check to the combined envelope before presenting the option as activatable. The spike's Containers admission code checks that sum for a 31-day month. For `M = 31 × 86,400`, its additional envelope is `instances × [rate × (M + start timeout + lifetime + cleanup) + (control + $0.05 × outbound cap in GB) × (M + 1)]`. The second term is a repeated-start bound. For two instances, a 30 s start timeout, 1,800 s lifetime, 60 s cleanup, 100 kB outbound cap and $0.000001/start control, it adds $142.3543 to $415.59, or $557.95 rounded up. These values illustrate the calculation. Actual egress caps must cover workflow traffic and relay overhead. Even a 1 MB cap with these other inputs would yield a combined floor of about $799.01. The pilot's $106.58 compute-only estimate leaves out restart, transfer, control and extra boundary reserves. If the proposed limit fails validation, show the calculated minimum and let the owner choose a smaller eligible policy or explicitly accept a larger limit. [Container fleet formula](../../../../api/src/services/worker_pool/cloudflare_containers_policy.py) · [Combined admission check](../../../../api/src/services/worker_pool/cloudflare_containers_admission.py) · [Containers qualification](PHASE3-CONTAINERS.md)
+Price the Container instance-hour allocation at the signed release rate.
+The fleet check adds gross compute for the smaller of the month's instance
+capacity and the purchased hours, plus a conservative allowance for control
+and outbound holds on repeated starts. The dollar ledger independently
+guards those fixed charges as usage accrues. Policy save requires the sum
+of the Workers and Container envelopes to fit the configured limit.
+[Container fleet formula](../../../../api/src/services/worker_pool/cloudflare_containers_policy.py) · [Combined admission check](../../../../api/src/services/worker_pool/cloudflare_containers_admission.py) · [Containers qualification](PHASE3-CONTAINERS.md)
 
 ## Activation Preview
 

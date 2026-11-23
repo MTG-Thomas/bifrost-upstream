@@ -259,6 +259,38 @@ it("reviews a discovered account and route, then queues exactly one activation",
 	expect(secret).toHaveValue("");
 });
 
+it("opts into Containers during preflight and accepts the combined fleet limit", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockResolvedValue({ installation: null, suggested_policy: suggestedPolicy });
+	mocks.preflight.mockResolvedValue({
+		accounts: [{ id: "a".repeat(32), name: "Example Account" }], account_id: "a".repeat(32),
+		reachability_mode: "existing_https_endpoint", workers_paid: "verified",
+		preview: {
+			policy: { ...suggestedPolicy, container_instance_hours: 100 },
+			fleet_envelope_usd: "44.40", containers_fleet_envelope_usd: "12.27",
+			containers_remaining_instance_hours: "100",
+			workers_paid_subscription_usd: "5",
+			containers_policy: { installation_instances: 2, instance_type: "standard-1", tenant_instances: 1,
+				workflow_slots: 1, idle_seconds: 120, monthly_instance_hours: 100 },
+		},
+		consent_version: "cloudflare-containers-pilot-v1",
+		consent_text: "I authorize Bifrost to provision paid Cloudflare Containers for approved Linux workflows.",
+		preflight_receipt: "containers-receipt",
+	});
+	renderCapacity();
+	await user.click(await screen.findByRole("button", { name: "Set Up Cloudflare" }));
+	const optIn = screen.getByRole("checkbox", { name: "Include Paid Containers Pilot" });
+	expect(optIn).not.toBeChecked();
+	await user.click(optIn);
+	await user.type(screen.getByLabelText("Cloudflare API Token"), "synthetic-management-token");
+	await user.click(screen.getByRole("button", { name: "Run Preflight" }));
+	expect(await screen.findByRole("heading", { name: "Containers Capacity Preview" })).toBeVisible();
+	expect(mocks.preflight).toHaveBeenCalledWith(expect.objectContaining({ containers: true }));
+	expect(screen.getByLabelText("Monthly Estimated Usage Limit")).toHaveValue(75);
+	expect(screen.getByLabelText("Monthly Estimated Usage Limit")).toHaveAttribute("min", "44.4");
+	expect(screen.getByText(/provision paid Cloudflare Containers/)).toBeVisible();
+});
+
 it("routes activation limit refusals and refreshes status when the review becomes stale", async () => {
 	const user = userEvent.setup();
 	mocks.get.mockResolvedValue({ installation: null, suggested_policy: suggestedPolicy });

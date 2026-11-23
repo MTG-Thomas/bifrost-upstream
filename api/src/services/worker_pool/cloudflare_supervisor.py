@@ -242,7 +242,11 @@ async def _reconcile_containers(
     if isinstance(reserved, ContainerAdmissionRefused):
         await record_controller_observation(
             binding, primary=primary, cause=cause, next_eligible_at=reserved.retry_at,
-            placement_code="container_allocation_cooldown" if reserved.code == "CF_CONTAINERS_COOLDOWN" else "cleanup_pending",
+            placement_code={
+                "CF_CONTAINERS_COOLDOWN": "container_allocation_cooldown",
+                "CF_CONTAINERS_CLEANUP_PENDING": "cleanup_pending",
+                "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED": "container_instance_budget_exhausted",
+            }[reserved.code],
         )
         return
     receipt = None

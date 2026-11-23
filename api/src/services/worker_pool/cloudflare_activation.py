@@ -4,10 +4,10 @@ import json
 import os
 import re
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from hashlib import sha256
 from hmac import compare_digest
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from uuid import UUID, uuid4
 
 import httpx
@@ -23,6 +23,7 @@ from shared.models import (
     CloudflarePreflight,
     CloudflarePreflightRequest,
     CloudflareReachabilityMode,
+    ContainersPolicy,
 )
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,15 +37,19 @@ from src.services.audit import emit_audit
 from src.services.authorization.enforce import Caller
 from src.services.kubernetes_control import may_manage_jobs
 from src.services.worker_pool.cloudflare_connector_channel import connector_channel_ready
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_PILOT_POLICY, container_account_usage, fleet_envelope
+from src.services.worker_pool.cloudflare_containers_release import load_containers_release
 from src.services.worker_pool.cloudflare_credentials import (
     StagedCloudflareCredentialUnavailable,
     consume_staged_token,
     read_staged_connect_token,
 )
 from src.services.worker_pool.cloudflare_policy import (
+    CONTAINERS_CONSENT_VERSION,
     CONSENT_TEXT,
     CONSENT_TEXT_VERSION,
     WORKERS_PAID_SUBSCRIPTION_USD,
+    CloudflareBudgetTooLow,
     CloudflareInstallationExists,
     CloudflarePolicyConflict,
     _price_policy,
@@ -77,11 +82,18 @@ class _Receipt(TypedDict):
     origin: str
     mode: CloudflareReachabilityMode
     policy: dict[str, Any]
+    containers_release: NotRequired[str]
+    containers_policy: NotRequired[dict[str, Any]]
 
 
 # SPEND-DEFAULTS.md, Moderate Workers-only forecast sensitivity for Preset B.
 PRESET_B_ESTIMATED_USAGE_MIN_USD = Decimal("2")
 PRESET_B_ESTIMATED_USAGE_MAX_USD = Decimal("7")
+CONTAINERS_CONSENT_TEXT = (
+    "I authorize Bifrost to provision paid Cloudflare Containers for approved Linux workflows. "
+    "Containers usage draws against the confirmed shared monthly limit and the Container instance-hour budget "
+    "and may incur Cloudflare charges."
+)
 
 
 class CloudflarePreflightFieldError(ValueError):
@@ -149,8 +161,16 @@ async def preflight_cloudflare(
     if proposal is None:
         raise WorkersReleaseUnavailable("Install a qualified Workers release with lifetime meters")
     policy = body.policy or proposal
-    bounds = release_meter_bounds(load_workers_release())
+    workers_release = load_workers_release()
+    bounds = release_meter_bounds(workers_release)
     priced = _price_policy(policy, bounds)
+    container_policy = None
+    if body.containers:
+        container_policy = CONTAINERS_PILOT_POLICY
+        hours = body.container_instance_hours or policy.container_instance_hours
+        if hours is not None:
+            container_policy = container_policy.model_copy(update={"monthly_instance_hours": hours})
+        policy = policy.model_copy(update={"container_instance_hours": container_policy.monthly_instance_hours})
     actor = caller.principal.user_id
     bound_account, token, credential_expiry = await _credential(db, actor, body)
     preset_b = policy.model_dump(exclude={"monthly_limit_usd"}) == proposal.model_dump(exclude={"monthly_limit_usd"})
@@ -170,23 +190,42 @@ async def preflight_cloudflare(
     recommended = "managed_tunnel" if ready else "existing_https_endpoint"
     mode = body.reachability_mode or recommended
     async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
+        containers_release = await load_containers_release(http, workers_release) if body.containers else None
+        container_floor = None
+        workers_floor = Decimal(str(priced["fleet_envelope_usd"]))
+        combined_floor = workers_floor
+        if containers_release is not None and container_policy is not None:
+            container_floor = fleet_envelope(
+                container_policy, containers_release.manifest.rates, 31 * 86400,
+            ).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+            combined_floor += container_floor
         client = WorkersRestCleanup(http)
         accounts = _choices(await client.discovery_inventory(token))
         if bound_account and accounts is not None:
             accounts = [account for account in accounts if account.id == bound_account]
         account_id = bound_account or _selection(accounts, body.account_id, "account_id")
+        remaining_hours = None
+        if container_policy is not None:
+            used = await db.scalar(select(container_account_usage(
+                func.now(), account_id=account_id, instance_seconds=True,
+            ))) if account_id is not None else 0
+            remaining_hours = max(Decimal(0), Decimal(container_policy.monthly_instance_hours) - Decimal(used or 0) / 3600)
         result = CloudflarePreflight(
             accounts=accounts, account_id=account_id, connector_channel=settings.cloudflare_tunnel_channel,
             connector_ready=ready,
             primary=primary,
             recommended_reachability=recommended, reachability_mode=mode,
             preview=CloudflareActivationPreview(
-                policy=policy, fleet_envelope_usd=Decimal(str(priced["fleet_envelope_usd"])),
+                policy=policy, fleet_envelope_usd=combined_floor,
                 estimated_usage_min_usd=PRESET_B_ESTIMATED_USAGE_MIN_USD if preset_b else None,
                 estimated_usage_max_usd=PRESET_B_ESTIMATED_USAGE_MAX_USD if preset_b else None,
                 workers_paid_subscription_usd=WORKERS_PAID_SUBSCRIPTION_USD,
+                containers_policy=container_policy,
+                containers_fleet_envelope_usd=container_floor,
+                containers_remaining_instance_hours=remaining_hours,
             ),
-            consent_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT,
+            consent_version=CONTAINERS_CONSENT_VERSION if containers_release else CONSENT_TEXT_VERSION,
+            consent_text=f"{CONSENT_TEXT} {CONTAINERS_CONSENT_TEXT}" if containers_release else CONSENT_TEXT,
         )
         if account_id is None:
             return result
@@ -240,10 +279,13 @@ async def preflight_cloudflare(
         purpose="cloudflare-activation-v1", installation_id=str(uuid4()), actor=str(actor),
         credential_ref=str(body.credential_ref) if body.credential_ref else None,
         token_digest=_digest(token.get_secret_value()), generation=generation, release=bounds.release,
-        consent_version=CONSENT_TEXT_VERSION, expires_at=expires_at.isoformat(),
+        consent_version=result.consent_version, expires_at=expires_at.isoformat(),
         account_id=account_id, zone_id=result.zone_id, origin=result.worker_ingress_origin, mode=mode,
         policy=policy.model_dump(mode="json"),
     )
+    if containers_release is not None and container_policy is not None:
+        receipt["containers_release"] = containers_release.digest
+        receipt["containers_policy"] = container_policy.model_dump(mode="json")
     result.preflight_receipt = encrypt_secret(json.dumps(receipt))
     result.expires_at = expires_at
     return result
@@ -255,7 +297,9 @@ def _open_receipt(body: CloudflareActivateRequest, actor_id: UUID) -> _Receipt:
         if (
             receipt["purpose"] == "cloudflare-activation-v1" and receipt["actor"] == str(actor_id)
             and receipt["credential_ref"] == (str(body.credential_ref) if body.credential_ref else None)
-            and receipt["consent_version"] == body.consent_version == CONSENT_TEXT_VERSION
+            and receipt["consent_version"] == body.consent_version == (
+                CONTAINERS_CONSENT_VERSION if receipt.get("containers_release") else CONSENT_TEXT_VERSION
+            )
             and (body.api_token is None or compare_digest(
                 receipt["token_digest"], _digest(body.api_token.get_secret_value()),
             ))
@@ -294,11 +338,13 @@ async def activate_cloudflare(
         if body.credential_ref is not None:
             raise StagedCloudflareCredentialUnavailable("Invalid or expired Cloudflare credential reference")
         raise CloudflarePolicyConflict("Cloudflare preflight expired. Run preflight again.")
-    bounds = release_meter_bounds(load_workers_release())
+    workers_release = load_workers_release()
+    bounds = release_meter_bounds(workers_release)
     if receipt["release"] != bounds.release or receipt["generation"] != await _generation(db):
         raise CloudflarePolicyConflict("Cloudflare installation or Workers release changed. Run preflight again.")
     policy = CloudflareCapacityPolicy.model_validate({**receipt["policy"], "monthly_limit_usd": body.monthly_limit_usd})
-    _price_policy(policy, bounds)
+    priced = _price_policy(policy, bounds)
+    containers_policy = None
     account_id, zone_id = receipt["account_id"], receipt["zone_id"]
     try:
         bound_account, token, _ = await _credential(db, actor_id, body)
@@ -308,6 +354,17 @@ async def activate_cloudflare(
             raise CloudflarePolicyConflict("Cloudflare credential changed. Run preflight again.")
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
             await WorkersRestCleanup(http).verify_workers_paid(account_id, token)
+            if (expected_digest := receipt.get("containers_release")) is not None:
+                release = await load_containers_release(http, workers_release)
+                if release.digest != expected_digest:
+                    raise CloudflarePolicyConflict("Cloudflare Containers release changed. Run preflight again.")
+                containers_policy = ContainersPolicy.model_validate(receipt["containers_policy"])
+                combined_floor = (
+                    Decimal(str(priced["fleet_envelope_usd"]))
+                    + fleet_envelope(containers_policy, release.manifest.rates, 31 * 86400)
+                ).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+                if combined_floor > policy.monthly_limit_usd:
+                    raise CloudflareBudgetTooLow(combined_floor)
             if zone_id is not None:
                 if not await connector_channel_ready():
                     raise CloudflarePolicyConflict("Managed Tunnel connector channel is unavailable. Run preflight again.")
@@ -327,6 +384,7 @@ async def activate_cloudflare(
             db, installation_id=installation_id, account_id=account_id, worker_ingress_origin=receipt["origin"],
             consent_version=body.consent_version, actor_id=actor_id, verified_api_token=token, policy=policy,
             bounds=bounds, reachability_mode=receipt["mode"], zone_id=zone_id, activation_fingerprint=fingerprint,
+            containers_policy=containers_policy,
         )
     except CloudflareInstallationExists:
         existing = await _resume_activation(db, caller, installation_id, fingerprint)
@@ -340,6 +398,7 @@ async def activate_cloudflare(
     await emit_audit(
         db, "capacity.cloudflare_activate", resource_type="cloudflare_installation", resource_id=installation_id,
         details={"account_id": account_id, "consent_version": body.consent_version, "zone_id": zone_id,
-                 "reachability_mode": receipt["mode"], "monthly_limit_usd": str(body.monthly_limit_usd)},
+                 "reachability_mode": receipt["mode"], "monthly_limit_usd": str(body.monthly_limit_usd),
+                 "containers": containers_policy is not None},
     )
     return await enqueue_cloudflare_enable(db, caller, installation_id=installation_id, expected_revision=1)

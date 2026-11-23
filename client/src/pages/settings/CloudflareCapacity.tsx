@@ -233,6 +233,7 @@ type CapacityPolicy = components["schemas"]["CloudflareCapacityPolicy-Input"];
 
 function readPolicy(fields: FormData): CapacityPolicy {
 	const sharedCap = String(fields.get("shared_cap") ?? "");
+	const containerHours = String(fields.get("policy_container_instance_hours") ?? "");
 		return {
 			version: 1 as const,
 			workers: {
@@ -247,6 +248,7 @@ function readPolicy(fields: FormData): CapacityPolicy {
 			},
 			monthly_limit_usd: String(fields.get("monthly_limit")),
 			shared_managed_worker_cap: sharedCap ? Number(sharedCap) : null,
+			container_instance_hours: containerHours ? Number(containerHours) : undefined,
 		};
 }
 
@@ -267,6 +269,13 @@ function PolicyFields({ settings, fieldProps = () => ({}), fieldError = () => nu
 					<div><Label htmlFor="cf-linger">Tenant Engine Linger in Seconds</Label><Input id="cf-linger" name="linger" type="number" min={0} max={300} defaultValue={settings?.workers.linger_seconds ?? 90} required {...fieldProps("linger")} />{fieldError("linger")}</div>
 					<div><Label htmlFor="cf-queue-prewarm">Max Queue Pre-Warms per Tenant</Label><Input id="cf-queue-prewarm" name="queue_prewarm" type="number" min={0} max={32} defaultValue={settings?.workers.queue_prewarm_per_tenant ?? 0} required {...fieldProps("queue_prewarm", "cf-prewarm-help")} />{fieldError("queue_prewarm")}<p id="cf-prewarm-help" className="text-sm text-muted-foreground">Set to 0 to disable. Requires a positive engine linger.</p></div>
 					<div><Label htmlFor="cf-shared-cap">Shared Managed Worker Limit</Label><Input id="cf-shared-cap" name="shared_cap" type="number" min={1} max={1000} defaultValue={settings?.shared_managed_worker_cap ?? undefined} {...fieldProps("shared_cap")} />{fieldError("shared_cap")}</div>
+					{settings.container_instance_hours != null && (
+						<div>
+							<Label htmlFor="cf-policy-container-hours">Monthly Container Instance-Hours</Label>
+							<Input id="cf-policy-container-hours" name="policy_container_instance_hours" type="number"
+								min={1} max={1488} defaultValue={settings.container_instance_hours} required />
+						</div>
+					)}
 				</div>
 				<label className="flex items-center gap-2 text-sm">
 					<input type="checkbox" name="workflows" defaultChecked={settings?.workers.work_kinds.includes("workflow") ?? true} {...fieldProps("workflows")} />
@@ -284,6 +293,7 @@ function CloudflareSetupForm({ status, onAccepted, onCancel, onRefresh }: {
 	onRefresh: () => void;
 }) {
 	const [preflight, setPreflight] = useState<CloudflarePreflight>();
+	const [containers, setContainers] = useState(false);
 	const [stale, setStale] = useState(false);
 	const [policyEdited, setPolicyEdited] = useState(false);
 	const [limit, setLimit] = useState(String(status.suggested_policy?.monthly_limit_usd ?? ""));
@@ -335,7 +345,13 @@ function CloudflareSetupForm({ status, onAccepted, onCancel, onRefresh }: {
 					reachability_mode: selectedMode,
 					worker_ingress_origin: value("worker_ingress_origin"),
 					policy: policyEdited ? readPolicy(fields) : undefined,
+					containers: containers || undefined,
+					container_instance_hours: containers && value("container_instance_hours")
+						? Number(value("container_instance_hours")) : undefined,
 				});
+				if (next.preview?.containers_policy) {
+					setLimit(String(next.preview.policy.monthly_limit_usd));
+				}
 				setPreflight(next);
 				setStale(false);
 				setConsent(false);
@@ -366,6 +382,20 @@ function CloudflareSetupForm({ status, onAccepted, onCancel, onRefresh }: {
 
 	return (
 		<form ref={formRef} aria-label="Cloudflare Setup" className="space-y-4" noValidate onSubmit={submit}>
+			<label className="flex items-center gap-2">
+				<input type="checkbox" checked={containers} onChange={(event) => {
+					setContainers(event.target.checked);
+					invalidate();
+				}} />
+				Include Paid Containers Pilot
+			</label>
+			{containers && (
+				<div>
+					<Label htmlFor="cf-container-hours">Monthly Container Instance-Hours</Label>
+					<Input id="cf-container-hours" name="container_instance_hours" type="number"
+						min={1} max={1488} onChange={invalidate} />
+				</div>
+			)}
 			{failure && <CapacityFormError failure={failure} formRef={formRef} onRefresh={() => {
 				if (status.installation) onCancel();
 				else onRefresh();
@@ -460,6 +490,15 @@ function CloudflareSetupForm({ status, onAccepted, onCancel, onRefresh }: {
 							<div><dt>Minimum Limit for This Fleet</dt><dd>{amount(preview.fleet_envelope_usd)}/month</dd></div>
 						</dl>
 						{showForecast && <p className="text-sm text-muted-foreground">The moderate forecast assumes 40 workflows per day in bursts, 35% cold starts, and about 0.077% Workers duty with nine slots.</p>}
+						{preview.containers_policy && (
+							<div className="space-y-1">
+								<h3 className="font-semibold">Containers Capacity Preview</h3>
+								<p>{preview.containers_policy.installation_instances} {preview.containers_policy.instance_type} instances, {preview.containers_policy.tenant_instances} per tenant,
+									{" "}{preview.containers_policy.workflow_slots} workflow per instance, and a {preview.containers_policy.idle_seconds}-second idle stop.</p>
+								<p>Containers Fleet Minimum: {amount(preview.containers_fleet_envelope_usd)}/month. The fleet minimum above includes both lanes.</p>
+								<p>{Number(preview.containers_remaining_instance_hours ?? 0).toLocaleString()} of {preview.containers_policy.monthly_instance_hours} instance-hours available this month.</p>
+							</div>
+						)}
 						<p className="text-sm text-muted-foreground">At the usage limit, new work stays on the primary. Overflow can pause earlier if usage or the next reservation cannot be verified.</p>
 					</div>
 				)}
@@ -936,6 +975,17 @@ export function CloudflareCapacity() {
 								</dt>
 								<dd>{installation.fleet_envelope_usd} USD/month</dd>
 							</div>
+							{installation.containers_remaining_instance_hours != null && (
+								<div>
+									<dt className="text-muted-foreground">Remaining Container Instance-Hours</dt>
+									<dd>{Number(installation.containers_remaining_instance_hours).toLocaleString(undefined, {
+										maximumFractionDigits: 2,
+									})} of {installation.policy.container_instance_hours}</dd>
+									{installation.containers_instance_budget_resets_at && (
+										<dd>Resets {new Date(installation.containers_instance_budget_resets_at).toISOString().slice(0, 10)} UTC</dd>
+									)}
+								</div>
+							)}
 							{installation.spend && (
 								<>
 									<div>

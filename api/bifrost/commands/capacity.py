@@ -92,6 +92,8 @@ def _preflight_options(command):
         click.option("--worker-ingress-origin"),
         click.option("--credential-ref", type=click.UUID),
         click.option("--policy", type=click.File("r", encoding="utf-8"), help="Advanced capacity policy JSON file."),
+        click.option("--containers", is_flag=True, help="Include the paid Containers pilot in the preflight."),
+        click.option("--container-instance-hours", type=click.IntRange(1, 1488), help="Monthly Container instance-hours."),
     )):
         command = option(command)
     return command
