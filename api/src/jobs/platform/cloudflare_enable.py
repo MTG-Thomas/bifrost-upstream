@@ -53,6 +53,7 @@ from src.services.worker_ingress_probes import probe_worker_ingress
 from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_admission import joint_container_readiness
 from src.services.worker_pool.cloudflare_canary import run_workers_canary
+from src.services.worker_pool.cloudflare_containers_release import ContainersReleaseUnavailable, load_containers_release
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     open_credential,
@@ -241,7 +242,23 @@ async def _settle_enable(
                     {"code": "CF_POLICY_RELEASE_CHANGED", "reason": str(exc)},
                 ) from None
         installation = row
+        container_digest = row.containers_release_digest if row.containers_policy.get("enabled") else None
         management_token = await _management_token(db, row)
+    if container_digest is not None:
+        try:
+            matched_release = (await load_containers_release(http, release)).digest == container_digest
+        except ContainersReleaseUnavailable:
+            matched_release = False
+        if not matched_release:
+            async with get_db_context() as db:
+                row = await _locked_current(db, context, payload)
+                if row is None:
+                    return {"outcome": "superseded"}
+                row.admitted_revision = None
+                wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+            raise PlatformJobRequiresAction("Install the Matched Cloudflare Linux Release", {
+                "code": "CF_CONTAINERS_RELEASE_UNAVAILABLE",
+            })
     cleanup_adapter = WorkersRestCleanup(http)
     await cleanup_adapter.verify_workers_paid(installation.account_id, management_token)
     async with get_db_context() as db:
@@ -414,9 +431,10 @@ async def _settle_enable(
         row = await _locked_current(db, context, payload)
         if row is None:
             return {"outcome": "superseded"}
-        if await db.scalar(select(joint_container_readiness(payload.revision)).where(
+        joint_ready = await db.scalar(select(joint_container_readiness(payload.revision)).where(
             CloudflareInstallation.id == row.id,
-        )) is not True:
+        ))
+        if joint_ready is not True or (row.containers_policy.get("enabled") and row.containers_release_digest != container_digest):
             raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
                 "code": "CF_CONTAINERS_UNVERIFIED",
             })

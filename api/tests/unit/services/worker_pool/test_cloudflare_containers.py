@@ -32,6 +32,7 @@ from src.services.worker_pool.cloudflare_containers_policy import (
 from src.services.worker_pool.cloudflare_containers_release import (
     ContainersManifest,
     ContainersReleaseUnavailable,
+    load_containers_release,
     verify_containers_release,
 )
 from src.services.worker_pool.cloudflare_containers_rest import (
@@ -116,6 +117,55 @@ async def test_descriptor_requires_release_signer_and_exact_source(tmp_path, mon
     workers.manifest.source_revision = "f" * 40
     with pytest.raises(ContainersReleaseUnavailable, match="source pin"):
         await verify_containers_release(tmp_path, workers, cosign=Path("cosign"), signer=signer, workspace=workspace)
+
+
+@pytest.mark.asyncio
+async def test_load_matched_release_follows_only_github_asset_redirects(monkeypatch) -> None:
+    release, _, _ = make_release()
+    module = b"export class ScopeRegistry {}"
+    manifest = release.manifest.model_dump(mode="json")
+    manifest["provider_modules"]["container-registry.mjs"] = sha256(module).hexdigest()
+    assets = {
+        "manifest.json": json_bytes(manifest),
+        "manifest.sigstore.json": b"{}",
+        "container-registry.mjs": module,
+    }
+    workers = Mock(
+        manifest=SimpleNamespace(source_revision=release.manifest.source_revision, release_version="1.2.3"),
+        digest=release.manifest.workers_release_digest,
+    )
+    redirect_host = "release-assets.githubusercontent.com"
+    downloads = []
+
+    def packager(request):
+        assert "authorization" not in request.headers
+        filename = request.url.path.rsplit("/", 1)[-1]
+        if request.url.host == "github.com":
+            asset = filename.removeprefix("cloudflare-containers-")
+            assert asset in assets
+            assert request.url.path == f"/gobifrost/bifrost/releases/download/v1.2.3/cloudflare-containers-{asset}"
+            return httpx.Response(302, headers={"location": f"https://{redirect_host}/{asset}"})
+        assert request.url.host == "release-assets.githubusercontent.com"
+        downloads.append(filename)
+        return httpx.Response(200, content=assets[filename])
+
+    async def tool(executable, *args, **kwargs):
+        assert executable == Path("/app/artifacts/cloudflare/bin/cosign")
+        if args == ("version",):
+            return b"GitVersion: v2.4.1\n"
+        assert args[:3] == (
+            "verify-blob", "--certificate-identity",
+            "https://github.com/gobifrost/bifrost/.github/workflows/ci.yml@refs/tags/v1.2.3",
+        )
+        return b""
+
+    monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_release.run_oci_tool", tool)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(packager)) as http:
+        assert (await load_containers_release(http, workers)).digest == sha256(assets["manifest.json"]).hexdigest()
+        assert downloads == list(assets)
+        redirect_host = "other.example.test"
+        with pytest.raises(ContainersReleaseUnavailable, match="Unexpected Linux release asset location"):
+            await load_containers_release(http, workers)
 
 
 @pytest.mark.asyncio

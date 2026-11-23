@@ -815,6 +815,8 @@ jobs:
     needs: [test-unit, test-e2e-gate, lint]
     runs-on: ubuntu-latest
     name: Build API Image
+    outputs:
+      containers-release: ${{ steps.containers-release.outputs.available }}
     permissions:
       contents: read
       packages: write
@@ -922,6 +924,17 @@ jobs:
           diff -qr deploy/capacity/cloudflare/image-artifacts/workers "$staging/rebuilt"
           echo "required=1" >> "$GITHUB_OUTPUT"
 
+      - name: Install cosign for the Linux release descriptor
+        if: steps.workers-release.outputs.required == '1' && vars.CONTAINERS_RELEASE_RATES != ''
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v2.4.1
+
+      - name: Package the Linux release verifier
+        if: steps.workers-release.outputs.required == '1' && vars.CONTAINERS_RELEASE_RATES != ''
+        run: |
+          install -Dm0755 "$(command -v cosign)" deploy/capacity/cloudflare/image-artifacts/bin/cosign
+
       - name: Build and push API image
         id: build-api
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -950,13 +963,8 @@ jobs:
           subject-digest: ${{ steps.build-api.outputs.digest }}
           push-to-registry: true
 
-      - name: Install cosign for the Linux release descriptor
-        if: steps.workers-release.outputs.required == '1' && vars.CONTAINERS_RELEASE_RATES != ''
-        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
-        with:
-          cosign-release: v2.4.1
-
       - name: Build and sign the matched Cloudflare Linux release candidate
+        id: containers-release
         if: steps.workers-release.outputs.required == '1' && vars.CONTAINERS_RELEASE_RATES != ''
         env:
           BASE_DIGEST: ${{ steps.build-api.outputs.digest }}
@@ -965,6 +973,7 @@ jobs:
           bash deploy/capacity/cloudflare/build-containers.sh \
             "ghcr.io/${API_IMAGE}@${BASE_DIGEST}" "ghcr.io/${API_IMAGE}-cloudflare-linux" \
             "$GITHUB_SHA" "$RUNNER_TEMP/containers-release" "$CONTAINERS_RELEASE_RATES"
+          echo "available=1" >> "$GITHUB_OUTPUT"
 
       - name: Store the signed Linux release descriptor and provider module
         if: steps.workers-release.outputs.required == '1' && vars.CONTAINERS_RELEASE_RATES != ''
@@ -1102,6 +1111,21 @@ jobs:
           BODY="product-updates/release-bodies/${{ steps.get_version.outputs.version }}.md"
           test -s "$BODY"
 
+      - name: Download the matched Cloudflare Linux release
+        if: needs.build-api.outputs.containers-release == '1'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cloudflare-containers-release
+          path: ${{ runner.temp }}/containers-release
+
+      - name: Stage the Cloudflare Linux release assets
+        if: needs.build-api.outputs.containers-release == '1'
+        run: |
+          set -euo pipefail
+          for name in manifest.json manifest.sigstore.json container-registry.mjs; do
+            install -m 0644 "$RUNNER_TEMP/containers-release/$name" "cloudflare-containers-$name"
+          done
+
       - name: Copy type stubs
         run: |
           if [ -f "stubs/bifrost.pyi" ]; then
@@ -1164,6 +1188,9 @@ jobs:
             bifrost.pyi
             bifrost.pyi.sigstore
             stubs/DISTRIBUTION.md
+            cloudflare-containers-manifest.json
+            cloudflare-containers-manifest.sigstore.json
+            cloudflare-containers-container-registry.mjs
           fail_on_unmatched_files: false
           body_path: product-updates/release-bodies/${{ steps.get_version.outputs.version }}.md
           draft: false

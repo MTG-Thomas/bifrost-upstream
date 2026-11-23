@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Annotated, Literal
+
+import httpx
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -20,6 +23,15 @@ _OCI_MEDIA_TYPES = {
     "application/vnd.oci.image.manifest.v1+json",
     "application/vnd.docker.distribution.manifest.v2+json",
 }
+_RELEASE_ROOT = "https://github.com/gobifrost/bifrost/releases/download"
+_SIGNING_WORKFLOW = "https://github.com/gobifrost/bifrost/.github/workflows/ci.yml"
+_RELEASE_FILES = {
+    "manifest.json": 1024 * 1024,
+    "manifest.sigstore.json": 1024 * 1024,
+    "container-registry.mjs": 4 * 1024 * 1024,
+}
+_ASSET_ORIGINS = frozenset({"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"})
+_COSIGN = Path("/app/artifacts/cloudflare/bin/cosign")
 
 
 class ContainersReleaseUnavailable(Exception):
@@ -147,3 +159,50 @@ async def verify_containers_release(
     except (OSError, ValueError, ValidationError):
         raise ContainersReleaseUnavailable("Container release descriptor or source pin is invalid") from None
     return VerifiedContainerRelease(manifest, sha256(content).hexdigest())
+
+
+async def _download_release_asset(
+    http: httpx.AsyncClient, url: httpx.URL, target: Path, limit: int,
+) -> None:
+    for _ in range(3):
+        if (
+            url.scheme != "https" or url.host not in _ASSET_ORIGINS or url.port is not None
+            or url.username or url.password
+        ):
+            raise ContainersReleaseUnavailable("Unexpected Linux release asset location")
+        async with http.stream("GET", url, follow_redirects=False) as response:
+            if response.is_redirect:
+                url = url.join(response.headers["location"])
+                continue
+            response.raise_for_status()
+            length = 0
+            with target.open("xb") as output:
+                async for chunk in response.aiter_bytes():
+                    length += len(chunk)
+                    if length > limit:
+                        raise ContainersReleaseUnavailable("Linux release asset exceeds its size limit")
+                    output.write(chunk)
+            return
+    raise ContainersReleaseUnavailable("Unexpected Linux release redirect chain")
+
+
+async def load_containers_release(http: httpx.AsyncClient, workers: WorkersRelease) -> VerifiedContainerRelease:
+    """Install the signed assets published with this exact API image's Workers release."""
+    tag = f"v{workers.manifest.release_version}"
+    with TemporaryDirectory(prefix="bifrost-linux-release-") as temporary:
+        root = Path(temporary)
+        source = root / "assets"
+        workspace = root / "verify"
+        source.mkdir()
+        workspace.mkdir()
+        try:
+            for name, limit in _RELEASE_FILES.items():
+                await _download_release_asset(
+                    http, httpx.URL(f"{_RELEASE_ROOT}/{tag}/cloudflare-containers-{name}"), source / name, limit,
+                )
+            return await verify_containers_release(
+                source, workers, cosign=_COSIGN,
+                signer=f"{_SIGNING_WORKFLOW}@refs/tags/{tag}", workspace=workspace,
+            )
+        except (httpx.HTTPError, OSError, KeyError, ValueError):
+            raise ContainersReleaseUnavailable("The matched Cloudflare Linux release is unavailable") from None
