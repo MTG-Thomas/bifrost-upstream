@@ -493,22 +493,7 @@ class WorkerCapacityController(ABC):
                 needed.sort(key=new_declared.fits)
             managed_ids = {worker.id for worker in workers if worker.form in MANAGED_WORKER_FORMS}
             jobs = len(managed_ids)
-            pins = CloudflareWorkerReservation
-            occupied_pins = pins.worker_id.in_(managed_ids) | ExecutionWorker.capacity_resource_deleted_at.is_(None)
-            unsettled_pins = select(pins.worker_id).join(ExecutionWorker).where(
-                pins.installation_id == CloudflareInstallation.id, occupied_pins,
-            ).exists()
-            # Closing admission must not free room still occupied by the installation.
-            shared_cap = await db.scalar(select(
-                func.min(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
-            ).where(
-                (CloudflareInstallation.retired_at.is_(None) & CloudflareInstallation.admitted_revision.is_not(None))
-                | unsettled_pins,
-            ))
-            relevant_pins = occupied_pins if shared_cap is not None else pins.worker_id.in_(managed_ids)
-            managed_cloudflare_ids = set(await db.scalars(
-                select(pins.worker_id).join(ExecutionWorker).where(relevant_pins),
-            ))
+            shared_cap, managed_cloudflare_ids, _ = await shared_managed_worker_usage(db, managed_ids)
             # The pin identifies both Workers launchers and Linux Containers.
             # A live pin belongs to the Cloudflare ceiling, and a shared cap
             # includes it once alongside unconfirmed provider deletions.
@@ -954,6 +939,36 @@ class WorkerCapacityController(ABC):
             )
         )
         return worker_id
+
+
+async def shared_managed_worker_usage(
+    db: AsyncSession, managed_ids: set[UUID],
+) -> tuple[int | None, set[UUID], set[UUID]]:
+    """Return the shared cap, occupied Cloudflare pins, and pins awaiting cleanup."""
+    pins = CloudflareWorkerReservation
+    occupied = pins.worker_id.in_(managed_ids) | ExecutionWorker.capacity_resource_deleted_at.is_(None)
+    unsettled = select(pins.worker_id).join(ExecutionWorker).where(
+        pins.installation_id == CloudflareInstallation.id, occupied,
+    ).exists()
+    cap = await db.scalar(select(
+        func.min(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
+    ).where(
+        (CloudflareInstallation.retired_at.is_(None) & CloudflareInstallation.admitted_revision.is_not(None))
+        | unsettled,
+    ))
+    if cap is None:
+        live_pins = set(await db.scalars(select(pins.worker_id).where(pins.worker_id.in_(managed_ids))))
+        return None, live_pins, set()
+    awaiting_cleanup = (
+        CloudflareInstallation.admitted_revision.is_distinct_from(pins.deployment_revision)
+        | pins.worker_id.not_in(managed_ids)
+    )
+    rows = (await db.execute(select(pins.worker_id, awaiting_cleanup).join(
+        ExecutionWorker, ExecutionWorker.id == pins.worker_id,
+    ).join(
+        CloudflareInstallation, CloudflareInstallation.id == pins.installation_id,
+    ).where(occupied))).all()
+    return cap, {worker_id for worker_id, _ in rows}, {worker_id for worker_id, pending in rows if pending}
 
 
 class WorkerPoolController(WorkerCapacityController):

@@ -209,11 +209,12 @@ class _TunnelAPI:
     dns_id = "c" * 32
     tunnel_id = "20000000-0000-4000-8000-000000000001"
 
-    def __init__(self, *, initial_configuration="version_zero"):
+    def __init__(self, *, initial_configuration="version_zero", lose_create_responses=True):
         self.tunnel = None
         self.dns = None
         self.config = None
         self.initial_configuration = initial_configuration
+        self.lose_create_responses = lose_create_responses
         self.config_version = 0
         self.secret = None
         self.connectors = []
@@ -265,7 +266,9 @@ class _TunnelAPI:
             if self.initial_configuration == "default_404":
                 self.config = {"ingress": [{"service": "http_status:404"}], "warp-routing": {"enabled": False}}
                 self.config_version = 1
-            raise httpx.ReadError("lost tunnel create response", request=request)
+            if self.lose_create_responses:
+                raise httpx.ReadError("lost tunnel create response", request=request)
+            return result(self.tunnel)
         if path == tunnel and method == "GET":
             return result(self.tunnel)
         if path == tunnel and method == "DELETE":
@@ -310,10 +313,12 @@ class _TunnelAPI:
             return result([self.dns] if self.dns else [])
         if path == records and method == "POST":
             self.dns_creates += 1
-            if self.dns_creates == 1:
+            if self.lose_create_responses and self.dns_creates == 1:
                 return httpx.Response(503)
             self.dns = {**json.loads(request.content), "id": self.dns_id, "modified_on": "fixture-dns-version"}
-            raise httpx.ReadError("lost DNS create response", request=request)
+            if self.lose_create_responses:
+                raise httpx.ReadError("lost DNS create response", request=request)
+            return result(self.dns)
         if path == f"{records}/{self.dns_id}" and method == "GET":
             return result(self.dns) if self.dns and self.dns.get("id") == self.dns_id else httpx.Response(404)
         if path == f"{records}/{self.dns_id}" and method == "PATCH":
@@ -539,7 +544,7 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                     elapsed += seconds
 
                 patch.setattr(lifecycle_job, "monotonic", lambda: elapsed)
-                patch.setattr(lifecycle_job, "sleep", advance)
+                patch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=advance))
                 with pytest.raises(PlatformJobFailure) as unavailable:
                     await lifecycle_job._reconcile(running, reconcile)
                 assert unavailable.value.code == "CF_CONNECTOR_UNAVAILABLE"
@@ -1177,7 +1182,7 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             connectors.add(connector)
 
     if connector_delay is not None:
-        monkeypatch.setattr(lifecycle_job, "sleep", advance)
+        monkeypatch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=advance))
         monkeypatch.setattr(lifecycle_job, "monotonic", lambda: provider_seconds)
     capacity_namespaces_visible_at = None
 
@@ -1353,6 +1358,93 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     assert sum(path.endswith("/entitlements") for path in paid_reads) == 3
     await db_session.refresh(installation)
     assert installation.admitted_revision == 1
+
+
+@pytest.mark.asyncio
+async def test_enable_replays_tunnel_after_readiness_timeout_without_blocking_projection(
+    isolated_capacity_session_factory, monkeypatch, tmp_path,
+) -> None:
+    sessions = isolated_capacity_session_factory
+    provider = _TunnelAPI(lose_create_responses=False)
+    async with sessions.begin() as db:
+        installation_id = await create_installation(db, provider.account)
+        row = await db.get(CloudflareInstallation, installation_id)
+        assert row is not None
+        row.reachability_mode, row.zone_id = "managed_tunnel", provider.zone
+        row.policy = {**row.policy, "bounds_release": "d" * 64}
+        job, _ = await enable_job.enqueue_cloudflare_enable(
+            db, _platform_operator(), installation_id=installation_id, expected_revision=1,
+        )
+        lease = uuid4()
+        job.status, job.lease_token = "running", lease
+    settings = SimpleNamespace(cloudflare_tunnel_channel="compose")
+    monkeypatch.setattr(cloudflare_tunnel, "get_settings", lambda: settings)
+    monkeypatch.setattr(cloudflare_connector_channel, "get_settings", lambda: settings)
+    token_file = tmp_path / "token"
+    monkeypatch.setattr(cloudflare_connector_channel, "COMPOSE_PATH", token_file)
+
+    @asynccontextmanager
+    async def projection_context():
+        async with sessions.begin() as db:
+            await db.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            yield db
+
+    monkeypatch.setattr(cloudflare_connector_channel, "get_db_context", projection_context)
+    monkeypatch.setattr(enable_job, "get_db_context", sessions.begin)
+    monkeypatch.setattr(lifecycle_job, "get_db_context", sessions.begin)
+    monkeypatch.setattr(cloudflare_spend, "get_db_context", sessions.begin)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    after_readiness = AsyncMock(return_value=False)
+    monkeypatch.setattr(enable_job, "_drain_previous_revision", after_readiness)
+
+    elapsed = 0.0
+    replaying = False
+    projected = False
+
+    async def advance(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    async def slow_provider(request):
+        nonlocal projected
+        if replaying and not projected and request.url.path.endswith("/connections"):
+            # The provider has not returned the readiness read yet. Projection uses
+            # a different DB connection and must still acquire the installation row.
+            await cloudflare_connector_channel.project_connector(None)
+            projected = True
+            assert token_file.read_bytes()
+            provider.connectors.append(str(uuid4()))
+        return provider(request)
+
+    async def connector_credentials():
+        async with sessions() as db:
+            return (await db.execute(select(CloudflareCredential.version, CloudflareCredential.ciphertext).where(
+                CloudflareCredential.installation_id == installation_id,
+                CloudflareCredential.purpose == "connector_token",
+            ))).all()
+
+    monkeypatch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=advance))
+    monkeypatch.setattr(lifecycle_job, "monotonic", lambda: elapsed)
+    running = PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), "operator@example.test", "")
+    payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
+    release = SimpleNamespace(digest="d" * 64, manifest=SimpleNamespace(release_version="1.1.0", release_sequence=1))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow_provider)) as http:
+        with pytest.raises(PlatformJobFailure) as first:
+            await enable_job._settle_enable(running, payload, http, release)
+        assert first.value.code == "CF_CONNECTOR_UNAVAILABLE" and not first.value.retryable
+        assert elapsed == 180
+        after_readiness.assert_not_awaited()
+        credentials = await connector_credentials()
+        assert len(credentials) == 1 and credentials[0].version == 1 and credentials[0].ciphertext
+        replaying = True
+        assert await enable_job._settle_enable(running, payload, http, release) == {"outcome": "superseded"}
+    assert projected
+    after_readiness.assert_awaited_once()
+    assert await connector_credentials() == credentials
+    assert provider.tunnel_creates == 1 and provider.rotations == 0
+    async with sessions() as db:
+        row = await db.get(CloudflareInstallation, installation_id)
+        assert row is not None and row.deployment_evidence["connector_session"] == "connected"
 
 
 @pytest.mark.asyncio
@@ -2374,6 +2466,7 @@ async def test_supervisor_reserves_and_retires_without_restarting(
     (3, "scaled_in", "draining", False, 0),
     (3, "disconnected", "retired", False, 0),
     (3, "disconnected", "retired", True, 1),
+    (10, "disconnected", "retired", False, 1),
 ])
 async def test_container_pins_only_consume_an_explicit_shared_ceiling(
     isolated_capacity_installation, monkeypatch, shared_cap, desired_state, worker_state, deleted, expected_jobs,
@@ -2419,6 +2512,16 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
         )
         launched = await primary.launch_for_demand(KubernetesPolicy(max_workers=3, warm_workers=1))
     assert len(launched) == expected_jobs
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.example.test")
+    monkeypatch.setattr(cloudflare_status, "load_kubernetes_policy", AsyncMock(
+        return_value=KubernetesPolicy(max_workers=3, warm_workers=1),
+    ))
+    status = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    cleanup_limit = next((reason for reason in status.placement_reasons
+                          if reason.code == "primary_limited_by_cloudflare_cleanup"), None)
+    assert (cleanup_limit is not None) == (shared_cap == 3 and desired_state != "enabled" and not deleted)
+    if cleanup_limit is not None:
+        assert "Scale In or Disconnect job" in cleanup_limit.remedy
     for worker_id in launched:
         worker = await db_session.get(ExecutionWorker, worker_id)
         assert worker is not None and worker.form == "job" and worker.state == "reserved"

@@ -239,7 +239,7 @@ The wait was for the mounted Secret to refresh and the connector to detach,
 followed by the next deletion poll. The cleanup journal had already verified
 Workers and DNS absence before that wait. Shared-cap persistence could
 affect placement but did not participate in this path, and the connector
-readiness wait runs in Enable, Upgrade, and rotation. While the job was
+readiness wait runs in Enable, Upgrade, Reconcile when it provisions, and rotation. While the job was
 `running`, its error and result codes were empty. The capacity status reason
 was `cleanup_pending`, with `setup_required` also present. The earlier
 7.6-second run submitted Disconnect after Scale In and did not capture when
@@ -267,7 +267,25 @@ claim the job. It logs status, attempt, phase, and code on transitions and
 still requires verified absence. Within the attempt, deletion checks back
 off from 2 seconds to at most 30 seconds. If deletion is still settling at
 the first unresolved check after the 10-minute drain deadline, the job
-requires action with `CF_CLEANUP_PENDING`.
+requires action with `CF_CLEANUP_PENDING`. Both live jobs finished as
+`succeeded` with the final progress message `Completed`.
+
+A managed primary can still be constrained by an explicit shared cap while
+Cloudflare deletions remain unverified. Status reports
+`primary_limited_by_cloudflare_cleanup` when completing those deletions
+would open primary room, and points to the Scale In or Disconnect job for
+recovery. The shared cap continues to count the outstanding resources.
+
+Reconcile uses the Enable connector wait when it enters the provisioning
+path. This is intentional. Reconcile can admit a new deployment, so it must
+verify the same projected token and attached session. A connector that
+remains unready after the 180-second wait ends that job with non-retryable
+`CF_CONNECTOR_UNAVAILABLE`. A later explicit replay can reuse the
+journaled connector credential. The readiness probe releases its database
+transaction before reading connector sessions, so a slow provider read
+cannot block Secret projection. It rechecks the job, installation, and
+token versions before recording the observation. Rotation evicts superseded
+sessions under the existing fence after the new token is projected.
 
 Strict kubeconform validated all 23 adapted manifests in each replay. Both
 replays removed the namespace and connector workload, then verified that

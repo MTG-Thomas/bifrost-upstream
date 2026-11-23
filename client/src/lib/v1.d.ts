@@ -16845,7 +16845,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "setup_required" | "workflow_review_required" | "waiting_for_demand" | "primary_has_capacity" | "primary_capacity_unverified" | "waiting_for_launch_gate" | "tenant_limit_reached" | "installation_slots_full" | "spend_guard_closed" | "cleanup_pending" | "cloudflare_capacity_unavailable" | "release_mismatch" | "connector_unavailable" | "eligible_for_overflow";
+            code: "setup_required" | "workflow_review_required" | "waiting_for_demand" | "primary_has_capacity" | "primary_capacity_unverified" | "waiting_for_launch_gate" | "tenant_limit_reached" | "installation_slots_full" | "spend_guard_closed" | "cleanup_pending" | "cloudflare_capacity_unavailable" | "release_mismatch" | "connector_unavailable" | "eligible_for_overflow" | "primary_limited_by_cloudflare_cleanup";
             /** Label */
             label: string;
             /** Remedy */

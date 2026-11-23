@@ -2,7 +2,6 @@
 
 import asyncio
 import secrets
-from asyncio import sleep
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -204,8 +203,22 @@ async def _wait_for_connector(
             if row is None:
                 return False
             tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
-            if await cloudflare_tunnel.connector_ready(db, row, tunnel):
-                return True
+            item = await cloudflare_tunnel.connector_resource(db, row)
+            provider_id = item.provider_id
+            fence = (item.id, row.api_token_version, row.tunnel_token_version, row.tunnel_token_projected_version)
+        assert provider_id is not None
+        # Let the projector lock the installation while the provider read is in flight.
+        connectors = await tunnel.connectors(provider_id)
+        async with get_db_context() as db:
+            row = await load_current(db)
+            if row is None:
+                return False
+            item = await cloudflare_tunnel.connector_resource(db, row)
+            current = (item.id, row.api_token_version, row.tunnel_token_version, row.tunnel_token_projected_version)
+            if item.provider_id == provider_id and fence == current:
+                # Eviction is a fenced write and only runs after this version is projected.
+                if await cloudflare_tunnel.record_connector_readiness(row, item, tunnel, connectors):
+                    return True
         now = monotonic()
         if deadline is None:
             # One minute to sync, one for cache propagation, and one to attach.
@@ -213,9 +226,8 @@ async def _wait_for_connector(
         remaining = deadline - now
         if remaining <= 0:
             raise PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Managed Tunnel Connector Did Not Become Ready")
-        # Commit the observation and release the lease and installation locks
-        # between checks so the API can publish the Secret.
-        await sleep(min(5, remaining))
+        # The job retains its lease. The transaction locks are released before waiting.
+        await asyncio.sleep(min(5, remaining))
 
 
 async def _cleanup_one(

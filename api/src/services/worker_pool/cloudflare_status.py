@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -28,7 +29,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareOwnedResource,
     CloudflareWorkerReservation,
 )
-from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
+from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.work_dispatches import WorkDispatch
@@ -45,7 +46,13 @@ from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIE
 from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
 from src.services.worker_pool.cloudflare_provisioning import ObservationCheck, OwnershipCheck, OwnershipResource
 from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admission, tenant_key
-from src.services.worker_pool.controller import Request, linux_capacity_budgets, take_first_budget, waiting_capacity_rows
+from src.services.worker_pool.controller import (
+    Request,
+    linux_capacity_budgets,
+    shared_managed_worker_usage,
+    take_first_budget,
+    waiting_capacity_rows,
+)
 from src.services.worker_pool.demand import pending_local_platform_job_ids
 from src.services.worker_pool.eligibility import cloudflare_dispatch_sql
 from src.services.worker_pool.external_client import CapacityProtocolCheck
@@ -78,6 +85,10 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
     "tenant_limit_reached": ("Tenant Limit Reached", "Wait for tenant slots to release or review the per-tenant limit."),
     "installation_slots_full": ("Installation Slots Full", "Wait for capacity to retire or review the installation limits."),
     "spend_guard_closed": ("Spend Guard Closed", "Verify the ledger and review the monthly limit or wait for the UTC reset."),
+    "primary_limited_by_cloudflare_cleanup": (
+        "Primary Limited by Cloudflare Cleanup",
+        "Open the Scale In or Disconnect job. Follow its recovery instructions if it requires action.",
+    ),
     "cleanup_pending": ("Cleanup Pending", "Run Scale In to verify retirement or finish an outstanding Disconnect."),
     "cloudflare_capacity_unavailable": (
         "Cloudflare Capacity Unavailable", "Wait for the controller to observe provider capacity again, then check deployment status.",
@@ -289,6 +300,24 @@ def placement_blockers(
     if job_code == "CF_PROVIDER_UNAVAILABLE":
         blockers.append(reason("cloudflare_capacity_unavailable", cooldown_until))
     return blockers
+
+
+async def primary_cleanup_limited(db: AsyncSession) -> bool:
+    settings = get_settings()
+    if not (os.environ.get("KUBERNETES_SERVICE_HOST") or (settings.worker_capacity_url and settings.worker_capacity_token)):
+        return False
+    managed_ids = set(await db.scalars(select(ExecutionWorker.id).where(
+        ExecutionWorker.form.in_(MANAGED_WORKER_FORMS), ExecutionWorker.state.in_(LIVE_STATES),
+    )))
+    cap, pinned, cleanup = await shared_managed_worker_usage(db, managed_ids)
+    if cap is None or not cleanup:
+        return False
+    limit = (await load_kubernetes_policy(db)).max_workers
+    primary_room = max(0, limit - len(managed_ids - pinned))
+    occupied = managed_ids | pinned
+    room = min(primary_room, max(0, cap - len(occupied)))
+    room_after_cleanup = min(primary_room, max(0, cap - len(occupied - cleanup)))
+    return room < room_after_cleanup
 
 
 async def overflow_status(

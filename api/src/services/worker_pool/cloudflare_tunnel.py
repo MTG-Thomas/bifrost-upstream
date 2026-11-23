@@ -262,13 +262,25 @@ async def verify_management_writes(
         record.observed_at = datetime.now(UTC)
 
 
-async def connector_ready(db: AsyncSession, row: CloudflareInstallation, client: TunnelRest) -> bool:
+async def connector_resource(db: AsyncSession, row: CloudflareInstallation) -> CloudflareOwnedResource:
     item = await resource(db, row, TUNNEL)
     if item is None or item.provider_id is None:
         raise ObservationPending(
             "The recorded Cloudflare tunnel is absent", OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ABSENT,
         )
+    return item
+
+
+async def connector_ready(db: AsyncSession, row: CloudflareInstallation, client: TunnelRest) -> bool:
+    item = await connector_resource(db, row)
+    assert item.provider_id is not None
     connectors = await client.connectors(item.provider_id)
+    return await record_connector_readiness(row, item, client, connectors)
+
+
+async def record_connector_readiness(
+    row: CloudflareInstallation, item: CloudflareOwnedResource, client: TunnelRest, connectors: frozenset[str],
+) -> bool:
     rotating = item.provider_details.get("rotation_version") == row.tunnel_token_version
     excluded = set(item.provider_details.get("rotation_previous_connectors", [])) if rotating else set()
     if rotating and excluded and row.tunnel_token_projected_version == row.tunnel_token_version:
@@ -277,7 +289,7 @@ async def connector_ready(db: AsyncSession, row: CloudflareInstallation, client:
             raise OwnershipConflict("Managed Tunnel rotation has no exact receipt")
         if connectors & excluded:
             await client.evict_connectors(receipt, excluded)
-            connectors = await client.connectors(item.provider_id)
+            connectors = await client.connectors(receipt.provider_id)
     ready = (
         bool(connectors) and not (connectors & excluded)
         and row.tunnel_token_version is not None
