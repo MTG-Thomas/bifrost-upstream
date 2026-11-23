@@ -266,6 +266,8 @@ async def _container_controller_reason(installation: CloudflareInstallation) -> 
         return None
     data = json.loads(value)
     code = data.get("placement_code")
+    if code is None and data.get("cooldown"):
+        return reason("cloudflare_capacity_unavailable", datetime.fromisoformat(data["cooldown"]))
     if code not in ("container_allocation_cooldown", "container_receipt_limit", "cleanup_pending"):
         return None
     retry = data.get("next_eligible_at")
@@ -422,8 +424,8 @@ async def overflow_status(
             primary_saturated=saturated, primary_cause=cause, minimum_demand=depth,
             aged_demand=sum(row.created_at <= cutoff for row in unblocked),
             tenant_blocked=len(unblocked) < len(overflow), installation_full=full,
-            cooldown_until=cooldown if cooldown is not None and cooldown > now else None,
-            provider_unavailable=cooldown is not None and not any(
+            cooldown_until=cooldown if lane == "workers" and cooldown is not None and cooldown > now else None,
+            provider_unavailable=lane == "workers" and cooldown is not None and not any(
                 blocker.code == "cloudflare_capacity_unavailable" for blocker in blockers
             ),
         )
