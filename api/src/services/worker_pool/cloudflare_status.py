@@ -110,6 +110,12 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
 }
 
 
+TUNNEL_VERIFICATION_CHANGED_REMEDY = (
+    "Check that the current connector credential is projected and the connector is attached. "
+    "Once rotation and projection have settled, run Reconcile again."
+)
+
+
 def reason(code: CloudflarePlacementCode, at: datetime | None = None) -> CloudflarePlacementReason:
     label, remedy = PLACEMENT[code]
     return CloudflarePlacementReason(code=code, label=label, remedy=remedy, next_eligible_at=at)
@@ -134,10 +140,7 @@ def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | Non
         "CF_CLEANUP_SETTLING": PLACEMENT["cleanup_pending"][1],
         "CF_PRIOR_WORKERS_LIVE": PLACEMENT["cleanup_pending"][1],
         "CF_PROVIDER_UNAVAILABLE": PLACEMENT["cloudflare_capacity_unavailable"][1],
-        "CF_TUNNEL_VERIFICATION_CHANGED": (
-            "Check that the current connector credential is projected and the connector is attached. "
-            "Once rotation and projection have settled, run Reconcile again."
-        ),
+        "CF_TUNNEL_VERIFICATION_CHANGED": TUNNEL_VERIFICATION_CHANGED_REMEDY,
     }
     if not isinstance(code, str) or code not in remedies:
         return None
@@ -304,7 +307,12 @@ def placement_blockers(
         blockers.append(reason("cleanup_pending"))
     if not spend_ready:
         blockers.append(reason("spend_guard_closed"))
-    if connector_session in ("waiting_for_projection", "disconnected") or job_code == "CF_CONNECTOR_UNAVAILABLE":
+    if job_code == "CF_TUNNEL_VERIFICATION_CHANGED":
+        blockers.append(CloudflarePlacementReason(
+            code="connector_unavailable", label="Managed Tunnel Verification Changed",
+            remedy=TUNNEL_VERIFICATION_CHANGED_REMEDY,
+        ))
+    elif connector_session in ("waiting_for_projection", "disconnected") or job_code == "CF_CONNECTOR_UNAVAILABLE":
         blockers.append(reason("connector_unavailable"))
     if job_code == "CF_PROVIDER_UNAVAILABLE":
         blockers.append(reason("cloudflare_capacity_unavailable", cooldown_until))

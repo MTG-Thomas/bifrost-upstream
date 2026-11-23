@@ -1523,8 +1523,10 @@ def _running_tunnel_job(
     ("disconnected", "CF_CONNECTOR_UNAVAILABLE"),
     ("projection_completed", None),
     ("projection_completed_final", "CF_TUNNEL_VERIFICATION_CHANGED"),
-    ("disconnected_final", "CF_TUNNEL_VERIFICATION_CHANGED"),
+    ("disconnected_final", "CF_CONNECTOR_UNAVAILABLE"),
     ("credential_denied", "CF_MANAGEMENT_CREDENTIAL"),
+    ("credential_denied_final", "CF_MANAGEMENT_CREDENTIAL"),
+    ("inventory_unverified_final", "CF_DEPLOYMENT_UNVERIFIED"),
     ("credential_replaced", None),
     ("ownership", "CF_OWNERSHIP_CONFLICT"),
     ("repair", "CF_TUNNEL_INGRESS_MISMATCH"),
@@ -1539,8 +1541,11 @@ def _running_tunnel_job(
 async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_projection, monkeypatch, race, code) -> None:
     sessions, token_file, installation_id, provider = managed_tunnel_for_projection
     payload = lifecycle_job.CloudflareReconcilePayload(installation_id=installation_id, revision=1)
-    healthy_read = race in ("admission_superseded", "healthy_projection_changed")
-    if healthy_read or race in ("repair", "disconnected", "disconnected_final", "credential_denied", "credential_replaced"):
+    healthy_read = race in ("admission_superseded", "healthy_projection_changed", "inventory_unverified_final")
+    if healthy_read or race in (
+        "repair", "disconnected", "disconnected_final", "credential_denied", "credential_denied_final",
+        "credential_replaced",
+    ):
         assert await cloudflare_connector_channel.project_connector(None) == (installation_id, 1, 1)
     if healthy_read:
         provider.connectors = [str(uuid4())]
@@ -1611,9 +1616,12 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
                     item.provider_version = "replacement-receipt"
                 if race.endswith("admission_superseded"):
                     row.admitted_revision = None
-                if race in ("healthy_projection_changed", "disconnected_final"):
+                if race in (
+                    "healthy_projection_changed", "disconnected_final", "credential_denied_final",
+                    "inventory_unverified_final",
+                ):
                     row.tunnel_token_projected_version = 0
-            if race in ("credential_denied", "credential_replaced"):
+            if race in ("credential_denied", "credential_denied_final", "credential_replaced"):
                 return httpx.Response(403)
         return provider(request)
 
@@ -1623,6 +1631,23 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
             with pytest.raises(PlatformJobRequiresAction) as issue:
                 await reconcile
             assert issue.value.result == {"code": code}
+            if race == "disconnected_final":
+                # Persist the actual terminal outcome consumed by the scheduler.
+                now = datetime.now(UTC)
+                async with sessions.begin() as db:
+                    job = await db.get(PlatformJob, running.job_id)
+                    assert job is not None
+                    job.status, job.completed_at, job.result = "requires_action", now, issue.value.result
+                async with sessions.begin() as db:
+                    query = select(PlatformJob).where(
+                        PlatformJob.resource_id == str(installation_id), PlatformJob.id != running.job_id,
+                    )
+                    await lifecycle_job.schedule_cloudflare_reconcile(db, now=now + timedelta(minutes=4))
+                    assert await db.scalar(query) is None
+                    await lifecycle_job.schedule_cloudflare_reconcile(db, now=now + timedelta(minutes=5))
+                    followup = await db.scalar(query)
+                    assert followup is not None and followup.status == "queued"
+                    assert followup.payload["revision"] == 1 and followup.payload["operation"] == "reconcile"
         elif race in ("healthy_projection_changed", "projection_completed"):
             with pytest.raises(PlatformJobFailure) as failure:
                 await reconcile

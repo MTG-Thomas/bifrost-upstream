@@ -302,11 +302,12 @@ installation revision, tunnel and DNS receipts, and credential versions.
 A confirmed ingress or ownership problem, missing tunnel or DNS record,
 or unavailable connector closes admission for the same target. Readiness
 results require the same projection state. Reconcile retries if projection
-moves across the read. If the attempt budget is exhausted, the job reports
-`CF_TUNNEL_VERIFICATION_CHANGED`. It closes admission if the last read
-confirmed a problem, such as an unavailable connector observed after
-projection. Once the current credential has projected and the connector
-has attached, run Reconcile again.
+moves across the read. If the attempt budget is exhausted and the last
+read confirmed a problem, Reconcile closes admission and reports that
+problem's recovery code. A confirmed connector outage remains eligible
+for scheduled Reconcile after backoff. Without a confirmed problem, the
+job reports `CF_TUNNEL_VERIFICATION_CHANGED`. Once the current credential
+has projected and the connector has attached, run Reconcile again.
 Repair runs after admission closure commits and rechecks the job before
 its PUT and after readback. The `cloudflare-installation:{id}` job lock
 serializes lifecycle writers for an installation, including ingress

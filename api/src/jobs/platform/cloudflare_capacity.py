@@ -864,14 +864,12 @@ async def _settle_reconcile(
                     raise PlatformJobFailure(
                         TUNNEL_VERIFICATION_CHANGED, "Managed Tunnel Changed During Verification", retryable=True,
                     )
-                verification_changed = True
                 # An unprojected credential gives no evidence about the connector
-                # that may have attached since the read. A negative read after
-                # projection, or denial of the still-current API token, is actionable.
-                if (tunnel_snapshot.connector.projected and connectors is not None and issue is not None) or (
-                    issue is not None and issue[1] == "CF_MANAGEMENT_CREDENTIAL"
-                ):
-                    installation.admitted_revision = None
+                # that may have attached since the read. Keep other confirmed issues
+                # under their own recovery codes when closing admission.
+                verification_changed = issue is None or (
+                    issue[1] == "CF_CONNECTOR_UNAVAILABLE" and not tunnel_snapshot.connector.projected
+                )
             if current_connector and connectors is not None:
                 record.observed_at = datetime.now(UTC)
                 cloudflare_tunnel.record_connector_readiness(installation, item, tunnel_snapshot.connector, connectors)
@@ -1357,8 +1355,12 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
     ).with_for_update(skip_locked=True))
     if installation is None:
         return
-    was_admitted = installation.admitted_revision is not None
-    if not was_admitted and installation.upgrade_release is None and not installation.drain_required:
+    needs_staging = (
+        installation.admitted_revision is not None
+        or installation.upgrade_release is not None
+        or installation.drain_required
+    )
+    if not needs_staging and installation.deployed_revision is None:
         return
     active_enable = await db.scalar(select(PlatformJob.id).where(
         PlatformJob.job_type == "capacity.cloudflare_enable",
@@ -1367,8 +1369,9 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
     ).limit(1))
     if active_enable is not None:
         return
-    release, order = installed_workers_release_digest(), installed_workers_release_order()
-    await _stage_reconcile(db, installation, release=release, order=order)
+    if needs_staging:
+        release, order = installed_workers_release_digest(), installed_workers_release_order()
+        await _stage_reconcile(db, installation, release=release, order=order)
     active = await db.scalar(select(PlatformJob.id).where(
         PlatformJob.job_type == RECONCILE_JOB,
         PlatformJob.resource_id == str(installation.id),
@@ -1382,6 +1385,8 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
         PlatformJob.payload["revision"].as_integer() == installation.desired_revision,
     )
     latest = await db.scalar(history.order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
+    if not needs_staging and (latest is None or latest.status == "succeeded"):
+        return
     if latest is not None and latest.status != "succeeded":
         code = (latest.result or {}).get("code") if latest.status == "requires_action" else latest.error_code
         if (
