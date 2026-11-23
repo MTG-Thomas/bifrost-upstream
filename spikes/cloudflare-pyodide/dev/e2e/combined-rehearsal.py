@@ -133,11 +133,11 @@ if (API != f"http://{address}:{os.environ['REHEARSAL_PROVIDER_PORT']}/client/v4"
 if asyncio.run(_public_addresses("existing.example.test")) != (address,):
     raise SystemExit("Ingress probe is outside the local fixture")
 if os.getenv("REHEARSAL_CONTAINERS") == "1":
-    from src.services.worker_pool.cloudflare_activation import create_cloudflare_installation
+    from src.services.worker_pool.cloudflare_activation import load_containers_release as activation_release
     from src.services.worker_pool.cloudflare_canary import asyncio as cloudflare_asyncio
     from src.services.worker_pool.cloudflare_containers_release import load_containers_release, run_oci_tool
     if (
-        create_cloudflare_installation.__name__ != "create_opted_in"
+        activation_release is not load_containers_release
         or load_containers_release.__name__ != "local_release"
         or run_oci_tool.__name__ != "local_tool"
         or type(cloudflare_asyncio).__name__ != "LocalAsyncio"
@@ -222,7 +222,7 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
             raise RuntimeError(f"{outcome} job did not succeed")
         return result
 
-    def review_activation(self, mode):
+    def review_activation(self, mode, *, containers=False):
         if self.origin != f"http://{self.verify_isolation()}:8000":
             raise RuntimeError("The rehearsal API changed addresses. Activation is blocked.")
         account = self.account
@@ -237,6 +237,8 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
             "account_id": account, "api_token": self.cfg.get("managementToken", MANAGEMENT), "purpose": "connect",
         })
         body = {"account_id": account, "credential_ref": staged["credential_ref"], "policy": policy}
+        if containers:
+            body["containers"] = True
         if mode == "managed":
             body.update(reachability_mode="managed_tunnel", zone_id="b" * 32)
         else:
@@ -245,6 +247,12 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         plan = self.send(base + "/preflight", body)
         assert plan["preflight_receipt"] and plan["account_id"] == account
         assert plan["preview"]["policy"]["workers"]["queue_prewarm_per_tenant"] == 0
+        if containers:
+            preview = plan["preview"]
+            assert preview["containers_policy"]["enabled"]
+            assert preview["containers_policy"]["monthly_instance_hours"] == 100
+            assert Decimal(preview["containers_remaining_instance_hours"]) == 100
+            assert 0 < Decimal(preview["containers_fleet_envelope_usd"]) < Decimal(preview["fleet_envelope_usd"]) <= 75
         assert status["installation"] is None and self.install() is None
         self.host = urlsplit(plan["worker_ingress_origin"]).hostname
         self.activation_request = {
@@ -885,11 +893,11 @@ class ContainerRehearsal(Rehearsal):
         apps_path = "/client/v4/accounts/" + self.account + "/containers/applications"
         images_path = "/local/containers-registry"
         assert not self.scripts() and self.provider(apps_path) == [] and self.provider(images_path) == []
-        self.review_activation("existing")
-        # Confirm a monthly limit that covers the two standard-1 reservations.
-        self.activation_request["monthly_limit_usd"] = "1000"
+        self.review_activation("existing", containers=True)
         try:
             self.enable()
+            self.preflight()
+            self.sample_container_spend("enabled")
             installation = self.install()
             installation_id = str(UUID(installation["installation_id"]))
             revision = installation["desired_revision"]
@@ -898,25 +906,35 @@ class ContainerRehearsal(Rehearsal):
             image, = self.provider(images_path)
             assert len(scripts) == 4 and image["repository"] == application["name"]
             assert application["name"] + "-containers" in scripts
+            namespace_path = "/client/v4/accounts/" + self.account + "/workers/durable_objects/namespaces"
+            namespaces = {row["id"] for row in self.provider(namespace_path) if row.get("script") in scripts}
+            assert len(namespaces) == 6
             app_path = apps_path + "/" + application["id"]
             self.container_workflow(installation_id)
             assert self.provider(app_path)["health"]["instances"] == {"active": 0, "starting": 0}
+            self.sample_container_spend("idle-stop")
 
             self.completed(self.job("scale-in"), "scaled_in")
             assert not self.install()["admission_open"]
             assert self.install()["desired_revision"] == revision
             assert self.scripts() == scripts
             assert self.provider(images_path) == [image] and self.provider(apps_path) == [application]
+            assert self.provider(app_path)["health"]["instances"] == {"active": 0, "starting": 0}
+            assert namespaces == {row["id"] for row in self.provider(namespace_path) if row.get("script") in scripts}
+            self.sample_container_spend("scale-in")
             evidence("container-scale-in", {"revision": revision, "retained_scripts": len(scripts)})
 
             self.enable()
             assert self.install()["desired_revision"] == revision
             assert self.scripts() == scripts and self.provider(images_path) == [image]
             assert self.provider(app_path)["id"] == application["id"]
+            assert namespaces == {row["id"] for row in self.provider(namespace_path) if row.get("script") in scripts}
             canaries = self.sql(f"""SELECT count(*) FROM cloudflare_worker_reservations
                 WHERE installation_id='{installation_id}' AND scope='containers'
                   AND canary_job_id IS NOT NULL AND container_stopped_at IS NOT NULL""")
             assert canaries == 2
+            self.sample_container_spend("scale-out")
+            self.meter()
             evidence("container-scale-out", {"revision": revision, "canaries_settled": canaries})
         except (AssertionError, RuntimeError, TimeoutError):
             evidence("container-provider-observations", {"observations": self.provider("/local/evidence")})
@@ -930,6 +948,15 @@ class ContainerRehearsal(Rehearsal):
         self.provider(app_path, status=404)
         assert self.provider(apps_path) == [] and self.provider(images_path) == [] and not self.scripts()
         evidence("container-disconnect", {"applications": 0, "images": 0, "scripts": 0})
+
+    def sample_container_spend(self, stage):
+        installation = self.install()
+        status = installation["spend"]
+        assert status["state"] == "ready" and status["estimated_usd"] is not None
+        amount = Decimal(status["estimated_usd"])
+        remaining = Decimal(installation["containers_remaining_instance_hours"])
+        assert 0 <= amount < Decimal("0.50") and 0 <= remaining < 100
+        evidence("container-spend", {"checkpoint": stage, "estimated_usd": str(amount), "hours_remaining": str(remaining)})
 
     def container_workflow(self, installation_id):
         provider, = [org for org in self.send("/api/organizations", method="GET") if org["is_provider"]]

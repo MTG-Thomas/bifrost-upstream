@@ -110,30 +110,6 @@ def configure_release(module):
     module.load_containers_release = local_release
 
 
-def configure_activation(module):
-    from src.models.orm.cloudflare_capacity import CloudflareInstallation
-    from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
-
-    create = module.create_cloudflare_installation
-
-    async def create_opted_in(db, **payload):
-        assert payload["account_id"] == ACCOUNT and payload["verified_api_token"].get_secret_value() == MANAGEMENT_TOKEN
-        installation_id = await create(db, **payload)
-        installation = await db.get(CloudflareInstallation, installation_id)
-        assert installation is not None
-        # The public opt-in contract is added later. This private fixture
-        # supplies the choice atomically before Activate enqueues Enable.
-        installation.containers_policy = ContainersPolicy(
-            enabled=True, installation_instances=2, idle_seconds=120,
-            start_timeout_seconds=20, lifetime_seconds=300, queue_wait_seconds=1, queue_depth=1,
-            ingress_bytes=250_000, outbound_bytes=250_000,
-        ).model_dump(mode="json")
-        await db.flush()
-        return installation_id
-
-    module.create_cloudflare_installation = create_opted_in
-
-
 def configure_challenge(module):
     class LocalAsyncio:
         def __getattr__(self, name):
@@ -156,7 +132,6 @@ def configure_challenge(module):
 
 HOOKS = {
     "src.services.worker_pool.cloudflare_containers_release": configure_release,
-    "src.services.worker_pool.cloudflare_activation": configure_activation,
     "src.services.worker_pool.cloudflare_canary": configure_challenge,
 }
 

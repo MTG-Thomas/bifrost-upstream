@@ -94,9 +94,10 @@ python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py --containers-onl
 ```
 
 This rehearsal starts with empty script, registry and application
-inventories. The local fixture supplies the pilot opt-in before Activate
-enqueues Enable and pins one Linux workflow through the private review
-model. The release and OCI tool fixture checks the exact package inputs
+inventories. Preflight requests the public Containers opt-in and checks the
+budget preview before Activate enqueues Enable. The local fixture pins
+one Linux workflow through the private review model. The release and OCI
+tool fixture checks the exact package inputs
 and records the registry mutations locally. Pinned Miniflare runs the
 uploaded registry, checks signed start and stop requests, and uses Docker
 to run the paired Linux image through the exact worker ingress. Docker
