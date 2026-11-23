@@ -31,6 +31,7 @@ from src.services.worker_pool.cloudflare_containers_policy import (
 )
 from src.services.worker_pool.cloudflare_containers_release import (
     ContainersManifest,
+    ContainersReleaseFetchError,
     ContainersReleaseUnavailable,
     load_containers_release,
     verify_containers_release,
@@ -97,12 +98,17 @@ async def test_descriptor_requires_release_signer_and_exact_source(tmp_path, mon
         digest=release.manifest.workers_release_digest,
     )
     trusted = False
+    trust_metadata_available = True
 
     async def tool(executable, *args, **kwargs):
         assert executable == Path("cosign")
         if args == ("version",):
             return b"GitVersion:    v2.4.1\n"
-        assert args[:3] == ("verify-blob", "--certificate-identity", signer)
+        if args == ("initialize",):
+            if not trust_metadata_available:
+                raise ContainersReleaseUnavailable("Fixture TUF download failed")
+            return b""
+        assert args[:4] == ("verify-blob", "--certificate-identity", signer, "--offline")
         if not trusted:
             raise ContainersReleaseUnavailable("Invalid signature")
         return b""
@@ -111,6 +117,10 @@ async def test_descriptor_requires_release_signer_and_exact_source(tmp_path, mon
     with pytest.raises(ContainersReleaseUnavailable, match="Invalid signature"):
         await verify_containers_release(tmp_path, workers, cosign=Path("cosign"), signer=signer, workspace=workspace)
     trusted = True
+    trust_metadata_available = False
+    with pytest.raises(ContainersReleaseFetchError, match="Sigstore trust metadata"):
+        await verify_containers_release(tmp_path, workers, cosign=Path("cosign"), signer=signer, workspace=workspace)
+    trust_metadata_available = True
     assert (await verify_containers_release(
         tmp_path, workers, cosign=Path("cosign"), signer=signer, workspace=workspace,
     )).manifest == ContainersManifest.model_validate(data)
@@ -120,7 +130,7 @@ async def test_descriptor_requires_release_signer_and_exact_source(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_load_matched_release_follows_only_github_asset_redirects(monkeypatch) -> None:
+async def test_load_matched_release_follows_only_github_asset_redirects(tmp_path, monkeypatch) -> None:
     release, _, _ = make_release()
     module = b"export class ScopeRegistry {}"
     manifest = release.manifest.model_dump(mode="json")
@@ -134,6 +144,11 @@ async def test_load_matched_release_follows_only_github_asset_redirects(monkeypa
         manifest=SimpleNamespace(source_revision=release.manifest.source_revision, release_version="1.2.3"),
         digest=release.manifest.workers_release_digest,
     )
+    repo = "Example/Bifrost-fork"
+    signer = f"https://github.com/{repo}/.github/workflows/ci.yml@refs/tags/v1.2.3"
+    trust = tmp_path / "linux-release-signer"
+    trust.write_text(signer + "\n", encoding="ascii")
+    monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_release._SIGNER_FILE", trust)
     redirect_host = "release-assets.githubusercontent.com"
     downloads = []
 
@@ -143,7 +158,7 @@ async def test_load_matched_release_follows_only_github_asset_redirects(monkeypa
         if request.url.host == "github.com":
             asset = filename.removeprefix("cloudflare-containers-")
             assert asset in assets
-            assert request.url.path == f"/gobifrost/bifrost/releases/download/v1.2.3/cloudflare-containers-{asset}"
+            assert request.url.path == f"/{repo}/releases/download/v1.2.3/cloudflare-containers-{asset}"
             return httpx.Response(302, headers={"location": f"https://{redirect_host}/{asset}"})
         assert request.url.host == "release-assets.githubusercontent.com"
         downloads.append(filename)
@@ -153,10 +168,8 @@ async def test_load_matched_release_follows_only_github_asset_redirects(monkeypa
         assert executable == Path("/app/artifacts/cloudflare/bin/cosign")
         if args == ("version",):
             return b"GitVersion: v2.4.1\n"
-        assert args[:3] == (
-            "verify-blob", "--certificate-identity",
-            "https://github.com/gobifrost/bifrost/.github/workflows/ci.yml@refs/tags/v1.2.3",
-        )
+        if args != ("initialize",):
+            assert args[:4] == ("verify-blob", "--certificate-identity", signer, "--offline")
         return b""
 
     monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_release.run_oci_tool", tool)
@@ -165,6 +178,31 @@ async def test_load_matched_release_follows_only_github_asset_redirects(monkeypa
         assert downloads == list(assets)
         redirect_host = "other.example.test"
         with pytest.raises(ContainersReleaseUnavailable, match="Unexpected Linux release asset location"):
+            await load_containers_release(http, workers)
+        trust.write_text(signer.removesuffix("v1.2.3") + "v0.0.1", encoding="ascii")
+        with pytest.raises(ContainersReleaseUnavailable, match="does not match its release"):
+            await load_containers_release(http, workers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "error"), [
+    (None, ContainersReleaseFetchError),
+    (503, ContainersReleaseFetchError),
+    (404, ContainersReleaseUnavailable),
+])
+async def test_release_fetch_distinguishes_transport_from_missing_assets(tmp_path, monkeypatch, status, error):
+    trust = tmp_path / "linux-release-signer"
+    trust.write_text("https://github.com/example/bifrost/.github/workflows/ci.yml@refs/tags/v1.0.0\n", encoding="ascii")
+    monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_release._SIGNER_FILE", trust)
+    workers = SimpleNamespace(manifest=SimpleNamespace(release_version="1.0.0"))
+
+    def fetch(request):
+        if status is None:
+            raise httpx.ReadTimeout("Fixture network failure", request=request)
+        return httpx.Response(status)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(fetch)) as http:
+        with pytest.raises(error):
             await load_containers_release(http, workers)
 
 

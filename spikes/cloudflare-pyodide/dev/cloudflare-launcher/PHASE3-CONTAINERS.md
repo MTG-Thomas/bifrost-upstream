@@ -26,7 +26,13 @@ manifest digest, signature and provenance, approved instance types, startup
 entrypoint, control/SDK protocol versions, ingress contract, meter bounds and
 provider module digests in the matched release descriptor. Build and sign once
 in release CI. Verify signer, source and digest before reading registry
-credentials. Keep builds, pushes and signing authority outside Cloudflare.
+credentials. The API image records its release repository, workflow and
+tag as one exact signer identity at build time. That identity determines the
+asset URL and the Sigstore verification policy. A temporary asset or trust
+metadata fetch failure retries through the existing PlatformJob policy and
+preserves previously verified admission. A bad signature or mismatched
+release closes joint admission. Keep builds, pushes and signing authority
+outside Cloudflare.
 
 Extend `cloudflare_release` and the existing provisioning adapter. Use the
 qualified daemonless OCI client with a pinned version and short-lived

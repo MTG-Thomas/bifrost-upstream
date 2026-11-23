@@ -5,6 +5,7 @@ import base64
 import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -1157,6 +1158,111 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
         CloudflareOwnedResource.installation_id == installation.id,
         CloudflareOwnedResource.kind == "container_application",
     )) == "absent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["fetch", "signature", "wrong_digest", "ready", "readiness_lost"])
+async def test_opted_in_enable_admits_only_the_verified_revision(db_session, installation, monkeypatch, scenario) -> None:
+    from src.services.worker_pool.cloudflare_containers_release import ContainersReleaseFetchError, ContainersReleaseUnavailable
+
+    revision = installation.desired_revision
+    release, _, _ = make_release()
+    installation.desired_state = "enabled"
+    installation.containers_policy = {"enabled": True}
+    installation.containers_ready_revision = revision
+    installation.containers_release_digest = release.digest
+    if scenario in ("fetch", "signature", "wrong_digest"):
+        installation.admitted_revision = revision
+    app = app_journal(installation, release.digest, datetime.now(UTC))
+    db_session.add_all([app, CloudflareCapacityScope(
+        installation_id=installation.id, scope="containers", deployment_revision=revision,
+        endpoint="https://containers.example.test", bearer_version=revision,
+    )])
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def transaction():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    async def locked_current(session, _context, payload):
+        return await session.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+
+    async def probe(origin, **_kwargs):
+        # Model the independently verified readiness disappearing after deployment.
+        if scenario == "readiness_lost":
+            async with transaction() as session:
+                live_app = await session.get(CloudflareOwnedResource, app.id)
+                assert live_app is not None
+                live_app.state = "absent"
+        return ingress_probes.WorkerIngressProbeResult(
+            origin, True, True, True, (ingress_probes.RouteProbe("GET", "/api/sdk/context", 401, True),),
+            runtime_canary=ingress_probes.RuntimeCanary(True, True),
+        )
+
+    workers_release = SimpleNamespace(digest=installation.policy["bounds_release"], manifest=SimpleNamespace(
+        release_version="1.0.0", release_sequence=1,
+        meter_bounds=SimpleNamespace(qualification=SimpleNamespace(expected_cpu_ms={"capacity": 9})),
+    ))
+    loader = AsyncMock(return_value=release, side_effect={
+        "fetch": ContainersReleaseFetchError("Fixture network error"),
+        "signature": ContainersReleaseUnavailable("Fixture signature failure"),
+    }.get(scenario))
+    if scenario == "wrong_digest":
+        loader.return_value = replace(release, digest="f" * 64)
+
+    workers_deployments = {}
+
+    async def create(*, api_token, intent, scope_bearer):
+        workers_deployments[intent.target.name] = ResourceObservation(intent, str(uuid4()), str(uuid4()))
+
+    provisioner = SimpleNamespace(
+        observe=AsyncMock(side_effect=lambda *, api_token, intent: workers_deployments.get(intent.target.name)),
+        create=AsyncMock(side_effect=create),
+        configure_endpoint=AsyncMock(side_effect=lambda *, api_token, expected: ConfiguredWorkersScript(
+            "https://capacity.example.test" if expected.intent.target.name.endswith("-capacity") else None, {},
+        )),
+    )
+    monkeypatch.setattr(enable_job, "get_db_context", transaction)
+    monkeypatch.setattr(enable_job, "_locked_current", locked_current)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    monkeypatch.setattr(enable_job, "load_containers_release", loader)
+    paid = AsyncMock()
+    monkeypatch.setattr(enable_job, "WorkersRestCleanup", lambda _: SimpleNamespace(verify_workers_paid=paid))
+    monkeypatch.setattr(enable_job, "_drain_previous_revision", AsyncMock(return_value=True))
+    provision = AsyncMock(return_value=True)
+    monkeypatch.setattr(enable_job, "_provision_container_application", provision)
+    monkeypatch.setattr(enable_job, "WorkersRestProvisioner", lambda *_: provisioner)
+    monkeypatch.setattr(enable_job, "probe_worker_ingress", probe)
+
+    payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=revision)
+    running = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: pytest.fail("unexpected provider request"))) as http:
+        if scenario == "ready":
+            assert await enable_job._settle_enable(running, payload, http, workers_release) == {
+                "outcome": "enabled", "http_connections": [],
+            }
+        elif scenario == "fetch":
+            with pytest.raises(PlatformJobFailure) as exc:
+                await enable_job._settle_enable(running, payload, http, workers_release, repair_tunnel_ingress=True)
+            assert exc.value.code == "CF_CONTAINERS_RELEASE_FETCH" and exc.value.retryable
+        else:
+            with pytest.raises(PlatformJobRequiresAction) as exc:
+                await enable_job._settle_enable(running, payload, http, workers_release)
+            assert exc.value.result["code"] == (
+                "CF_CONTAINERS_UNVERIFIED" if scenario == "readiness_lost" else "CF_CONTAINERS_RELEASE_UNAVAILABLE"
+            )
+        loader.assert_awaited_once_with(http, workers_release)
+    await db_session.refresh(installation)
+    assert installation.admitted_revision == (revision if scenario in ("ready", "fetch") else None)
+    if scenario in ("ready", "readiness_lost"):
+        provision.assert_awaited_once()
+        assert provisioner.create.await_count == 3
+    else:
+        paid.assert_not_awaited()
+        provision.assert_not_awaited()
 
 
 @pytest.mark.asyncio

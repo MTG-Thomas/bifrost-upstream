@@ -23,8 +23,10 @@ _OCI_MEDIA_TYPES = {
     "application/vnd.oci.image.manifest.v1+json",
     "application/vnd.docker.distribution.manifest.v2+json",
 }
-_RELEASE_ROOT = "https://github.com/gobifrost/bifrost/releases/download"
-_SIGNING_WORKFLOW = "https://github.com/gobifrost/bifrost/.github/workflows/ci.yml"
+_SIGNER_FILE = Path("/app/artifacts/cloudflare/linux-release-signer")
+_RELEASE_SIGNER = re.compile(
+    r"https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9_.-]+)/\.github/workflows/ci\.yml@refs/tags/([^/\s]+)"
+)
 _RELEASE_FILES = {
     "manifest.json": 1024 * 1024,
     "manifest.sigstore.json": 1024 * 1024,
@@ -36,6 +38,10 @@ _COSIGN = Path("/app/artifacts/cloudflare/bin/cosign")
 
 class ContainersReleaseUnavailable(Exception):
     """The image, signed declaration or matched release cannot be verified."""
+
+
+class ContainersReleaseFetchError(Exception):
+    """The release assets or Sigstore trust metadata could not be fetched."""
 
 
 class ContainerRates(BaseModel):
@@ -133,7 +139,7 @@ async def verify_containers_release(
     path: Path, workers: WorkersRelease, *, cosign: Path, signer: str, workspace: Path,
 ) -> VerifiedContainerRelease:
     """Verify trusted CI identity before any registry credential is requested."""
-    if not re.fullmatch(r"https://github\.com/[^/]+/[^/]+/\.github/workflows/[^@]+@refs/tags/[^\s]+", signer):
+    if _RELEASE_SIGNER.fullmatch(signer) is None:
         raise ContainersReleaseUnavailable("Expected an exact trusted release workflow identity")
     version = await run_oci_tool(cosign, "version", cwd=workspace)
     if re.findall(rb"(?m)^GitVersion:[ \t]*(\S+)[ \t]*\r?$", version) != [b"v2.4.1"]:
@@ -143,19 +149,25 @@ async def verify_containers_release(
         bundle = (path / "manifest.sigstore.json").read_bytes()
         if max(len(content), len(bundle)) > 1024 * 1024:
             raise ValueError
-        (workspace / "manifest.json").write_bytes(content)
-        (workspace / "manifest.sigstore.json").write_bytes(bundle)
-        await run_oci_tool(
-            cosign, "verify-blob", "--certificate-identity", signer,
-            "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
-            "--bundle", "manifest.sigstore.json", "manifest.json", cwd=workspace,
-        )
         manifest = ContainersManifest.model_validate_json(content)
         if manifest.source_revision != workers.manifest.source_revision or manifest.workers_release_digest != workers.digest:
             raise ValueError
         for name, digest in manifest.provider_modules.items():
             if sha256((path / name).read_bytes()).hexdigest() != digest:
                 raise ValueError
+        (workspace / "manifest.json").write_bytes(content)
+        (workspace / "manifest.sigstore.json").write_bytes(bundle)
+        # Populate a private, trust-checked TUF cache first. A failed fetch
+        # must be distinguishable from a rejected release signature.
+        try:
+            await run_oci_tool(cosign, "initialize", cwd=workspace)
+        except ContainersReleaseUnavailable:
+            raise ContainersReleaseFetchError("Sigstore trust metadata is unavailable") from None
+        await run_oci_tool(
+            cosign, "verify-blob", "--certificate-identity", signer, "--offline",
+            "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+            "--bundle", "manifest.sigstore.json", "manifest.json", cwd=workspace,
+        )
     except (OSError, ValueError, ValidationError):
         raise ContainersReleaseUnavailable("Container release descriptor or source pin is invalid") from None
     return VerifiedContainerRelease(manifest, sha256(content).hexdigest())
@@ -189,6 +201,14 @@ async def _download_release_asset(
 async def load_containers_release(http: httpx.AsyncClient, workers: WorkersRelease) -> VerifiedContainerRelease:
     """Install the signed assets published with this exact API image's Workers release."""
     tag = f"v{workers.manifest.release_version}"
+    try:
+        signer = _SIGNER_FILE.read_text(encoding="ascii").removesuffix("\n")
+    except (OSError, UnicodeError):
+        raise ContainersReleaseUnavailable("The API image has no trusted Linux release signer") from None
+    binding = _RELEASE_SIGNER.fullmatch(signer)
+    if binding is None or binding[2] != tag or any(part in (".", "..") for part in binding[1].split("/")):
+        raise ContainersReleaseUnavailable("The API image Linux release signer does not match its release")
+    release_root = f"https://github.com/{binding[1]}/releases/download/{tag}"
     with TemporaryDirectory(prefix="bifrost-linux-release-") as temporary:
         root = Path(temporary)
         source = root / "assets"
@@ -198,11 +218,17 @@ async def load_containers_release(http: httpx.AsyncClient, workers: WorkersRelea
         try:
             for name, limit in _RELEASE_FILES.items():
                 await _download_release_asset(
-                    http, httpx.URL(f"{_RELEASE_ROOT}/{tag}/cloudflare-containers-{name}"), source / name, limit,
+                    http, httpx.URL(f"{release_root}/cloudflare-containers-{name}"), source / name, limit,
                 )
             return await verify_containers_release(
                 source, workers, cosign=_COSIGN,
-                signer=f"{_SIGNING_WORKFLOW}@refs/tags/{tag}", workspace=workspace,
+                signer=signer, workspace=workspace,
             )
-        except (httpx.HTTPError, OSError, KeyError, ValueError):
+        except httpx.RequestError:
+            raise ContainersReleaseFetchError("The matched Cloudflare Linux release could not be fetched") from None
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (408, 429) or exc.response.status_code >= 500:
+                raise ContainersReleaseFetchError("The matched Cloudflare Linux release could not be fetched") from None
+            raise ContainersReleaseUnavailable("The matched Cloudflare Linux release is unavailable") from None
+        except (OSError, KeyError, ValueError):
             raise ContainersReleaseUnavailable("The matched Cloudflare Linux release is unavailable") from None
