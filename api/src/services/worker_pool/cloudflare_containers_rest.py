@@ -29,7 +29,12 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ResourceObservation,
     observe_owned,
 )
-from src.services.worker_pool.cloudflare_workers_rest import WorkersRestCleanup
+from src.services.worker_pool.cloudflare_workers_rest import (
+    CloudflareManagementDenied,
+    CloudflareRestObservation,
+    CloudflareRestUnavailable,
+    WorkersRestCleanup,
+)
 
 REGISTRY = "registry.cloudflare.com"
 _HEX32 = re.compile(r"[a-f0-9]{32}")
@@ -52,6 +57,14 @@ def _name(intent: ResourceIntent, kind: str) -> str:
         raise OwnershipConflict("Container target does not match its installation and revision",
                                 OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_BINDING)
     return name
+
+
+class ContainerApplicationCreateRejected(Exception):
+    """The POST was rejected before an application could be created."""
+
+    def __init__(self, failure: CloudflareManagementDenied | CloudflareRestObservation | CloudflareRestUnavailable) -> None:
+        super().__init__("Cloudflare rejected Container application creation")
+        self.failure = failure
 
 
 class ContainersRest(WorkersRestCleanup):
@@ -133,7 +146,11 @@ class ContainersRest(WorkersRestCleanup):
             raise OwnershipConflict("Container journal lacks a valid application identity",
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
         path = "containers/applications"
-        rows = await self._inventory(token, account, path, name=name)
+        inventory = await self._inventory(token, account, path, name=name)
+        if any(not isinstance(row.get("name"), str) for row in inventory):
+            raise ObservationPending("Container inventory is missing application names",
+                                     OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
+        rows = [row for row in inventory if row["name"] == name]
         if len(rows) > 1:
             raise OwnershipConflict("Multiple Container applications match the name",
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.MULTIPLE_OCCUPANTS)
@@ -181,42 +198,27 @@ class ContainersRest(WorkersRestCleanup):
             raise DeletionSettling("Container application is still visible",
                                    OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
 
-    async def application(
-        self, token: SecretStr, intent: ResourceIntent, namespace: str, *, previously_sent: bool,
-        recorded_id: str | None = None,
-    ) -> ResourceObservation:
-        """Resolve an existing write intent before issuing any create."""
+    async def create_application(self, token: SecretStr, intent: ResourceIntent, namespace: str) -> ResourceObservation:
+        """Send the already-journaled POST. The caller independently observes the result."""
         name = _name(intent, "container_application")
         account = intent.target.account_id
         if not _HEX32.fullmatch(namespace):
             raise OwnershipConflict("Container namespace is invalid",
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.NAMESPACE_CLASS)
-        path = "containers/applications"
-        rows = await self._inventory(token, account, path, name=name)
-        if rows:
-            if len(rows) != 1 or not previously_sent:
-                raise OwnershipConflict("Container application name is occupied",
-                                        OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_OCCUPIED)
-            app_id = self._application(rows[0], account, name, namespace)
-        elif previously_sent:
-            raise ObservationPending("Earlier Container create has no confirmed application",
-                                     OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE)
-        else:
-            result = await self._request(token, account, "POST", path, json_body={
+        try:
+            result = await self._request(token, account, "POST", "containers/applications", json_body={
                 "name": name, "scheduling_policy": "durable_object",
                 "durable_objects": {"namespace_id": namespace},
             })
-            assert result is not None
-            app_id = self._application(result["result"], account, name, namespace)
-        if recorded_id is not None and app_id != recorded_id:
-            raise OwnershipConflict("Container application ID differs from its journal",
-                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
-        current = await self._request(token, account, "GET", f"{path}/{app_id}")
-        assert current is not None
-        if self._application(current["result"], account, name, namespace) != app_id:
-            raise OwnershipConflict("Container application ID changed",
-                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
-        return ResourceObservation(intent, app_id, namespace)
+        except (CloudflareManagementDenied, CloudflareRestObservation, CloudflareRestUnavailable) as exc:
+            if isinstance(exc, CloudflareManagementDenied) or exc.status_code in (400, 429):
+                raise ContainerApplicationCreateRejected(exc) from None
+            if exc.status_code == 409:
+                raise ObservationSettling("Waiting to read back the occupied Container name",
+                                          OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE) from None
+            raise
+        assert result is not None
+        return ResourceObservation(intent, self._application(result["result"], account, name, namespace), namespace)
 
     async def observe_instance_stop(
         self, token: SecretStr, application: ResourceObservation, *, instance_id: str,

@@ -425,17 +425,18 @@ async def test_opaque_application_readback_and_ambiguous_create_use_exact_invent
     def provider(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if request.url.path.endswith("/applications"):
-            return httpx.Response(200, json={"success": True, "result": [row]})
+            extended_name = {**row, "id": "e" * 32, "name": f"{name}0"}
+            return httpx.Response(200, json={"success": True, "result": [row, extended_name]})
         assert request.url.path.endswith(f"/{APP}")
         return httpx.Response(200, json={"success": True, "result": row})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         adapter = ContainersRest(http)
-        result = await adapter.application(TOKEN, intent, NAMESPACE, previously_sent=True)
-        assert result.provider_id == APP
+        result = await adapter.observe_application(TOKEN, intent, NAMESPACE)
+        assert result is not None and result.provider_id == APP
         assert all(request.method == "GET" for request in requests)
         with pytest.raises(OwnershipConflict):
-            await adapter.application(TOKEN, intent, "d" * 32, previously_sent=True)
+            await adapter.observe_application(TOKEN, intent, "d" * 32)
 
 
 @pytest.mark.asyncio
@@ -450,4 +451,4 @@ async def test_inventory_missing_suffix_cannot_confirm_prior_create() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         with pytest.raises(ObservationPending, match="incomplete"):
-            await ContainersRest(http).application(TOKEN, intent, NAMESPACE, previously_sent=True)
+            await ContainersRest(http).observe_application(TOKEN, intent, NAMESPACE)

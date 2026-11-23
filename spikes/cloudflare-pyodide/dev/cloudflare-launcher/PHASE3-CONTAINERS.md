@@ -490,7 +490,7 @@ The seams staged in steps 1–2 have these first callers:
 | Seam | First production use |
 | --- | --- |
 | Release CI Linux image, baked wheel manifest and signature | Step 1 release packaging. Make the GHCR `…-cloudflare-linux` package public so the trusted runner can check the source anonymously before obtaining Cloudflare registry credentials. |
-| `verify_containers_release`, `ContainerRegistry.copy` and `ContainersRest.application` | Step 4 joint provisioning verifies the pinned release, copies the owned revision tag and inventories the application. |
+| `verify_containers_release`, `ContainerRegistry.copy` and `ContainersRest.create_application` | Step 4 joint provisioning verifies the pinned release, copies the owned revision tag and inventories the application. |
 | `ScopeRegistry.reserve` | Step 3 authenticated capacity controller reserves before it requests an instance start. |
 | `reserve_container`, Linux review/source predicates and joint slot and spend accounting | Step 3 admission and bootstrap. Use the execution tenant for capacity and the workflow owner for approval and source scope. |
 

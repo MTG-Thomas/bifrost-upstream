@@ -1007,11 +1007,17 @@ async def test_enable_retracts_workers_admission_without_container_readiness(
 
 
 @pytest.mark.asyncio
-async def test_container_application_effect_survives_lost_create_and_delete_replies(
-    db_session, installation, monkeypatch,
+@pytest.mark.parametrize("create_failure", ["lost-ack", "list", 400, 401, 403, 429, "ambiguous-absent", "ack-readback"])
+async def test_container_application_effect_survives_provisioning_failures(
+    db_session, installation, monkeypatch, create_failure,
 ) -> None:
     from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
-    from src.services.worker_pool.cloudflare_workers_rest import OWNER_BINDING, worker_owner_value
+    from src.services.worker_pool.cloudflare_workers_rest import (
+        OWNER_BINDING,
+        CloudflareManagementDenied,
+        CloudflareRestObservation,
+        worker_owner_value,
+    )
 
     release, _, _ = make_release()
     installation.desired_state = "enabled"
@@ -1053,6 +1059,7 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
     placement_state = "running"
     observed_namespace = "e" * 32
     writes: list[str] = []
+    fault = create_failure
     provider_id = str(uuid4())
     application = {
         "id": provider_id, "name": name, "account_id": installation.account_id,
@@ -1060,7 +1067,7 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
     }
 
     def provider(request):
-        nonlocal present, launcher_present
+        nonlocal present, launcher_present, fault
         path = request.url.path
         if path.endswith("/workers/durable_objects/namespaces"):
             result = [{
@@ -1092,9 +1099,16 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
             assert json.loads(request.content) == {
                 key: application[key] for key in ("name", "scheduling_policy", "durable_objects")
             }
-            present = True
             writes.append("POST")
-            raise httpx.ReadTimeout("lost create acknowledgement", request=request)
+            if isinstance(fault, int):
+                status, fault = fault, None
+                return httpx.Response(status)
+            if fault in ("lost-ack", "ambiguous-absent"):
+                present = fault == "lost-ack"
+                fault = None
+                raise httpx.ReadTimeout("lost create acknowledgement", request=request)
+            present = True
+            return httpx.Response(200, json={"success": True, "result": application})
         if request.method == "DELETE":
             assert path.endswith(f"/containers/applications/{provider_id}") and present
             present = False
@@ -1102,6 +1116,9 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
             raise httpx.ReadTimeout("lost delete acknowledgement", request=request)
         if path.endswith("/applications"):
             assert request.url.params["name"] == name
+            if fault == "list" or (fault == "ack-readback" and present):
+                fault = None
+                return httpx.Response(503)
             result = [application] if present else []
         elif path.endswith(f"/{provider_id}/instances-v2"):
             result = [{
@@ -1126,8 +1143,33 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
         }
         assert not writes
         observed_namespace = namespace
-        with pytest.raises(CloudflareRestUnavailable):
+        failure = {
+            400: CloudflareRestObservation, 401: CloudflareManagementDenied, 403: CloudflareManagementDenied,
+        }.get(create_failure, CloudflareRestUnavailable)
+        with pytest.raises(failure):
             await enable_job._settle_enable(job_context, payload, http, workers_release)
+
+        journal = await db_session.scalar(select(CloudflareOwnedResource).where(
+            CloudflareOwnedResource.installation_id == installation.id,
+            CloudflareOwnedResource.kind == "container_application",
+        ))
+        if create_failure == "list":
+            assert journal is None and not writes
+        else:
+            assert journal is not None and writes == ["POST"]
+            if isinstance(create_failure, int):
+                assert journal.provider_details.get("creation_sent") is not True
+            else:
+                assert journal.provider_details.get("creation_sent") is True
+                assert (journal.provider_id == provider_id) == (create_failure == "ack-readback")
+            if create_failure == "ambiguous-absent":
+                with pytest.raises(ObservationSettling) as waiting:
+                    await enable_job._settle_enable(job_context, payload, http, workers_release)
+                assert waiting.value.check is ObservationCheck.CONTAINER_CREATE
+                assert writes == ["POST"]
+                assert journal.observed_at is not None
+                journal.observed_at -= lifecycle_job.CREATE_SETTLEMENT_WINDOW
+                await db_session.flush()
         for _ in range(2):
             with pytest.raises(PlatformJobRequiresAction) as held:
                 await enable_job._settle_enable(job_context, payload, http, workers_release)
@@ -1146,7 +1188,8 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
         assert await cleanup() == "progressed"
         with pytest.raises(lifecycle_job.DeletionSettling):
             await cleanup()
-        assert writes == ["POST"]
+        expected_posts = ["POST"] * (2 if isinstance(create_failure, int) or create_failure == "ambiguous-absent" else 1)
+        assert writes == expected_posts
         placement_state = "stopped"
         with pytest.raises(CloudflareRestUnavailable):
             await cleanup()
@@ -1154,7 +1197,7 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
         assert await cleanup() == "progressed"
         assert await cleanup() == "progressed"
         assert await cleanup() == "complete"
-    assert writes == ["POST", "DELETE", "DELETE script"]
+    assert writes == [*expected_posts, "DELETE", "DELETE script"]
     assert await db_session.scalar(select(CloudflareOwnedResource.state).where(
         CloudflareOwnedResource.installation_id == installation.id,
         CloudflareOwnedResource.kind == "container_application",

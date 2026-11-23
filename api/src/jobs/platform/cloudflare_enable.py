@@ -21,6 +21,7 @@ from src.jobs.platform.base import (
     define_platform_job,
 )
 from src.jobs.platform.cloudflare_capacity import (
+    CREATE_SETTLEMENT_WINDOW,
     DRAIN_DEADLINE,
     RELEASE_FENCE_REMEDY,
     _cleanup_one,
@@ -59,7 +60,7 @@ from src.services.worker_pool.cloudflare_containers_release import (
     VerifiedContainerRelease,
     load_containers_release,
 )
-from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+from src.services.worker_pool.cloudflare_containers_rest import ContainerApplicationCreateRejected, ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     open_credential,
@@ -560,35 +561,84 @@ async def _provision_container_application(
             raise OwnershipConflict("Container application intent differs from the verified revision",
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.JOURNAL_STATE)
         intent = _resource_intent(application)
-        application_id = application.id
-        send = application.state == "creating" and application.provider_details.get("creation_sent") is not True
-        if send:
-            if await adapter.observe_application(token, intent, namespace) is not None:
+        observed = await adapter.observe_application(token, intent, namespace, recorded_id=application.provider_id)
+        sent = application.provider_details.get("creation_sent") is True
+        if observed is not None:
+            if application.state == "creating" and not sent:
                 raise OwnershipConflict("Container application was occupied before creation",
                                         OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_OCCUPIED)
-            application.provider_details = {**application.provider_details, "creation_sent": True}
+            _record_container_application(application, observed)
+            return True
+        if application.state == "present" or application.provider_id is not None:
+            raise ObservationPending("The recorded Container application is absent",
+                                     OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE)
+        now = datetime.now(UTC)
+        if sent:
+            absent_since = application.observed_at
+            if absent_since is None:
+                # Legacy attempts have no dated preflight observation.
+                application.observed_at = now
+                await db.commit()
+            if absent_since is None or now - absent_since < CREATE_SETTLEMENT_WINDOW:
+                raise ObservationSettling("Waiting for the earlier Container application create",
+                                          OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE)
+        # Provider inventory and the launcher fence have both been checked.
+        # An expired attempt may retry only at the same account-unique name.
+        application_id = application.id
+        api_token_version = row.api_token_version
+        attempt = uuid4().hex
+        application.provider_details = {
+            **application.provider_details, "creation_sent": True, "creation_attempt": attempt,
+        }
+        application.observed_at = now
 
+    failure: Exception | None = None
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
-        if row is None:
+        if row is None or row.api_token_version != api_token_version:
             return False
         application = await db.get(CloudflareOwnedResource, application_id, with_for_update=True)
         if (
             application is None or _resource_intent(application) != intent
-            or application.state not in ("creating", "present")
-            or await _container_launcher_namespace(db, row) != binding
+            or application.state != "creating" or application.provider_id is not None
+            or application.provider_details.get("creation_attempt") != attempt
+            or application.observed_at != now or await _container_launcher_namespace(db, row) != binding
         ):
             raise OwnershipConflict("Container application creation fence changed",
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.JOURNAL_STATE)
-        observed = await adapter.application(
-            await _management_token(db, row), intent, namespace,
-            previously_sent=not send, recorded_id=application.provider_id,
-        )
-        application.provider_id = observed.provider_id
-        application.provider_version = observed.provider_version
-        application.state = "present"
-        application.observed_at = datetime.now(UTC)
-        return True
+        try:
+            receipt = await adapter.create_application(token, intent, namespace)
+        except ContainerApplicationCreateRejected as exc:
+            application.provider_details = {
+                key: value for key, value in application.provider_details.items()
+                if key not in ("creation_sent", "creation_attempt")
+            }
+            application.observed_at = None
+            failure = exc.failure
+        else:
+            # Keep the acknowledged ID even if its independent readback lags.
+            # An API retry must observe this ID and cannot re-arm the POST.
+            application.provider_id = receipt.provider_id
+            application.provider_version = receipt.provider_version
+            try:
+                observed = await adapter.observe_application(token, intent, namespace, recorded_id=receipt.provider_id)
+                if observed is None:
+                    raise ObservationSettling("Waiting to read back the acknowledged Container application",
+                                              OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE)
+            except (CloudflareManagementDenied, CloudflareRestUnavailable, ObservationPending, OwnershipConflict) as exc:
+                failure = exc
+            else:
+                _record_container_application(application, observed)
+    if failure is not None:
+        raise failure
+    return True
+
+
+def _record_container_application(resource: CloudflareOwnedResource, receipt: ResourceObservation) -> None:
+    resource.provider_id = receipt.provider_id
+    resource.provider_version = receipt.provider_version
+    resource.state = "present"
+    resource.observed_at = datetime.now(UTC)
 
 
 async def _drain_previous_revision(

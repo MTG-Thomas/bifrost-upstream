@@ -49,6 +49,10 @@ class WorkersWriteUnverified(Exception):
 class CloudflareRestUnavailable(Exception):
     """A bounded REST operation can be retried under its journal fence."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def _script_path(target: ResourceTarget) -> str:
     container_script = (
@@ -121,10 +125,13 @@ def _rest_operation(method: str, path: str) -> _RestOperation:
     return _RestOperation.ENTITLEMENTS if path.endswith("/entitlements") else _RestOperation.ACCOUNT
 
 
-class _RestObservation(ObservationPending):
-    def __init__(self, message: str, operation: _RestOperation, check: ObservationCheck) -> None:
+class CloudflareRestObservation(ObservationPending):
+    def __init__(
+        self, message: str, operation: _RestOperation, check: ObservationCheck, *, status_code: int | None = None,
+    ) -> None:
         super().__init__(message, operation.value[0], check)
         self.operation = operation
+        self.status_code = status_code
 
     def as_result(self) -> dict[str, str]:
         return {**super().as_result(), "check": self.operation.value[1]}
@@ -214,10 +221,13 @@ class WorkersRestCleanup:
         if response.status_code == 404 and allow_missing:
             return None
         if response.status_code in (408, 429) or response.status_code >= 500:
-            raise CloudflareRestUnavailable("Cloudflare REST is temporarily unavailable")
+            raise CloudflareRestUnavailable(
+                "Cloudflare REST is temporarily unavailable", status_code=response.status_code,
+            )
         if not response.is_success:
-            raise _RestObservation(
-                "Cloudflare REST request did not succeed", _rest_operation(method, path), ObservationCheck.REST_REJECTED,
+            raise CloudflareRestObservation(
+                "Cloudflare REST request did not succeed", _rest_operation(method, path),
+                ObservationCheck.REST_REJECTED, status_code=response.status_code,
             )
         if method == "DELETE" and response.status_code in (200, 204) and not response.content:
             # Worker delete can acknowledge with an empty body. The caller
@@ -226,11 +236,11 @@ class WorkersRestCleanup:
         try:
             payload = response.json()
         except ValueError:
-            raise _RestObservation(
+            raise CloudflareRestObservation(
                 "Cloudflare REST returned an invalid response", _rest_operation(method, path), ObservationCheck.REST_JSON,
             ) from None
         if not isinstance(payload, dict) or payload.get("success") is not True or "result" not in payload:
-            raise _RestObservation(
+            raise CloudflareRestObservation(
                 "Cloudflare REST returned an unconfirmed result", _rest_operation(method, path), ObservationCheck.REST_RESULT,
             )
         return payload
