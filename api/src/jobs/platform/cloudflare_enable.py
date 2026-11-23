@@ -53,7 +53,12 @@ from src.services.worker_ingress_probes import probe_worker_ingress
 from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_admission import joint_container_readiness
 from src.services.worker_pool.cloudflare_canary import run_workers_canary
-from src.services.worker_pool.cloudflare_containers_release import ContainersReleaseUnavailable, load_containers_release
+from src.services.worker_pool.cloudflare_containers_release import (
+    ContainersReleaseUnavailable,
+    VerifiedContainerRelease,
+    load_containers_release,
+)
+from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     open_credential,
@@ -213,15 +218,18 @@ async def _settle_enable(
         joint_ready = await db.scalar(select(joint_container_readiness(payload.revision)).where(
             CloudflareInstallation.id == row.id,
         ))
+        containers_enabled = row.containers_policy.get("enabled") is True
         if joint_ready is not True:
+            launcher = await _container_launcher_namespace(db, row) if containers_enabled else None
             if row.admitted_revision is not None:
                 row.admitted_revision = None
                 wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
                 # Commit the closure before returning the operator action.
                 await db.commit()
-            raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
-                "code": "CF_CONTAINERS_UNVERIFIED",
-            })
+            if launcher is None:
+                raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
+                    "code": "CF_CONTAINERS_UNVERIFIED",
+                })
         upgrading = row.upgrade_release is not None
         order = WorkersReleaseOrder(release.manifest.release_version, release.manifest.release_sequence)
         if code := workers_release_error(row, release.digest, order):
@@ -242,11 +250,13 @@ async def _settle_enable(
                     {"code": "CF_POLICY_RELEASE_CHANGED", "reason": str(exc)},
                 ) from None
         installation = row
-        container_digest = row.containers_release_digest if row.containers_policy.get("enabled") else None
+        container_digest = row.containers_release_digest if row.containers_ready_revision == payload.revision else None
         management_token = await _management_token(db, row)
-    if container_digest is not None:
+    container_release = None
+    if containers_enabled:
         try:
-            matched_release = (await load_containers_release(http, release)).digest == container_digest
+            container_release = await load_containers_release(http, release)
+            matched_release = container_digest is None or container_release.digest == container_digest
         except ContainersReleaseUnavailable:
             matched_release = False
         if not matched_release:
@@ -260,6 +270,7 @@ async def _settle_enable(
                 "code": "CF_CONTAINERS_RELEASE_UNAVAILABLE",
             })
     cleanup_adapter = WorkersRestCleanup(http)
+    container_adapter = ContainersRest(http)
     await cleanup_adapter.verify_workers_paid(installation.account_id, management_token)
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
@@ -300,8 +311,19 @@ async def _settle_enable(
 
     if upgrading:
         await context.report("Draining Cloudflare Capacity")
-    if not await _drain_previous_revision(context, payload, cleanup_adapter, upgrading=upgrading):
+    if not await _drain_previous_revision(
+        context, payload, cleanup_adapter, upgrading=upgrading, container_adapter=container_adapter,
+    ):
         return {"outcome": "superseded"}
+
+    if container_release is not None:
+        await context.report("Provisioning Cloudflare Container Application")
+        if not await _provision_container_application(context, payload, container_adapter, container_release):
+            return {"outcome": "superseded"}
+        if joint_ready is not True:
+            raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
+                "code": "CF_CONTAINERS_UNVERIFIED",
+            })
 
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
@@ -464,9 +486,94 @@ async def _settle_enable(
     return {"outcome": "enabled", "http_connections": ingress.http_connections_as_result()}
 
 
+async def _container_launcher_namespace(db: AsyncSession, row: CloudflareInstallation) -> tuple[str, str] | None:
+    resource = CloudflareOwnedResource
+    launcher = await db.scalar(select(resource).where(
+        resource.installation_id == row.id,
+        resource.account_id == row.account_id,
+        resource.scope == "containers",
+        resource.kind == "worker_script",
+        resource.desired_revision == row.desired_revision,
+        resource.target_name == f"bifrost-{row.id.hex}-r{row.desired_revision}-containers",
+        resource.state == "present",
+        resource.provider_id.is_not(None),
+        resource.provider_version.is_not(None),
+        resource.observed_at.is_not(None),
+    ))
+    namespace = launcher.namespace_ids.get("ContainerLauncher") if launcher else None
+    return (namespace, launcher.artifact_digest) if namespace and launcher else None
+
+
+async def _provision_container_application(
+    context: PlatformJobContext, payload: CloudflareEnablePayload,
+    adapter: ContainersRest, release: VerifiedContainerRelease,
+) -> bool:
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return False
+        binding = await _container_launcher_namespace(db, row)
+        if binding is None or binding[1] != release.digest:
+            raise OwnershipConflict("Container launcher differs from the verified release",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RELEASE_INTENT)
+        namespace = binding[0]
+        resource = CloudflareOwnedResource
+        name = f"bifrost-{row.id.hex}-r{row.desired_revision}"
+        application = await db.scalar(select(resource).where(
+            resource.installation_id == row.id, resource.account_id == row.account_id,
+            resource.scope == "containers", resource.kind == "container_application", resource.target_name == name,
+        ).with_for_update())
+        if application is None:
+            application = CloudflareOwnedResource(
+                id=uuid4(), installation_id=row.id, account_id=row.account_id,
+                scope="containers", kind="container_application", target_name=name,
+                desired_revision=payload.revision, artifact_digest=release.digest, effect_id=uuid4(),
+                namespace_ids={"ContainerLauncher": namespace}, state="creating", provider_details={},
+            )
+            db.add(application)
+        if (
+            application.desired_revision != payload.revision or application.artifact_digest != release.digest
+            or application.namespace_ids != {"ContainerLauncher": namespace}
+            or application.state not in ("creating", "present")
+        ):
+            raise OwnershipConflict("Container application intent differs from the verified revision",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.JOURNAL_STATE)
+        intent = _resource_intent(application)
+        application_id = application.id
+        send = application.state == "creating" and application.provider_details.get("creation_sent") is not True
+        if send:
+            token = await _management_token(db, row)
+            if await adapter.observe_application(token, intent, namespace) is not None:
+                raise OwnershipConflict("Container application was occupied before creation",
+                                        OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_OCCUPIED)
+            application.provider_details = {**application.provider_details, "creation_sent": True}
+
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return False
+        application = await db.get(CloudflareOwnedResource, application_id, with_for_update=True)
+        if (
+            application is None or _resource_intent(application) != intent
+            or application.state not in ("creating", "present")
+            or await _container_launcher_namespace(db, row) != binding
+        ):
+            raise OwnershipConflict("Container application creation fence changed",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.JOURNAL_STATE)
+        observed = await adapter.application(
+            await _management_token(db, row), intent, namespace,
+            previously_sent=not send, recorded_id=application.provider_id,
+        )
+        application.provider_id = observed.provider_id
+        application.provider_version = observed.provider_version
+        application.state = "present"
+        application.observed_at = datetime.now(UTC)
+        return True
+
+
 async def _drain_previous_revision(
     context: PlatformJobContext, payload: CloudflareEnablePayload, adapter: WorkersRestCleanup,
-    *, upgrading: bool,
+    *, upgrading: bool, container_adapter: ContainersRest | None = None,
 ) -> bool:
     deadline = monotonic() + DRAIN_DEADLINE.total_seconds()
     while True:
@@ -486,7 +593,9 @@ async def _drain_previous_revision(
                 result = await _cleanup_stranded_workflow_slots(db, row, adapter, before_revision=payload.revision)
             else:
                 try:
-                    result = await _cleanup_one(db, row, adapter, before_revision=payload.revision)
+                    result = await _cleanup_one(
+                        db, row, adapter, before_revision=payload.revision, container_adapter=container_adapter,
+                    )
                 except DeletionSettling:
                     result = "settling"
                 if result == "complete":

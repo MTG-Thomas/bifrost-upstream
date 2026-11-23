@@ -45,6 +45,7 @@ from src.services.work_dispatch import (
     wake_pool_workers_after_commit,
 )
 from src.services.worker_pool import cloudflare_tunnel
+from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     consume_staged_token,
@@ -192,6 +193,8 @@ async def _management_token(db: AsyncSession, installation: CloudflareInstallati
 async def _cleanup_one(
     db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup, *, before_revision: int | None = None,
     stranded_scope: tuple[str, int] | None = None,
+    containers_only: bool = False,
+    container_adapter: ContainersRest | None = None,
 ) -> Literal["complete", "progressed", "settling"]:
     # Newer generations first, then withdraw the capacity entry point before
     # retiring launcher and runtime dependencies. Workers scripts implicitly
@@ -199,7 +202,12 @@ async def _cleanup_one(
     query = select(CloudflareOwnedResource).where(
         CloudflareOwnedResource.installation_id == row.id,
         CloudflareOwnedResource.state != "absent",
-        CloudflareOwnedResource.scope == "workers",
+        (
+            (CloudflareOwnedResource.scope == "containers") & (CloudflareOwnedResource.kind == "container_application")
+            if containers_only else
+            (CloudflareOwnedResource.scope == "workers")
+            | ((CloudflareOwnedResource.scope == "containers") & (CloudflareOwnedResource.kind == "container_application"))
+        ),
     )
     if before_revision is not None:
         query = query.where(CloudflareOwnedResource.desired_revision < before_revision)
@@ -209,9 +217,10 @@ async def _cleanup_one(
     resource = await db.scalar(query.order_by(
         CloudflareOwnedResource.desired_revision.desc(),
         case(
-            (CloudflareOwnedResource.target_name.endswith("-capacity"), 0),
-            (CloudflareOwnedResource.target_name.endswith("-launcher"), 1),
-            else_=2,
+            (CloudflareOwnedResource.kind == "container_application", 0),
+            (CloudflareOwnedResource.target_name.endswith("-capacity"), 1),
+            (CloudflareOwnedResource.target_name.endswith("-launcher"), 2),
+            else_=3,
         ),
         CloudflareOwnedResource.target_name,
     ).limit(1).with_for_update())
@@ -219,6 +228,11 @@ async def _cleanup_one(
         return "complete"
     intent = _resource_intent(resource)
     token = await _management_token(db, row)
+    if resource.kind == "container_application":
+        if container_adapter is None:
+            raise ObservationPending("Container cleanup requires the Container inventory adapter",
+                                     OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
+        return await _cleanup_container_application(container_adapter, token, resource, intent)
     if resource.state == "creating":
         recorded = (
             ResourceObservation(intent, resource.provider_id, resource.provider_version)
@@ -255,6 +269,42 @@ async def _cleanup_one(
     resource.observed_at = datetime.now(UTC)
     if resource.target_name.endswith("-capacity") and "WorkerLedger" in resource.namespace_ids:
         await clear_destroyed_ledger_receipts(db, row.id, resource.scope, resource.desired_revision)
+    return "progressed"
+
+
+async def _cleanup_container_application(
+    adapter: ContainersRest, token: SecretStr, resource: CloudflareOwnedResource, intent: ResourceIntent,
+) -> Literal["progressed", "settling"]:
+    namespace = resource.namespace_ids.get("ContainerLauncher")
+    if not namespace or (resource.provider_version is not None and resource.provider_version != namespace):
+        raise OwnershipConflict("Container namespace does not match the journal",
+                                OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
+    observed = await adapter.observe_application(token, intent, namespace, recorded_id=resource.provider_id)
+    now = datetime.now(UTC)
+    if resource.state == "creating":
+        sent = resource.provider_details.get("creation_sent") is True
+        if observed is None:
+            if sent and resource.observed_at is None:
+                resource.observed_at = now
+                return "progressed"
+            if sent and resource.observed_at is not None and now - resource.observed_at < CREATE_SETTLEMENT_WINDOW:
+                return "settling"
+        elif not sent:
+            raise OwnershipConflict("Container name is occupied before its creation effect",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_OCCUPIED)
+        else:
+            resource.provider_id = observed.provider_id
+            resource.provider_version = observed.provider_version
+    elif not resource.provider_id or not resource.provider_version:
+        raise OwnershipConflict("Container deletion requires its provider receipt",
+                                OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISSING)
+    if observed is not None:
+        if resource.state != "deleting":
+            resource.state = "deleting"
+            return "progressed"
+        await adapter.delete_application(token, observed)
+    resource.state = "absent"
+    resource.observed_at = now
     return "progressed"
 
 
@@ -419,6 +469,7 @@ async def _settle_disable(
     *, tunnel_http: httpx.AsyncClient | None = None,
 ) -> dict[str, str]:
     delay = 2
+    container_adapter = ContainersRest(tunnel_http) if tunnel_http is not None else None
     while True:
         waiting_for_deletion = False
         async with get_db_context() as db:
@@ -440,7 +491,10 @@ async def _settle_disable(
                     waiting_for_deletion = recovery == "settling"
             if not workers_remain:
                 try:
-                    cleanup = await _cleanup_one(db, row, adapter) if payload.action == "disconnect" else "complete"
+                    cleanup = await _cleanup_one(
+                        db, row, adapter, containers_only=payload.action == "scale_in",
+                        container_adapter=container_adapter,
+                    )
                     if cleanup == "complete" and payload.action == "disconnect" and row.reachability_mode == "managed_tunnel":
                         if tunnel_http is None:
                             raise RuntimeError("Managed Tunnel requires the Cloudflare REST client")
@@ -568,9 +622,15 @@ async def _disable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, 
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
             return await _settle_disable(context, payload, WorkersRestCleanup(http), tunnel_http=http)
-    except OwnershipConflict:
-        raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
-    except (ObservationPending, CloudflarePolicyConflict):
+    except OwnershipConflict as exc:
+        raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {
+            "code": "CF_OWNERSHIP_CONFLICT", "details": exc.as_result(),
+        }) from None
+    except ObservationPending as exc:
+        raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {
+            "code": "CF_CLEANUP_PENDING", "details": exc.as_result(),
+        }) from None
+    except CloudflarePolicyConflict:
         raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"}) from None
     except CloudflareManagementDenied:
         raise PlatformJobRequiresAction("Reconnect Cloudflare", {"code": "CF_MANAGEMENT_CREDENTIAL"}) from None
@@ -1047,7 +1107,7 @@ async def _rotate_worker_credential(context: PlatformJobContext, parsed: BaseMod
                     if scope:
                         # Keep the revision fence through the exact delete
                         # and absence receipt, even if the job lease expires.
-                        progress = await _cleanup_one(db, row, adapter)
+                        progress = await _cleanup_one(db, row, adapter, container_adapter=ContainersRest(http))
                         if progress == "progressed":
                             continue
                         if progress == "settling":

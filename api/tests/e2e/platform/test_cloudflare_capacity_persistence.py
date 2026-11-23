@@ -1005,6 +1005,101 @@ async def test_enable_retracts_workers_admission_without_container_readiness(
 
 
 @pytest.mark.asyncio
+async def test_container_application_effect_survives_lost_create_and_delete_replies(
+    db_session, installation, monkeypatch,
+) -> None:
+    from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+
+    release, _, _ = make_release()
+    installation.desired_state = "enabled"
+    installation.containers_policy = {"enabled": True}
+    namespace = "b" * 32
+    name = f"bifrost-{installation.id.hex}-r1"
+    db_session.add(CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="containers", kind="worker_script", target_name=f"{name}-containers",
+        desired_revision=1, artifact_digest=release.digest, effect_id=uuid4(),
+        state="present", provider_id="c" * 32, provider_version="d" * 32,
+        namespace_ids={"ContainerLauncher": namespace}, observed_at=datetime.now(UTC),
+    ))
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def transaction():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    async def locked_current(session, _context, payload):
+        return await session.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+
+    monkeypatch.setattr(enable_job, "get_db_context", transaction)
+    monkeypatch.setattr(enable_job, "_locked_current", locked_current)
+    present = False
+    writes: list[str] = []
+    provider_id = str(uuid4())
+    application = {
+        "id": provider_id, "name": name, "account_id": installation.account_id,
+        "scheduling_policy": "durable_object", "durable_objects": {"namespace_id": namespace},
+    }
+
+    def provider(request):
+        nonlocal present
+        path = request.url.path
+        if request.method == "POST":
+            assert path.endswith("/containers/applications") and not present
+            assert json.loads(request.content) == {
+                key: application[key] for key in ("name", "scheduling_policy", "durable_objects")
+            }
+            present = True
+            writes.append("POST")
+            raise httpx.ReadTimeout("lost create acknowledgement", request=request)
+        if request.method == "DELETE":
+            assert path.endswith(f"/containers/applications/{provider_id}") and present
+            present = False
+            writes.append("DELETE")
+            raise httpx.ReadTimeout("lost delete acknowledgement", request=request)
+        if path.endswith("/applications"):
+            assert request.url.params["name"] == name
+            result = [application] if present else []
+        elif path.endswith(f"/{provider_id}/instances-v2"):
+            result = []
+        else:
+            assert path.endswith(f"/applications/{provider_id}")
+            if not present:
+                return httpx.Response(404)
+            result = application
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        adapter = ContainersRest(http)
+        with pytest.raises(CloudflareRestUnavailable):
+            await enable_job._provision_container_application(MagicMock(), payload, adapter, release)
+        assert await enable_job._provision_container_application(MagicMock(), payload, adapter, release)
+        assert await enable_job._provision_container_application(MagicMock(), payload, adapter, release)
+        async def cleanup():
+            async with transaction() as session:
+                row = await session.get(CloudflareInstallation, installation.id)
+                assert row is not None
+                return await lifecycle_job._cleanup_one(
+                    session, row, adapter, containers_only=True, container_adapter=adapter,
+                )
+
+        assert await cleanup() == "progressed"
+        with pytest.raises(CloudflareRestUnavailable):
+            await cleanup()
+        assert await cleanup() == "progressed"
+        assert await cleanup() == "complete"
+    assert writes == ["POST", "DELETE"]
+    assert await db_session.scalar(select(CloudflareOwnedResource.state).where(
+        CloudflareOwnedResource.installation_id == installation.id,
+        CloudflareOwnedResource.kind == "container_application",
+    )) == "absent"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("readback", ["ambiguous_namespaces", "invisible_upload"])
 async def test_enable_keeps_admission_closed_on_unverified_readback(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, readback,

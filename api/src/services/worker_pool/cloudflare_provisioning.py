@@ -88,6 +88,9 @@ class ObservationCheck(Enum):
     CONNECTOR_TOKEN = ("connector_token", "invalid", "valid_token")
     PRIVATE_ROUTES = ("private_route_inventory", "unconfirmed", "confirmed_inventory")
     CANARY_RETIREMENT = ("canary_retirement", "unverified", "exact_deletion_receipt")
+    CONTAINER_INVENTORY = ("container_inventory", "incomplete", "complete_inventory")
+    CONTAINER_PLACEMENTS = ("container_placements", "present", "empty_inventory")
+    CONTAINER_CREATE = ("container_create_readback", "absent", "exact_creation_receipt")
 
 
 def verification_details(resource_class: str, detail: tuple[str, str, str]) -> dict[str, str]:

@@ -84,9 +84,12 @@ class _RestOperation(Enum):
     CONNECTOR = (OwnershipResource.CONNECTOR, "connector_inventory")
     CONNECTOR_TOKEN = (OwnershipResource.CONNECTOR_CREDENTIAL, "connector_token")
     PRIVATE_ROUTES = (OwnershipResource.PRIVATE_ROUTE, "private_route_inventory")
+    CONTAINER_APPLICATION = (OwnershipResource.CONTAINER_APPLICATION, "container_application_request")
 
 
 def _rest_operation(method: str, path: str) -> _RestOperation:
+    if "/containers/applications" in path:
+        return _RestOperation.CONTAINER_APPLICATION
     if "/workers/scripts/" in path:
         if path.endswith("/subdomain"):
             return _RestOperation.SCRIPT_SUBDOMAIN

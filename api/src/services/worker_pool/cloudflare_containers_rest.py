@@ -18,8 +18,13 @@ from src.services.worker_pool.cloudflare_containers_release import (
     run_oci_tool,
 )
 from src.services.worker_pool.cloudflare_provisioning import (
+    DeletionSettling,
+    ObservationCheck,
     ObservationPending,
+    ObservationSettling,
+    OwnershipCheck,
     OwnershipConflict,
+    OwnershipResource,
     ResourceIntent,
     ResourceObservation,
 )
@@ -43,7 +48,8 @@ def _name(intent: ResourceIntent, kind: str) -> str:
         target.scope != "containers" or target.kind != kind or target.name != name
         or intent.desired_revision < 1 or not _HEX32.fullmatch(target.account_id)
     ):
-        raise OwnershipConflict("Container target does not match its installation and revision")
+        raise OwnershipConflict("Container target does not match its installation and revision",
+                                OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_BINDING)
     return name
 
 
@@ -81,7 +87,8 @@ class ContainersRest(WorkersRestCleanup):
                 break
             cursors.add(cursor)
             params["page_token"] = cursor
-        raise ObservationPending("Container inventory is incomplete")
+        raise ObservationPending("Container inventory is incomplete",
+                                 OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
 
     @staticmethod
     def _application(row: object, account: str, name: str, namespace: str) -> str:
@@ -92,8 +99,61 @@ class ContainersRest(WorkersRestCleanup):
             or not isinstance(row.get("durable_objects"), dict)
             or row["durable_objects"].get("namespace_id") != namespace
         ):
-            raise OwnershipConflict("Container application identity or namespace differs from its journal")
+            raise OwnershipConflict("Container application identity or namespace differs from its journal",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
         return row["id"]
+
+    async def observe_application(
+        self, token: SecretStr, intent: ResourceIntent, namespace: str, *,
+        recorded_id: str | None = None,
+    ) -> ResourceObservation | None:
+        name = _name(intent, "container_application")
+        account = intent.target.account_id
+        if not _HEX32.fullmatch(namespace) or (recorded_id is not None and not _APP_ID.fullmatch(recorded_id)):
+            raise OwnershipConflict("Container journal lacks a valid application identity",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
+        path = "containers/applications"
+        rows = await self._inventory(token, account, path, name=name)
+        if len(rows) > 1:
+            raise OwnershipConflict("Multiple Container applications match the name",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.MULTIPLE_OCCUPANTS)
+        if not rows:
+            if recorded_id is not None:
+                receipt = await self._request(token, account, "GET", f"{path}/{recorded_id}", allow_missing=True)
+                if receipt is not None:
+                    self._application(receipt["result"], account, name, namespace)
+                    raise ObservationSettling("Container application inventory differs from ID lookup",
+                                              OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
+            return None
+        app_id = self._application(rows[0], account, name, namespace)
+        if recorded_id is not None and app_id != recorded_id:
+            raise OwnershipConflict("Container application ID differs from its journal",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
+        receipt = await self._request(token, account, "GET", f"{path}/{app_id}", allow_missing=True)
+        if receipt is None:
+            raise ObservationSettling("Container application has no matching ID readback",
+                                      OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
+        if self._application(receipt["result"], account, name, namespace) != app_id:
+            raise OwnershipConflict("Container application ID changed",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
+        return ResourceObservation(intent, app_id, namespace)
+
+    async def delete_application(self, token: SecretStr, expected: ResourceObservation) -> None:
+        intent = expected.intent
+        observed = await self.observe_application(
+            token, intent, expected.provider_version, recorded_id=expected.provider_id,
+        )
+        if observed is None:
+            return
+        account = intent.target.account_id
+        path = f"containers/applications/{expected.provider_id}"
+        if await self._inventory(token, account, f"{path}/instances-v2"):
+            raise DeletionSettling("Container application still has placements",
+                                   OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_PLACEMENTS)
+        await self._request(token, account, "DELETE", path, allow_missing=True)
+        if await self.observe_application(token, intent, expected.provider_version, recorded_id=expected.provider_id):
+            raise DeletionSettling("Container application is still visible",
+                                   OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
 
     async def application(
         self, token: SecretStr, intent: ResourceIntent, namespace: str, *, previously_sent: bool,
@@ -103,15 +163,18 @@ class ContainersRest(WorkersRestCleanup):
         name = _name(intent, "container_application")
         account = intent.target.account_id
         if not _HEX32.fullmatch(namespace):
-            raise OwnershipConflict("Container namespace is invalid")
+            raise OwnershipConflict("Container namespace is invalid",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.NAMESPACE_CLASS)
         path = "containers/applications"
         rows = await self._inventory(token, account, path, name=name)
         if rows:
             if len(rows) != 1 or not previously_sent:
-                raise OwnershipConflict("Container application name is occupied")
+                raise OwnershipConflict("Container application name is occupied",
+                                        OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_OCCUPIED)
             app_id = self._application(rows[0], account, name, namespace)
         elif previously_sent:
-            raise ObservationPending("Earlier Container create has no confirmed application")
+            raise ObservationPending("Earlier Container create has no confirmed application",
+                                     OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE)
         else:
             result = await self._request(token, account, "POST", path, json_body={
                 "name": name, "scheduling_policy": "durable_object",
@@ -120,11 +183,13 @@ class ContainersRest(WorkersRestCleanup):
             assert result is not None
             app_id = self._application(result["result"], account, name, namespace)
         if recorded_id is not None and app_id != recorded_id:
-            raise OwnershipConflict("Container application ID differs from its journal")
+            raise OwnershipConflict("Container application ID differs from its journal",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
         current = await self._request(token, account, "GET", f"{path}/{app_id}")
         assert current is not None
         if self._application(current["result"], account, name, namespace) != app_id:
-            raise OwnershipConflict("Container application ID changed")
+            raise OwnershipConflict("Container application ID changed",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
         return ResourceObservation(intent, app_id, namespace)
 
     async def observe_instance_stop(
