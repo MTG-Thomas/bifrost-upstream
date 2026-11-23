@@ -246,16 +246,18 @@ export class ScopeRegistry {
         return this.storage.transactionSync(() => {
             const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
             if (!start || start.instance !== instance || start.observed_at !== null) return { status: "conflict" };
-            if (![now, observedAbsentAt].every(Number.isSafeInteger) || observedAbsentAt > now) {
+            if (![now, observedAbsentAt].every(Number.isSafeInteger)
+                || observedAbsentAt > now + RESERVATION_CLOCK_SKEW_MS) {
                 return { status: "invalid" };
             }
             if (observedAbsentAt < start.start_deadline + BOOT_OBSERVATION_MS) return { status: "pending" };
+            const closedAt = start.closed_at ?? Math.max(now, observedAbsentAt);
             if (start.closed_at === null) {
-                this.sql.exec("UPDATE start_fences SET closed_at = ? WHERE uid = ?", now, uid);
+                this.sql.exec("UPDATE start_fences SET closed_at = ? WHERE uid = ?", closedAt, uid);
             }
             return {
                 status: "absent", uid, instance, authorizedAt: start.authorized_at,
-                startDeadline: start.start_deadline, closedAt: start.closed_at ?? now,
+                startDeadline: start.start_deadline, closedAt,
             };
         });
     }

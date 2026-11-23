@@ -460,11 +460,14 @@ test("a registry authorization survives a local deadline advance; a throwing sta
     assert.equal(starts, 1);
     assert.equal((await controller().closeAbsent(slot.uid, Date.now())).status, "pending");
     t.mock.timers.setTime(slot.startDeadline + 60_000);
-    const receipt = await controller().closeAbsent(slot.uid, Date.now());
+    assert.equal((await controller().closeAbsent(slot.uid, Date.now() + 3001)).status, "invalid");
+    const observedAbsentAt = Date.now() + 1500;
+    const receipt = await controller().closeAbsent(slot.uid, observedAbsentAt);
     assert.deepEqual(receipt, {
         status: "absent", uid: slot.uid, instance: actor, authorizedAt: 100,
-        startDeadline: slot.startDeadline, closedAt: Date.now(),
+        startDeadline: slot.startDeadline, closedAt: observedAbsentAt,
     });
+    assert.deepEqual(scope.closeStart(slot.uid, actor, Date.now()), receipt);
     assert.equal(scope.observeStart(slot.uid, actor, 101).status, "conflict");
     assert.equal(reserve(scope, pin()).status, "full");
     assert.equal(scope.retire(slot.uid, actor, receipt.closedAt).status, "retired");

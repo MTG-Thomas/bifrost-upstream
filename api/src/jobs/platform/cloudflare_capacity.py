@@ -20,6 +20,7 @@ from src.jobs.platform.base import (
     PlatformJobRequiresAction,
     define_platform_job,
 )
+from src.models.enums import ExecutionStatus
 from src.models.orm.cloudflare_approvals import CloudflareApproval
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
@@ -938,26 +939,35 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
                 Execution, Execution.id == WorkDispatch.subject_id,
             ).join(CloudflareApproval, CloudflareApproval.workflow_id == Execution.workflow_id).where(
                 WorkDispatch.assigned_worker_id.is_(None), WorkDispatch.handler == "workflow.execute",
+                Execution.status == ExecutionStatus.PENDING,
                 CloudflareApproval.is_current, CloudflareApproval.policy_version == LINUX_REVIEW_VERSION,
                 CloudflareApproval.declaration["installation_id"].as_string() == str(row.id),
                 CloudflareApproval.declaration["deployment_revision"].as_integer() == row.desired_revision,
             ).limit(1)) is not None
         )
-    if provision or refresh:
+    if provision:
         # Reuse the admission canary and write fences used by Enable.
         from src.jobs.platform.cloudflare_enable import CloudflareEnablePayload, _enable
 
         return await _enable(
             context, CloudflareEnablePayload(installation_id=payload.installation_id, revision=payload.revision),
-            repair_tunnel_ingress=True, **({"refresh_container_egress": True} if refresh else {}),
+            repair_tunnel_ingress=True,
         )
 
     await context.report("Verifying Cloudflare Deployment")
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
-            return await _settle_reconcile(context, payload, WorkersRestCleanup(http), tunnel_http=http)
+            verified = await _settle_reconcile(context, payload, WorkersRestCleanup(http), tunnel_http=http)
     except CloudflareRestUnavailable:
         raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
+    if refresh and verified["outcome"] == "verified":
+        from src.jobs.platform.cloudflare_enable import CloudflareEnablePayload, _enable
+
+        return await _enable(
+            context, CloudflareEnablePayload(installation_id=payload.installation_id, revision=payload.revision),
+            refresh_container_egress=True,
+        )
+    return verified
 
 
 CLOUDFLARE_RECONCILE_DEFINITION = define_platform_job(

@@ -140,7 +140,7 @@ async def settle_container_stop(
                 now is None or deadline.tzinfo is None or not pin.container_reserved_at < deadline
                 or type(closure.start_deadline_ms) is not int or type(closed_at_ms) is not int
                 or closure.start_deadline_ms != int(deadline.timestamp() * 1000)
-                or closed_at_ms < int(pin.container_reserved_at.timestamp() * 1000) or when > now
+                or closed_at_ms < int(pin.container_reserved_at.timestamp() * 1000) or when > now + CONTAINER_CLOCK_SKEW
                 or refused != (closed_at_ms < closure.start_deadline_ms)
                 or (
                     isinstance(closure, AbsentContainerStart) and (
