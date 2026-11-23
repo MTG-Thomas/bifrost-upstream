@@ -134,6 +134,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         *,
         worker_id: str | None = None,
         runtime_profile: str = LINUX_RUNTIME_PROFILE,
+        baked_wheels_only: bool = False,
         **kwargs: Any,
     ) -> None:
         if runtime_profile not in (LINUX_RUNTIME_PROFILE, CLOUDFLARE_PYTHON_RUNTIME_PROFILE):
@@ -144,6 +145,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         super().__init__(worker_id=identity, **kwargs)
         self.transport = transport
         self.runtime_profile = runtime_profile
+        self._mutable_packages = runtime_profile == LINUX_RUNTIME_PROFILE and not baked_wheels_only
         self._routes: dict[str, ProcessHandle] = {}
         self._route_metrics: dict[str, dict[str, float | int]] = {}
         self._remote_memory_current = -1
@@ -718,7 +720,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         self._cancel_task = asyncio.create_task(
             self._cancel_listener_loop(), name="thin-remote-pool-cancel"
         )
-        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+        if self._mutable_packages:
             self._command_task = asyncio.create_task(
                 self._command_listener_loop(), name="thin-remote-pool-command"
             )
@@ -737,7 +739,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         redis_client = await self._get_redis()
         redis_key = f"bifrost:pool:{self.worker_id}"
         packages = None
-        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+        if self._mutable_packages:
             packages = await self._remote_packages()
         fields = {
             "started_at": datetime.now(timezone.utc).isoformat(),
@@ -756,7 +758,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
 
     async def update_packages(self) -> None:
         """Refresh Redis from the package owner after a remote install."""
-        if not self._started or self.runtime_profile != LINUX_RUNTIME_PROFILE:
+        if not self._started or not self._mutable_packages:
             return
         try:
             redis_client = await self._get_redis()

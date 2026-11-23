@@ -1260,6 +1260,7 @@ class ApiExecutor(PoolWorker):
 
         self.bridge.pool = ThinRemoteProcessPool(
             self.bridge, worker_id=str(self.incarnation_id), runtime_profile=self.runtime_profile,
+            baked_wheels_only=self.bridge.lease.container_release is not None,
         )
         if self.runtime_profile == LINUX_RUNTIME_PROFILE:
             from src.services.execution.requirements_setup_result import (

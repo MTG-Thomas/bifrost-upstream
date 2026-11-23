@@ -17,6 +17,22 @@ from src.worker.remote.ownership import RemoteOwnerLease
 
 
 @pytest.mark.asyncio
+async def test_baked_container_registration_uses_no_runtime_package_tools():
+    transport = SimpleNamespace(hostname="fixture", request=AsyncMock())
+    redis = SimpleNamespace(hset=AsyncMock(), expire=AsyncMock())
+    pool = ThinRemoteProcessPool(transport, worker_id=str(uuid4()), baked_wheels_only=True)
+    pool._get_redis = AsyncMock(return_value=redis)
+    pool._started = True
+
+    await pool._register_worker()
+    await pool.update_packages()
+
+    transport.request.assert_not_awaited()
+    redis.hset.assert_awaited_once()
+    assert "packages" not in redis.hset.await_args.kwargs["mapping"]
+
+
+@pytest.mark.asyncio
 async def test_adopts_live_and_unacknowledged_workflow_routes_with_original_metadata(
     async_session_factory, monkeypatch,
 ) -> None:
