@@ -1038,6 +1038,14 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
 
     monkeypatch.setattr(enable_job, "get_db_context", transaction)
     monkeypatch.setattr(enable_job, "_locked_current", locked_current)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    monkeypatch.setattr(enable_job, "load_containers_release", AsyncMock(return_value=release))
+    monkeypatch.setattr(enable_job, "WorkersRestCleanup", lambda _: SimpleNamespace(verify_workers_paid=AsyncMock()))
+    monkeypatch.setattr(enable_job, "_drain_previous_revision", AsyncMock(return_value=True))
+    workers_release = SimpleNamespace(
+        digest=installation.policy["bounds_release"],
+        manifest=SimpleNamespace(release_version="1.0.0", release_sequence=1),
+    )
     present = False
     launcher_present = True
     observed_namespace = "e" * 32
@@ -1102,10 +1110,11 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
         return httpx.Response(200, json={"success": True, "result": result})
 
     payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1)
+    job_context = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         adapter = ContainersRest(http)
         with pytest.raises(OwnershipConflict) as wrong_namespace:
-            await enable_job._provision_container_application(MagicMock(), payload, adapter, release)
+            await enable_job._settle_enable(job_context, payload, http, workers_release)
         assert wrong_namespace.value.as_result() == {
             "resource_class": "durable_object_namespace", "check": "receipt_mismatch",
             "observed_category": "different", "expected_category": "exact_receipt",
@@ -1113,9 +1122,14 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
         assert not writes
         observed_namespace = namespace
         with pytest.raises(CloudflareRestUnavailable):
-            await enable_job._provision_container_application(MagicMock(), payload, adapter, release)
-        assert await enable_job._provision_container_application(MagicMock(), payload, adapter, release)
-        assert await enable_job._provision_container_application(MagicMock(), payload, adapter, release)
+            await enable_job._settle_enable(job_context, payload, http, workers_release)
+        for _ in range(2):
+            with pytest.raises(PlatformJobRequiresAction) as held:
+                await enable_job._settle_enable(job_context, payload, http, workers_release)
+            assert held.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
+        await db_session.refresh(installation)
+        assert installation.admitted_revision is None
+
         async def cleanup():
             async with transaction() as session:
                 row = await session.get(CloudflareInstallation, installation.id)
