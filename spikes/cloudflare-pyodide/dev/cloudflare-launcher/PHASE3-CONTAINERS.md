@@ -456,8 +456,8 @@ closed after re-enable. A replacement has a new worker ID and resource UID and
 receives a key derived for that incarnation and scope. A previous launcher's
 key cannot enroll the replacement even when the script version is reused.
 Enable still verifies the retained release digest, exact application, and
-scope. Joint readiness remains bound to that revision and digest, and a
-configuration or release cutover cannot inherit it.
+scope. Scale In clears the Container readiness revision, so re-enable must
+prove the retained revision and digest again before joint admission.
 
 The deployed control endpoint receives a public verification key in its
 Worker metadata. Bifrost keeps the scope signing secret in its credential

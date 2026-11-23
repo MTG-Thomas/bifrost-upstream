@@ -137,9 +137,13 @@ class WorkersProvisioner(ProvisioningAdapter, Protocol):
     ) -> ConfiguredWorkersScript: ...
 
 
-async def _locked_current(db: AsyncSession, context: PlatformJobContext, payload: CloudflareEnablePayload) -> CloudflareInstallation | None:
+async def _locked_current(
+    db: AsyncSession, context: PlatformJobContext, payload: CloudflareEnablePayload, *, lock_row: bool = True,
+) -> CloudflareInstallation | None:
     await _hold_installation_lease(db, context, payload.installation_id)
-    row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+    row = await db.get(
+        CloudflareInstallation, payload.installation_id, with_for_update=lock_row, populate_existing=True,
+    )
     if row is None or row.retired_at is not None or row.desired_revision != payload.revision or row.desired_state != "enabled":
         return None
     return row
@@ -569,7 +573,7 @@ async def _deploy_container_launcher(
     registry = ContainerRegistry(adapter)
     name = f"bifrost-{payload.installation_id.hex}-r{payload.revision}"
     async with get_db_context() as db:
-        row = await _locked_current(db, context, payload)
+        row = await _locked_current(db, context, payload, lock_row=False)
         if row is None:
             return False
         image = await _container_resource(db, row, release, kind="container_image", name=name)
@@ -581,7 +585,10 @@ async def _deploy_container_launcher(
         image_id = image.id
 
     async with get_db_context() as db:
-        row = await _locked_current(db, context, payload)
+        # The committed image intent and provisioning advisory lock fence
+        # the registry write. Leave the installation row available during
+        # the copy so admission can close while the provider call runs.
+        row = await _locked_current(db, context, payload, lock_row=False)
         if row is None:
             return False
         image = await db.get(CloudflareOwnedResource, image_id, with_for_update=True)
@@ -601,6 +608,11 @@ async def _deploy_container_launcher(
         else:
             assert image.provider_id is not None and image.provider_version is not None
             prepared = ResourceObservation(intent, image.provider_id, image.provider_version)
+        # Commit any exact image receipt even if the desired state changed.
+        # There is no authority to journal a launcher for a superseded job.
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return False
         launcher = await _container_resource(db, row, release, kind="worker_script", name=f"{name}-containers")
         launcher_id = launcher.id
         origin = row.worker_ingress_origin

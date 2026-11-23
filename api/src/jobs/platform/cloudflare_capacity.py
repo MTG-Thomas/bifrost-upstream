@@ -1434,6 +1434,7 @@ async def enqueue_cloudflare_disable(
     if row.desired_state == "disconnected" and action == "scale_in":
         raise CloudflarePolicyConflict("Cloudflare disconnect is already pending")
     row.admitted_revision = None
+    row.containers_ready_revision = None
     row.upgrade_release = None
     row.upgrade_drained_at = None
     row.drain_required = False

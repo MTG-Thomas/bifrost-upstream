@@ -1291,8 +1291,8 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             yield session
             await session.commit()
 
-    async def locked_current(session, _context, payload):
-        return await session.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+    async def locked_current(session, _context, payload, *, lock_row=True):
+        return await session.get(CloudflareInstallation, payload.installation_id, with_for_update=lock_row)
 
     async def tool(executable, *args, **_kwargs):
         nonlocal copied
@@ -2368,7 +2368,7 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     await db_session.refresh(installation)
     assert installation.api_token_version == 1
     assert installation.admitted_revision is None
-    assert installation.deployed_revision == installation.containers_ready_revision == 1
+    assert installation.deployed_revision == 1 and installation.containers_ready_revision is None
     assert installation.containers_release_digest == release.digest
     for resource in (application, launcher):
         await db_session.refresh(resource)
@@ -2381,8 +2381,12 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     enabling, _ = await enable_job.enqueue_cloudflare_enable(
         db_session, admin, installation_id=installation.id, expected_revision=1,
     )
-    assert enabling.payload["revision"] == 1 and installation.containers_ready_revision == 1
+    assert enabling.payload["revision"] == 1 and installation.containers_ready_revision is None
     assert installation.desired_state == "enabled" and installation.admitted_revision is None
+    await db_session.flush()
+    assert await db_session.scalar(select(cloudflare_admission.joint_container_readiness(1)).where(
+        CloudflareInstallation.id == installation.id,
+    )) is False
 
 
 @pytest.mark.asyncio
