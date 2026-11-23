@@ -236,7 +236,7 @@ class ContainersRest(WorkersRestCleanup):
             health = receipt["result"]["health"]
             counts = health.get("instances") if isinstance(health, dict) and health.get("summary") != "pending" else None
             if not isinstance(counts, dict) or any(
-                type(value := counts.get(state)) is not int or value != 0 for state in ("active", "assigned")
+                type(value := counts.get(state)) is not int or value != 0 for state in ("active", "starting")
             ):
                 # The aggregate can veto deletion. A zero count is not a
                 # substitute for the independent placement inventory.
@@ -320,7 +320,7 @@ class ContainersRest(WorkersRestCleanup):
                 raise ValueError
             started_at = datetime.fromisoformat(placement["started_at"])
             stopped_at = datetime.fromisoformat(status["updated_at"])
-            if not not_before - CONTAINER_CLOCK_SKEW <= started_at <= stopped_at <= datetime.now(UTC):
+            if not not_before - CONTAINER_CLOCK_SKEW <= started_at <= stopped_at <= datetime.now(UTC) + CONTAINER_CLOCK_SKEW:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             raise ObservationPending("Provider has not witnessed a bounded stop for this placement") from None
@@ -402,9 +402,9 @@ class ContainerLauncherRest(ScriptRestProvisioner):
             "main_module": module,
             "compatibility_date": "2026-10-30",
             "exports": {"ContainerLauncher": {"type": "durable-object", "storage": "sqlite", "container": "linux"}},
-            # See the Worker upload schema and the digest-pinned images map
-            # in Cloudflare's Containers image management guide.
-            # https://developers.cloudflare.com/containers/guides/image-management/
+            # The raw upload uses the prepared reference string. Wrangler
+            # config objects are resolved before the multipart upload.
+            # https://github.com/cloudflare/workers-sdk/blob/657179d3d707a244038168675292b288e0a1f4ef/packages/deploy-helpers/tests/container-metadata.test.ts
             "containers": [{"name": "linux", "class_name": "ContainerLauncher", "images": {"bifrost-linux": image}}],
             "bindings": [{"name": OWNER_BINDING, "type": "plain_text", "text": worker_owner_value(intent)}],
             "keep_bindings": [],

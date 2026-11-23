@@ -2521,7 +2521,7 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
     app_row = {
         "id": app.provider_id, "name": app.target_name, "account_id": app.account_id,
         "scheduling_policy": "durable_object", "durable_objects": {"namespace_id": app.provider_version},
-        "health": {"instances": {"active": 0, "assigned": 0}},
+        "health": {"instances": {"active": 0, "starting": 0}},
     }
 
     def remote(request):

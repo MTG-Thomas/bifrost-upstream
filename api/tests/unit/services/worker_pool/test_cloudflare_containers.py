@@ -528,9 +528,9 @@ async def test_opaque_application_readback_and_ambiguous_create_use_exact_invent
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("health", [
-    {"instances": {"active": 1, "assigned": 0}},
-    {"instances": {"active": 0, "assigned": 1}},
-    {"instances": {"active": 0, "assigned": 0}, "summary": "pending"},
+    {"instances": {"active": 1, "starting": 0}},
+    {"instances": {"active": 0, "starting": 1}},
+    {"instances": {"active": 0, "starting": 0}, "summary": "pending"},
     {"instances": {"active": 0}},
 ])
 async def test_container_health_vetoes_deletion(health) -> None:
@@ -639,6 +639,7 @@ async def test_application_absence_requires_complete_inventory(observed_containe
 @pytest.mark.asyncio
 async def test_exact_size_stopped_history_does_not_block_deletion(observed_container) -> None:
     application, row = observed_container
+    row["health"] = {"instances": {"active": 0, "starting": 0}}
     instances = [
         {"id": f"{index:064x}", "application_id": APP, "status": {"state": "stopped"}}
         for index in range(100)

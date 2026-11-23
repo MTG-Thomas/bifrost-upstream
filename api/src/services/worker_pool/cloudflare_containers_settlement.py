@@ -205,5 +205,5 @@ async def settle_container_stop(
     pin.container_envelope = envelope
     pin.container_stopped_at = max(stop.stopped_at, pin.container_reserved_at)
     worker.state = "retired"
-    worker.ended_at = stop.stopped_at
+    worker.ended_at = pin.container_stopped_at
     await db.flush()
