@@ -58,7 +58,8 @@ its distinct scope bearer, and the named digest in the multipart image map.
 Resolve the exact launcher namespace and explicitly create the associated
 application with `scheduling_policy: "durable_object"`. Preserve its opaque
 application identifier verbatim. Verify ownership, namespace association and
-digest mapping before enabling starts. The owning DO passes its qualified
+digest mapping before enabling starts. Bind the pinned image under
+`bifrost-linux`. The owning DO passes its qualified
 `ctx.container.images` reference and named `instance` to
 `ctx.container.start()`. The DO policy is a hosted qualification dependency.
 Keep the scope closed if the supported API, bindings or permissions fail.

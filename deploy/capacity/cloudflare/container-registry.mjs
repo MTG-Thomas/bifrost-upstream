@@ -312,7 +312,9 @@ export class ContainerInstanceLifecycle {
     }
 
     async start(pin, controlKey, probeNonce = null) {
+        const image = this.ctx.container.images?.["bifrost-linux"];
         if (!/^[a-f0-9]{64}$/.test(controlKey) || !UUID.test(pin.installation)
+            || pin.instance !== "standard-1" || image !== this.image
             || !this.image.endsWith(`/bifrost-${pin.installation.replaceAll("-", "")}-r${pin.revision}@${pin.image}`)
             || (probeNonce !== null && !/^[A-Za-z0-9_-]{43}$/.test(probeNonce))) {
             return { status: "invalid" };
@@ -344,7 +346,7 @@ export class ContainerInstanceLifecycle {
             };
             if (probeNonce !== null) env.BIFROST_CONTAINER_PROBE_NONCE = probeNonce;
             try {
-                this.ctx.container.start({ image: this.image, env, enableInternet: false });
+                this.ctx.container.start({ image, instance: pin.instance, env, enableInternet: false });
             } catch {
                 // A throw does not prove absence. Reconcile the durable fence.
                 return { status: "pending" };

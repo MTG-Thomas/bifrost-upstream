@@ -214,6 +214,7 @@ test("the instance lifecycle pins the intercept and launch options, then stops a
         },
         start(options) {
             assert.equal(options.image, image);
+            assert.equal(options.instance, "standard-1");
             assert.equal(options.enableInternet, false);
             assert.equal(options.env.BIFROST_API_URL, origin);
             assert.equal(options.env.BIFROST_WORKER_CONTROL_SECRET, "f".repeat(64));
@@ -249,6 +250,11 @@ test("the instance lifecycle pins the intercept and launch options, then stops a
     const controller = () => new ContainerInstanceLifecycle(ctx, registry(), {
         origin, image, release: "c".repeat(64), intercept: intercepted,
     });
+    assert.deepEqual(await controller().start(slot, "f".repeat(64), "n".repeat(43)), { status: "invalid" });
+    container.images = { "bifrost-linux": image.replace(slot.image, "sha256:" + "e".repeat(64)) };
+    assert.deepEqual(await controller().start(slot, "f".repeat(64), "n".repeat(43)), { status: "invalid" });
+    assert.equal(db.prepare("SELECT count(*) AS count FROM reservations").get().count, 0);
+    container.images = { "bifrost-linux": image };
     assert.deepEqual(await controller().start(slot, "f".repeat(64), "n".repeat(43)), { status: "pending" });
     assert.deepEqual(await controller().start(slot, "f".repeat(64), "n".repeat(43)), { status: "pending" });
     assert.equal(JSON.stringify([...stored]).includes("f".repeat(64)), false);
@@ -272,6 +278,7 @@ test("a registry authorization survives a local deadline advance; a throwing sta
     const actor = "b".repeat(64);
     const stored = new Map();
     let starts = 0;
+    const image = `registry.cloudflare.com/${"a".repeat(32)}/bifrost-${slot.installation.replaceAll("-", "")}-r2@${slot.image}`;
     const scope = registry();
     const controller = () => new ContainerInstanceLifecycle({
         id: actor,
@@ -282,6 +289,7 @@ test("a registry authorization survives a local deadline advance; a throwing sta
         },
         container: {
             running: false,
+            images: { "bifrost-linux": image },
             interceptOutboundHttps() {},
             start() { starts++; throw new Error("injected allocation error"); },
             destroy() { assert.fail("No running placement to destroy"); },
@@ -296,7 +304,7 @@ test("a registry authorization survives a local deadline advance; a throwing sta
         closeAbsent: (...args) => scope.closeAbsent(...args),
     }, {
         origin: "https://ingress.example.test", intercept: {}, release: "c".repeat(64),
-        image: `registry.cloudflare.com/${"a".repeat(32)}/bifrost-${slot.installation.replaceAll("-", "")}-r2@${slot.image}`,
+        image,
     });
     assert.equal((await controller().start(slot, "f".repeat(64))).status, "pending");
     assert.equal((await controller().start(slot, "f".repeat(64))).status, "pending");
