@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from shared.models import CloudflareCapacityPolicy
+from shared.version import get_version
 from sqlalchemy import String, case, cast, exists, func, literal, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +46,7 @@ from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_CLEANUP_PENDING,
     CONTAINERS_SCOPE,
     ContainersPolicy,
+    container_deadline_sql,
     container_envelope,
     container_reserve_cost,
     fleet_envelope,
@@ -218,6 +220,32 @@ def primary_has_no_fit(
 class ContainerAdmissionRefused:
     code: Literal["CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_COOLDOWN"] = CONTAINERS_CLEANUP_PENDING
     retry_at: datetime | None = None
+
+
+def container_dispatch_allowed(worker_id: UUID) -> ColumnElement[bool]:
+    """Only the pinned, still-approved dispatch can enter a managed guest."""
+    pin = CloudflareWorkerReservation
+    installation = CloudflareInstallation
+    return select(pin.worker_id).join(installation, installation.id == pin.installation_id).join(
+        Execution, Execution.id == WorkDispatch.subject_id,
+    ).join(Workflow, Workflow.id == Execution.workflow_id).join(
+        CloudflareApproval, CloudflareApproval.revision == pin.container_envelope["approval"].as_string(),
+    ).where(
+        pin.worker_id == worker_id, pin.scope == CONTAINERS_SCOPE, pin.canary_job_id.is_(None),
+        pin.container_stopped_at.is_(None), container_deadline_sql() > func.clock_timestamp(),
+        pin.container_envelope["execution_id"].as_string() == cast(Execution.id, String),
+        pin.container_tenant == func.coalesce(cast(Execution.organization_id, String), tenant_key(None)),
+        installation.retired_at.is_(None), installation.desired_state == "enabled",
+        installation.desired_revision == installation.admitted_revision,
+        pin.deployment_revision == installation.admitted_revision,
+        pin.container_release == installation.containers_release_digest,
+        workers_release_matches(), CloudflareApproval.workflow_id == Workflow.id, CloudflareApproval.is_current,
+        CloudflareApproval.policy_version == LINUX_REVIEW_VERSION,
+        Workflow.is_active, CloudflareApproval.organization_id.is_not_distinct_from(Workflow.organization_id),
+        or_(Workflow.organization_id.is_(None), Workflow.organization_id == Execution.organization_id),
+        WorkDispatch.handler == CLOUDFLARE_WORKFLOW_HANDLER[0],
+        WorkDispatch.handler_version == CLOUDFLARE_WORKFLOW_HANDLER[1], linux_source_current_sql(),
+    ).correlate(WorkDispatch).exists()
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,6 +496,7 @@ async def _create_container_reservation(
         execution_lane="normal", capacity_scope=CONTAINERS_SCOPE, capacity_resource_uid=uid.hex,
         supported_handlers=[] if canary is not None else [CLOUDFLARE_WORKFLOW_HANDLER[0]],
         reserved_for_dispatch_id=dispatch_id,
+        version=get_version(),
         memory_limit_bytes=4 * 1024**3, launched_by=controller_id,
     ))
     await db.flush()

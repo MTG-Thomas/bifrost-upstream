@@ -17,13 +17,14 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker
-from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_deadline_sql
 from src.services.worker_pool.cloudflare_release import installed_workers_release_digest
 from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
 from src.services.worker_pool.eligibility import timeout_fits_workers_deadline
 from src.services.worker_pool.liveness import HEARTBEAT_LOST_AFTER
 from src.worker.remote.protocol import (
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    LINUX_RUNTIME_PROFILE,
     WORKERS_DEADLINE_DISPATCH_SECONDS,
 )
 
@@ -228,6 +229,23 @@ def _scoped_cloudflare_admission(worker_id: UUID, installation_id: UUID | None, 
         scope.scope == pin.scope,
         scope.deployment_revision == pin.deployment_revision,
     ).correlate(pin)
+    workers = and_(
+        pin.container_reserved_at.is_(None),
+        pin.workers_deadline_at > now + timedelta(seconds=WORKERS_DEADLINE_DISPATCH_SECONDS),
+        pin.workers_lifetime_seconds.is_not(None),
+        *(() if timeout_seconds is None else (timeout_fits_workers_deadline(timeout_seconds, now=now),)),
+        installation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),
+        ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    )
+    runtime = workers
+    if timeout_seconds is None:
+        runtime = or_(workers, and_(
+            pin.scope == CONTAINERS_SCOPE, pin.container_reserved_at.is_not(None),
+            pin.container_stopped_at.is_(None), container_deadline_sql() > now,
+            pin.container_release == installation.containers_release_digest,
+            ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
+            ExecutionWorker.reserved_for_dispatch_id.is_not(None),
+        ))
     allowed = and_(
         installation.retired_at.is_(None),
         installation.desired_state == "enabled",
@@ -235,16 +253,11 @@ def _scoped_cloudflare_admission(worker_id: UUID, installation_id: UUID | None, 
         installation.admitted_revision == pin.deployment_revision,
         workers_release_matches(),
         pin.canary_job_id.is_(None),
-        pin.container_reserved_at.is_(None),
-        pin.workers_deadline_at > now + timedelta(seconds=WORKERS_DEADLINE_DISPATCH_SECONDS),
-        pin.workers_lifetime_seconds.is_not(None),
-        *(() if timeout_seconds is None else (timeout_fits_workers_deadline(timeout_seconds, now=now),)),
         pin.control_root_version.is_not(None),
         cloudflare_usage_within_limit(),
-        installation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),
-        ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
         ExecutionWorker.capacity_scope.is_not_distinct_from(pin.scope),
         matches_scope,
+        runtime,
     )
     query = (
         select(now)

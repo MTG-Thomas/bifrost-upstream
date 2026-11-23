@@ -20,6 +20,7 @@ from src.jobs.platform.base import (
     PlatformJobRequiresAction,
     define_platform_job,
 )
+from src.models.orm.cloudflare_approvals import CloudflareApproval
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareCredential,
@@ -29,7 +30,9 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkflowSlot,
 )
 from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.executions import Execution
 from src.models.orm.platform_jobs import PlatformJob
+from src.models.orm.work_dispatches import WorkDispatch
 from src.services.audit import emit_audit
 from src.services.audit_context import ActorContext
 from src.services.authorization.enforce import Caller, require_operation
@@ -45,6 +48,8 @@ from src.services.work_dispatch import (
     wake_pool_workers_after_commit,
 )
 from src.services.worker_pool import cloudflare_tunnel
+from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION
+from src.services.worker_pool.cloudflare_containers_egress import read_verified_egress
 from src.services.worker_pool.cloudflare_containers_release import ContainersReleaseUnavailable
 from src.services.worker_pool.cloudflare_containers_rest import ContainerRegistry, ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
@@ -926,13 +931,25 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
         if release is None or order is None or release != target:
             raise PlatformJobRequiresAction("Install the Matched Workers Release", {"code": "CF_RELEASE_MISMATCH"})
         provision = row.admitted_revision is None
-    if provision:
+        refresh = (
+            not provision and row.containers_policy.get("enabled") is True
+            and read_verified_egress(row, datetime.now(UTC)) is None
+            and await db.scalar(select(WorkDispatch.id).join(
+                Execution, Execution.id == WorkDispatch.subject_id,
+            ).join(CloudflareApproval, CloudflareApproval.workflow_id == Execution.workflow_id).where(
+                WorkDispatch.assigned_worker_id.is_(None), WorkDispatch.handler == "workflow.execute",
+                CloudflareApproval.is_current, CloudflareApproval.policy_version == LINUX_REVIEW_VERSION,
+                CloudflareApproval.declaration["installation_id"].as_string() == str(row.id),
+                CloudflareApproval.declaration["deployment_revision"].as_integer() == row.desired_revision,
+            ).limit(1)) is not None
+        )
+    if provision or refresh:
         # Reuse the admission canary and write fences used by Enable.
         from src.jobs.platform.cloudflare_enable import CloudflareEnablePayload, _enable
 
         return await _enable(
             context, CloudflareEnablePayload(installation_id=payload.installation_id, revision=payload.revision),
-            repair_tunnel_ingress=True,
+            repair_tunnel_ingress=True, **({"refresh_container_egress": True} if refresh else {}),
         )
 
     await context.report("Verifying Cloudflare Deployment")

@@ -275,15 +275,21 @@ async def claim_next(
             AgentRun.status == "queued",
         ).correlate(WorkDispatch).exists()
     )
-    # Managed Linux reservations are provisionable only after their dedicated
-    # readiness and send path exists. A generic Linux hello grants no claim.
+    from src.services.worker_pool.cloudflare_containers_admission import container_dispatch_allowed
+
     managed_container = exists().where(
         managed_workers.c.worker_id == incarnation_id, managed_workers.c.container_reserved_at.is_not(None),
     )
     linux_eligible = (
         (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE)
-        & ExecutionWorker.capacity_scope.is_distinct_from(CONTAINERS_SCOPE)
-        & ~managed_container
+        & (
+            (ExecutionWorker.capacity_scope.is_distinct_from(CONTAINERS_SCOPE) & ~managed_container)
+            | (
+                (ExecutionWorker.capacity_scope == CONTAINERS_SCOPE)
+                & (ExecutionWorker.reserved_for_dispatch_id == WorkDispatch.id)
+                & container_dispatch_allowed(incarnation_id)
+            )
+        )
     )
     profile_eligible = exists().where(
         ExecutionWorker.id == incarnation_id,

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,6 +75,18 @@ class ContainerEgressObservation:
     denied: frozenset[str]
 
 
+class ContainerEgressRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    installation_id: UUID
+    revision: int
+    release_digest: str
+    origin: str
+    provider_id: str
+    provider_version: str
+    observed_at: datetime
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class VerifiedEgress:
     installation_id: UUID
@@ -85,11 +97,32 @@ class VerifiedEgress:
     provider_version: str
     observed_at: datetime
 
-    def __init__(self, observation: ContainerEgressObservation, *, _mint: object) -> None:
+    def __init__(self, observation: ContainerEgressObservation | ContainerEgressRecord, *, _mint: object) -> None:
         if _mint is not _MINT:
             raise TypeError("Container egress must be verified by the network probe")
         for field in self.__dataclass_fields__:
             object.__setattr__(self, field, getattr(observation, field))
+
+    def as_record(self) -> dict:
+        return ContainerEgressRecord.model_validate(self, from_attributes=True).model_dump(mode="json")
+
+
+def read_verified_egress(installation: CloudflareInstallation, now: datetime) -> VerifiedEgress | None:
+    """Reconstitute only the current, fresh proof committed by joint qualification."""
+    try:
+        record = ContainerEgressRecord.model_validate((installation.deployment_evidence or {}).get("container_egress"))
+        if (
+            (record.installation_id, record.revision, record.release_digest, record.origin) != (
+                installation.id, installation.containers_ready_revision, installation.containers_release_digest,
+                installation.worker_ingress_origin,
+            )
+            or record.observed_at.tzinfo is None
+            or not now - EGRESS_PROOF_MAX_AGE <= record.observed_at <= now
+        ):
+            return None
+    except ValidationError:
+        return None
+    return VerifiedEgress(record, _mint=_MINT)
 
 
 def current_container_application(installation: CloudflareInstallation, revision: int, release_digest: str):

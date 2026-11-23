@@ -62,7 +62,11 @@ from src.services.worker_pool.cloudflare_admission import joint_container_readin
 from src.services.worker_pool.cloudflare_canary import CANARY_DEADLINE_SECONDS, run_workers_canary
 from src.services.worker_pool.cloudflare_containers_admission import reserve_container_canary
 from src.services.worker_pool.cloudflare_containers_control import reconcile_container_stop
-from src.services.worker_pool.cloudflare_containers_egress import current_container_application, verify_container_egress
+from src.services.worker_pool.cloudflare_containers_egress import (
+    current_container_application,
+    read_verified_egress,
+    verify_container_egress,
+)
 from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, ContainersPolicy
 from src.services.worker_pool.cloudflare_containers_release import (
     ContainersReleaseFetchError,
@@ -229,7 +233,7 @@ async def _install_script(
 
 async def _settle_enable(
     context: PlatformJobContext, payload: CloudflareEnablePayload, http: httpx.AsyncClient,
-    release: WorkersRelease, *, repair_tunnel_ingress: bool = False,
+    release: WorkersRelease, *, repair_tunnel_ingress: bool = False, refresh_container_egress: bool = False,
 ) -> dict[str, Any]:
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
@@ -301,9 +305,21 @@ async def _settle_enable(
             return {"outcome": "superseded"}
         if not upgrading:
             await _require_budget(db, row)
-        if row.admitted_revision == payload.revision:
+        already_admitted = row.admitted_revision == payload.revision
+        refresh = (
+            already_admitted and container_release is not None and refresh_container_egress
+            and read_verified_egress(row, datetime.now(UTC)) is None
+        )
+        if already_admitted and not refresh:
             return {"outcome": "enabled"}
-        await _require_legacy_cleanup(db)
+        if not already_admitted:
+            await _require_legacy_cleanup(db)
+    if refresh and container_release is not None:
+        await context.report("Checking Cloudflare Container Ingress")
+        outcome = await _qualify_container_revision(
+            context, payload, http, container_adapter, management_token, container_release, refresh=True,
+        )
+        return {"outcome": "enabled" if outcome else "superseded"}
     if installation.reachability_mode == "managed_tunnel":
         await context.report("Provisioning Managed Tunnel")
         async with get_db_context() as db:
@@ -528,12 +544,13 @@ async def _settle_enable(
 async def _qualify_container_revision(
     context: PlatformJobContext, payload: CloudflareEnablePayload, http: httpx.AsyncClient,
     adapter: ContainersRest, management_token: SecretStr, release: VerifiedContainerRelease,
+    *, refresh: bool = False,
 ) -> bool:
     async with get_db_context() as db:
         installation = await _locked_current(db, context, payload)
         if installation is None:
             return False
-        if installation.containers_release_digest == release.digest and await db.scalar(
+        if not refresh and installation.containers_release_digest == release.digest and await db.scalar(
             select(joint_container_readiness(payload.revision)).where(CloudflareInstallation.id == installation.id),
         ):
             return True
@@ -576,6 +593,10 @@ async def _qualify_container_revision(
             job_id=context.job_id, lease_token=context.lease_token, release=release,
         )
     if not isinstance(reserved, CloudflareWorkerReservation):
+        if refresh:
+            raise PlatformJobFailure(
+                "CF_CONTAINERS_CANARY_SEAT", "Waiting for a Container Canary Seat", retryable=True,
+            )
         raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
     verified = None
     try:
@@ -591,7 +612,18 @@ async def _qualify_container_revision(
     except TimeoutError:
         pass
     finally:
-        await retire(reserved.worker_id)
+        retired = False
+        try:
+            await retire(reserved.worker_id)
+            retired = True
+        finally:
+            if refresh and (verified is None or not retired):
+                async with get_db_context() as db:
+                    installation = await _locked_current(db, context, payload)
+                    if installation is not None:
+                        installation.admitted_revision = installation.containers_ready_revision = None
+                        installation.containers_release_digest = None
+                        wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     if verified is None:
         raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
 
@@ -610,7 +642,7 @@ async def _qualify_container_revision(
         installation.containers_ready_revision = payload.revision
         installation.containers_release_digest = release.digest
         installation.deployment_evidence = {
-            **(installation.deployment_evidence or {}), "container_canary_at": verified.observed_at.isoformat(),
+            **(installation.deployment_evidence or {}), "container_egress": verified.as_record(),
         }
     return True
 
@@ -981,13 +1013,17 @@ async def _require_budget(db: AsyncSession, row: CloudflareInstallation) -> None
 
 async def _enable(
     context: PlatformJobContext, parsed: BaseModel, *, repair_tunnel_ingress: bool = False,
+    refresh_container_egress: bool = False,
 ) -> dict[str, Any]:
     payload = CloudflareEnablePayload.model_validate(parsed)
     await context.report("Checking Cloudflare Release and Entitlement")
     try:
         release = load_workers_release()
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
-            return await _settle_enable(context, payload, http, release, repair_tunnel_ingress=repair_tunnel_ingress)
+            return await _settle_enable(
+                context, payload, http, release, repair_tunnel_ingress=repair_tunnel_ingress,
+                refresh_container_egress=refresh_container_egress,
+            )
     except WorkersReleaseUnavailable:
         raise PlatformJobRequiresAction("Install a Qualified Workers Release", {"code": "CF_RELEASE_UNAVAILABLE"}) from None
     except ContainersReleaseUnavailable:

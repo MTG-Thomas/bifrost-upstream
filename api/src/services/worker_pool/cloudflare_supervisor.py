@@ -6,10 +6,11 @@ import os
 import time
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
 import httpx
 from shared.models import CloudflareCapacityPolicy
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, update
 
 from src.config import Settings
 from src.core.database import get_db_context
@@ -21,6 +22,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareCredential,
     CloudflareInstallation,
+    CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.work_dispatches import WorkDispatch
@@ -39,10 +41,21 @@ from src.services.worker_pool.cloudflare_admission import (
     PrimaryPool,
     workers_release_matches,
 )
+from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
+from src.services.worker_pool.cloudflare_containers_admission import ContainerAdmissionRefused, reserve_container
+from src.services.worker_pool.cloudflare_containers_control import reconcile_container_stop, start_container
+from src.services.worker_pool.cloudflare_containers_egress import read_verified_egress
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_deadline_sql
+from src.services.worker_pool.cloudflare_containers_release import VerifiedContainerRelease, load_containers_release
+from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+from src.services.worker_pool.cloudflare_containers_settlement import BOOT_OBSERVATION_MS
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
+    load_account_token,
     open_credential,
 )
+from src.services.worker_pool.cloudflare_provisioning import ObservationPending
+from src.services.worker_pool.cloudflare_release import load_workers_release
 from src.services.worker_pool.cloudflare_spend import (
     capacity_request_reservation,
     cloudflare_usage_within_limit,
@@ -124,10 +137,94 @@ async def _installations() -> list[ManagedCloudflareScope]:
             .join(CloudflareCapacityScope, CloudflareCapacityScope.installation_id == CloudflareInstallation.id)
             .where(
                 CloudflareInstallation.retired_at.is_(None),
-                CloudflareCapacityScope.scope == "workers",
+                CloudflareCapacityScope.scope.in_(("workers", CONTAINERS_SCOPE)),
             )
         )
         return [ManagedCloudflareScope(*row) for row in rows.tuples()]
+
+
+async def _reconcile_containers(
+    binding: ManagedCloudflareScope, settings: Settings, http: httpx.AsyncClient, controller_id: UUID,
+    releases: dict[ManagedCloudflareScope, VerifiedContainerRelease], *, kubernetes: bool,
+) -> None:
+    adapter = ContainersRest(http)
+    pin = CloudflareWorkerReservation
+    async with get_db_context() as db:
+        installation = await db.get(CloudflareInstallation, binding.installation_id)
+        if installation is None:
+            return
+        management = await load_account_token(db, installation)
+        now = await db.scalar(select(func.clock_timestamp()))
+        assert now is not None
+        existing = (await db.execute(select(
+            pin.worker_id, pin.container_envelope, pin.canary_job_id, ExecutionWorker.state, container_deadline_sql(),
+        ).join(ExecutionWorker, ExecutionWorker.id == pin.worker_id).where(
+            pin.installation_id == binding.installation_id, pin.scope == CONTAINERS_SCOPE,
+            pin.deployment_revision == binding.revision,
+            ExecutionWorker.capacity_resource_deleted_at.is_(None), ~active_cloudflare_canary(ExecutionWorker.id),
+        ))).tuples().all()
+        admitting = (
+            installation.desired_state == "enabled" and installation.admitted_revision == binding.revision
+            and installation.containers_ready_revision == binding.revision
+        )
+        verified = read_verified_egress(installation, now) if admitting else None
+        release_digest = installation.containers_release_digest
+        primary_cap = CloudflareCapacityPolicy.model_validate(installation.policy["limits"]).shared_managed_worker_cap
+
+    async def retire(worker_id: UUID) -> None:
+        async with get_db_context() as db:
+            await db.execute(update(ExecutionWorker).where(
+                ExecutionWorker.id == worker_id, ExecutionWorker.state.in_(("reserved", "starting", "ready")),
+            ).values(state="draining"))
+        try:
+            await reconcile_container_stop(http, adapter, management, worker_id)
+        except ObservationPending:
+            pass  # A readback may still be settling. Revisit at the next pass.
+
+    for worker_id, envelope, canary_job_id, worker_state, deadline in existing:
+        if envelope is None:
+            continue
+        start_deadline = datetime.fromisoformat(envelope["start_deadline"])
+        if (
+            canary_job_id is not None or worker_state in ("draining", "lost", "retired") or deadline <= now
+            or (worker_state in ("reserved", "starting") and (
+                not admitting or now >= start_deadline + timedelta(milliseconds=BOOT_OBSERVATION_MS)
+            ))
+        ):
+            await retire(worker_id)
+        elif worker_state in ("reserved", "starting") and now < start_deadline:
+            await _start_container_reservation(http, adapter, management, worker_id)
+
+    if verified is None:
+        return
+    release = releases.get(binding)
+    if release is None or release.digest != release_digest:
+        release = await load_containers_release(http, load_workers_release())
+        if release.digest != release_digest:
+            return
+        releases[binding] = release
+    primary, cause = await _primary_pool(settings, http, kubernetes=kubernetes, shared_cap=primary_cap)
+    await record_controller_observation(binding, primary=primary, cause=cause)
+    if primary is None:
+        return
+    async with get_db_context() as db:
+        reserved = await reserve_container(
+            db, installation_id=binding.installation_id, controller_id=controller_id,
+            release=release, primary=primary, verified_egress=verified,
+        )
+    if isinstance(reserved, ContainerAdmissionRefused):
+        return
+    if reserved is not None:
+        await _start_container_reservation(http, adapter, management, reserved.worker_id)
+
+
+async def _start_container_reservation(http, adapter, management, worker_id: UUID) -> None:
+    receipt = await start_container(http, worker_id)
+    if receipt is not None and receipt.status == "allocation-refused":
+        try:
+            await reconcile_container_stop(http, adapter, management, worker_id, refusal=receipt)
+        except ObservationPending:
+            pass
 
 
 async def _reconcile_scope(
@@ -221,6 +318,8 @@ async def cloudflare_supervisor_loop(
     stop_event: asyncio.Event, settings: Settings, *, lease: SchedulerLeadershipLease,
 ) -> None:
     controllers: dict[ManagedCloudflareScope, ExternalWorkerPoolController] = {}
+    container_releases: dict[ManagedCloudflareScope, VerifiedContainerRelease] = {}
+    container_controller_id = uuid4()
     next_inventory = 0.0
     async with httpx.AsyncClient(trust_env=False) as http:
         wake = asyncio.Event()
@@ -239,13 +338,22 @@ async def cloudflare_supervisor_loop(
                         for binding in list(controllers):
                             if binding not in scopes:
                                 await _withdraw_live(controllers.pop(binding).id)
+                        for binding in list(container_releases):
+                            if binding not in scopes:
+                                container_releases.pop(binding)
                         for binding in scopes:
                             if not lease.holds_lease():
                                 return
                             try:
-                                await _reconcile_scope(
-                                    binding, settings, http, controllers, kubernetes=kubernetes,
-                                )
+                                if binding.name == CONTAINERS_SCOPE:
+                                    await _reconcile_containers(
+                                        binding, settings, http, container_controller_id, container_releases,
+                                        kubernetes=kubernetes,
+                                    )
+                                else:
+                                    await _reconcile_scope(
+                                        binding, settings, http, controllers, kubernetes=kubernetes,
+                                    )
                             except (CapacityProtocolError, httpx.HTTPError) as exc:
                                 await record_controller_observation(
                                     binding, unavailable=True,

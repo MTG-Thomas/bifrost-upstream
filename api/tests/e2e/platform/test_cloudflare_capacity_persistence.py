@@ -1492,7 +1492,9 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     )
     monkeypatch.setattr(enable_job, "WorkersRestProvisioner", lambda *_: provisioner)
     monkeypatch.setattr(enable_job, "probe_worker_ingress", AsyncMock(return_value=ingress_probes.WorkerIngressProbeResult(
-        installation.worker_ingress_origin, True, True, True, (), runtime_canary=ingress_probes.RuntimeCanary(True, True),
+        installation.worker_ingress_origin, True, True, True,
+        (ingress_probes.RouteProbe("GET", "/api/sdk/context", 401, True),),
+        runtime_canary=ingress_probes.RuntimeCanary(True, True),
     )))
     payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
@@ -3379,10 +3381,10 @@ async def create_installation(
     "stale-hash", "missing-pin", "solution-generation", "solution-version", "solution-outbound",
     "cross-org", "wrong-approval-owner", "tenant-owned-global-approval",
     "stale-egress", "different-provider-version", "overdue-account", "overdue-other-account",
-    "cold-canary", "stopped-unconfirmed",
+    "cold-canary", "stopped-unconfirmed", "scheduler-refusal", "scheduler-claim",
 ])
 async def test_container_reservation_rejects_unreviewed_source_and_scope(
-    db_session, installation, reason,
+    db_session, installation, reason, monkeypatch,
 ) -> None:
     from src.models.contracts.cloudflare_approval import SolutionApprovalScope
     from src.models.orm.cloudflare_approvals import CloudflareApproval
@@ -3416,8 +3418,10 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
     installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
     installation.policy = {**installation.policy, "limits": {**installation.policy["limits"], "monthly_limit_usd": "500"}}
     db.add_all(Organization(id=tenant, name=str(tenant), created_by="fixture") for tenant in (owner, other))
+    primary_id = uuid4()
     db.add(ExecutionWorker(
-        id=uuid4(), form=primary.form, capacity_scope=primary.scope, state="ready", heartbeat_at=now,
+        id=primary_id, form=primary.form, capacity_scope=primary.scope, state="ready", heartbeat_at=now,
+        runtime_profile=LINUX_RUNTIME_PROFILE, supported_handlers=["workflow.execute"],
         memory_budget_bytes=128, memory_reserved_bytes=128,
     ))
     db.add(seal_credential(
@@ -3521,7 +3525,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
             worker.remote_auth_nonce_digest = nonce_digest(nonce)
             worker.remote_owner_lease_expires_at = now + timedelta(minutes=1)
             worker.remote_session_generation = 1
-            canary.canary_ack_at = now
+            canary.canary_ack_at = canary.canary_sdk_at = now
             canary.canary_sdk_generation = 1
             assert canary.container_envelope is not None
             canary.container_envelope = {
@@ -3542,6 +3546,92 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         assert admission["verified_egress"] is not None
         installation.admitted_revision = installation.containers_ready_revision = 1
         installation.containers_release_digest = release.digest
+    elif reason in ("scheduler-refusal", "scheduler-claim"):
+        from src.config import get_settings
+        from src.services.worker_pool import claims, cloudflare_containers_control, cloudflare_supervisor
+        from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
+
+        proof = admission["verified_egress"]
+        installation.deployment_evidence = {"container_egress": proof.as_record()}
+        image = f"registry.cloudflare.com/{installation.account_id}/{application.target_name}"
+        db.add(CloudflareOwnedResource(
+            id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+            scope="containers", kind="container_image", target_name=application.target_name,
+            desired_revision=1, artifact_digest=release.digest, effect_id=uuid4(), state="present",
+            provider_id=f"{image}:release", provider_version=release.manifest.image_digest, observed_at=now,
+        ))
+        await db.flush()
+        connection = await db.connection()
+
+        @asynccontextmanager
+        async def transaction():
+            async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+                yield session
+                await session.commit()
+
+        for module in (cloudflare_supervisor, cloudflare_containers_control, claims):
+            monkeypatch.setattr(module, "get_db_context", transaction)
+        monkeypatch.setattr(cloudflare_supervisor, "_primary_pool", AsyncMock(return_value=(primary, None)))
+        monkeypatch.setattr(cloudflare_supervisor, "record_controller_observation", AsyncMock())
+        actor = "a" * 64
+        requests = []
+        refuse = reason == "scheduler-refusal"
+
+        def provider(request):
+            if request.url.host == "capacity.example.test":
+                assert len(request.headers["x-bifrost-incarnation-certificate"]) == 128
+                payload = json.loads(request.content)
+                if request.url.path == "/v1/start":
+                    assert len(payload["control_key"]) == 64
+                    requests.append(UUID(payload["pin"]["worker"]))
+                    if not refuse:
+                        return httpx.Response(200, json={"status": "pending", "instance": actor})
+                    pin = payload["pin"]
+                    return httpx.Response(200, json={
+                        "status": "allocation-refused", "instance": actor, "uid": pin["uid"],
+                        "startDeadline": pin["startDeadline"], "voidedAt": pin["reservedAt"],
+                    })
+                assert refuse and request.url.path == "/v1/stop" and "control_key" not in payload
+                return httpx.Response(200, json={"status": "conflict", "instance": actor})
+            assert request.url.host == "api.cloudflare.com"
+            if request.url.path.endswith(f"/instances/{actor}"):
+                return httpx.Response(404)
+            assert request.url.path.endswith(f"/containers/applications/{application.provider_id}")
+            return httpx.Response(200, json={"success": True, "result": {
+                "id": application.provider_id, "account_id": installation.account_id,
+                "name": application.target_name, "scheduling_policy": "durable_object",
+                "durable_objects": {"namespace_id": application.provider_version},
+            }})
+
+        binding = ManagedCloudflareScope(installation.id, "containers", 1)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+            await cloudflare_supervisor._reconcile_containers(
+                binding, get_settings(), http, uuid4(), {binding: release}, kubernetes=False,
+            )
+        assert len(requests) == 1
+        pin = await db.get(CloudflareWorkerReservation, requests[0])
+        worker = await db.get(ExecutionWorker, requests[0])
+        assert pin is not None and pin.container_envelope is not None and worker is not None
+        if refuse:
+            assert pin.container_envelope["allocation_refused"] and pin.container_stopped_at is not None
+            assert worker.state == "retired" and worker.reserved_for_dispatch_id is None
+            cooldown = await reserve_container(db, **admission)
+            assert isinstance(cooldown, ContainerAdmissionRefused) and cooldown.code == "CF_CONTAINERS_COOLDOWN"
+            claimant = primary_id
+        else:
+            assert worker.state == "starting" and worker.capacity_resource_uid is not None
+            assert await claims.admit_external_worker(
+                worker.id, resource_uid=worker.capacity_resource_uid, launcher_id=worker.id,
+                version=worker.version, hostname="fixture", container_release=release.digest,
+            ) == worker.id
+            claimant = worker.id
+        claim = await claims.claim_next(
+            claimant, fits_bytes=512, budget_bytes=512, handlers=[("workflow.execute", 1)],
+        )
+        assert claim is not None and claim.subject_id == run_id and claim.workflow_slot is None
+        assert await claims.claim_next(primary_id, fits_bytes=512, budget_bytes=512) is None
+        assert await claims.claim_next(worker.id, fits_bytes=512, budget_bytes=512) is None
+        return
     elif reason == "stale-hash":
         await db.execute(update(FileIndex).where(FileIndex.path == path).values(content_hash="b" * 64))
     elif reason == "missing-pin":

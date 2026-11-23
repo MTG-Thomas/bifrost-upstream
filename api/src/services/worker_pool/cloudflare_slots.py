@@ -181,7 +181,10 @@ async def load_workflow_slot_admission(db: AsyncSession, worker_id: UUID) -> Wor
     row = (await db.execute(
         select(CloudflareInstallation.id, CloudflareInstallation.policy)
         .join(CloudflareWorkerReservation)
-        .where(CloudflareWorkerReservation.worker_id == worker_id)
+        .where(
+            CloudflareWorkerReservation.worker_id == worker_id,
+            CloudflareWorkerReservation.container_reserved_at.is_(None),
+        )
     )).one_or_none()
     if row is None:
         return None

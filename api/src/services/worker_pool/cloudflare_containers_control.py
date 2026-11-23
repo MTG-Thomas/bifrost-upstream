@@ -19,6 +19,8 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.work_dispatches import WorkDispatch
+from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.cloudflare_containers_auth import request_container_control
 from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_provider_pin
 from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
@@ -41,7 +43,10 @@ from src.services.worker_pool.cloudflare_provisioning import (
 class Receipt(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    status: Literal["allocation-refused", "void", "absent", "closed", "conflict", "pending", "observed", "retired"]
+    status: Literal[
+        "allocation-refused", "void", "absent", "closed", "conflict", "invalid", "pending", "observed",
+        "reserved", "retired", "receipt-limit",
+    ]
     instance: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     uid: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     authorizedAt: int | None = None
@@ -128,6 +133,7 @@ async def load_container_control(db: AsyncSession, worker_id: UUID) -> Container
 
 async def reconcile_container_stop(
     http: httpx.AsyncClient, adapter: ContainersRest, management: SecretStr, worker_id: UUID,
+    *, refusal: Receipt | None = None,
 ) -> bool:
     """Return true only once Bifrost settlement and registry retirement agree."""
     async with get_db_context() as db:
@@ -151,7 +157,7 @@ async def reconcile_container_stop(
         if stopped.instance is None or stopped.status not in ("conflict", "pending"):
             raise ObservationPending("Container stop has no exact actor receipt")
         instance = stopped.instance
-        void = await binding.request(http, "void")
+        void = refusal if refusal is not None else await binding.request(http, "void")
         if void.status in ("void", "allocation-refused"):
             if void.uid != uid or void.instance != instance or void.startDeadline != deadline or void.voidedAt is None:
                 raise ObservationPending("Container void does not match its reservation")
@@ -229,3 +235,31 @@ async def reconcile_container_stop(
                 raise ObservationPending("Registry retirement differs from the settled Container")
             worker.capacity_resource_deleted_at = await db.scalar(select(func.clock_timestamp()))
     return True
+
+
+async def start_container(http: httpx.AsyncClient, worker_id: UUID) -> Receipt | None:
+    """Send the launch only while the ordinary reservation can still claim its dispatch."""
+    async with get_db_context() as db:
+        if not await cloudflare_claim_allowed(db, worker_id):
+            return None
+        worker = await db.get(ExecutionWorker, worker_id, with_for_update=True)
+        if worker is None or worker.state not in ("reserved", "starting") or worker.reserved_for_dispatch_id is None:
+            return None
+        dispatch = await db.get(WorkDispatch, worker.reserved_for_dispatch_id)
+        if dispatch is None or dispatch.assigned_worker_id is not None:
+            return None
+        binding = await load_container_control(db, worker_id)
+        now = await db.scalar(select(func.clock_timestamp()))
+        assert now is not None and isinstance(binding.pin["startDeadline"], int)
+        if int(now.timestamp() * 1000) >= binding.pin["startDeadline"]:
+            return None
+        worker.state = "starting"
+        # The guest cannot enroll before the worker is starting. Commit that
+        # durable fence before sending the idempotent incarnation request.
+    async with get_db_context() as db:
+        if not await cloudflare_claim_allowed(db, worker_id):
+            return None
+        receipt = await binding.request(http, "start")
+    if receipt.instance is None:
+        raise ObservationPending("Cloudflare Container start lacks its actor identity")
+    return receipt
