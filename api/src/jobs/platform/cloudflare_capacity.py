@@ -120,6 +120,7 @@ TUNNEL_VERIFICATION_CHANGED = "CF_TUNNEL_VERIFICATION_CHANGED"
 SELF_HEALING_RECONCILE_CODES = frozenset({
     "CF_DRAIN_TIMEOUT", "CF_CLEANUP_PENDING", "CF_RELEASE_MISMATCH",
     "CF_PROVIDER_UNAVAILABLE", "CF_SPEND_UNVERIFIED", "CF_CONNECTOR_UNAVAILABLE",
+    "CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_RELEASE_FETCH", "CF_CONTAINERS_RELEASE_UNAVAILABLE",
 })
 PINNED_UPGRADE_RUNNER_CODES = frozenset({
     "unsupported_payload_version", "runner_shutdown", "runner_lost", "runner_exited", "timeout",
@@ -1558,6 +1559,10 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
     latest = await db.scalar(history.order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
     if not needs_staging and (latest is None or latest.status == "succeeded"):
         return
+    if installation.admitted_revision is None:
+        retry = read_egress_refresh(installation)
+        if retry is not None and retry.retry_at > now:
+            return
     if latest is not None and latest.status != "succeeded":
         code = (latest.result or {}).get("code") if latest.status == "requires_action" else latest.error_code
         if (

@@ -474,7 +474,10 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["transient", "mismatch", "verified", "retire-pending", "no-spare-seat", "backoff"])
+@pytest.mark.parametrize("outcome", [
+    "transient", "mismatch", "mismatch-retire-pending", "verified", "retire-pending",
+    "no-spare-seat", "backoff", "qualification-backoff",
+])
 async def test_refresh_changes_admission_only_on_conflicting_evidence(monkeypatch, outcome):
     release, _, _ = make_release()
     installation_id = uuid4()
@@ -501,13 +504,14 @@ async def test_refresh_changes_admission_only_on_conflicting_evidence(monkeypatc
     reserve = AsyncMock(return_value=None if outcome == "no-spare-seat" else CloudflareWorkerReservation(worker_id=uuid4()))
     monkeypatch.setattr(cloudflare_enable, "reserve_container_canary", reserve)
     monkeypatch.setattr(cloudflare_enable, "reconcile_container_stop", AsyncMock(return_value=True))
-    if outcome == "retire-pending":
+    if outcome in ("retire-pending", "mismatch-retire-pending"):
         async def pending_stop(*args):
             raise cloudflare_enable.PlatformJobFailure("CF_CONTAINERS_CLEANUP_PENDING", "fixture")
 
         monkeypatch.setattr(cloudflare_enable, "reconcile_container_stop", pending_stop)
     verify = AsyncMock(return_value=proof if outcome in ("verified", "retire-pending") else None)
-    if outcome == "mismatch":
+    mismatch = outcome in ("mismatch", "mismatch-retire-pending")
+    if mismatch:
         from src.services.worker_pool import cloudflare_canary
         from src.worker.remote.host import RemoteControlHost
 
@@ -546,19 +550,26 @@ async def test_refresh_changes_admission_only_on_conflicting_evidence(monkeypatc
     if outcome == "transient":
         db.execute.return_value = Mock(one_or_none=Mock(return_value=SimpleNamespace(result={}, remote_session_generation=1)))
 
-    if outcome == "backoff":
+    if outcome in ("backoff", "qualification-backoff"):
         cloudflare_enable.record_egress_refresh_failure(row, datetime.now(UTC))
     if outcome in ("verified", "retire-pending"):
         cloudflare_enable.record_egress_refresh_failure(row, datetime.now(UTC) - timedelta(hours=2))
     payload = cloudflare_enable.CloudflareEnablePayload(installation_id=installation_id, revision=1)
     context = PlatformJobContext(uuid4(), uuid4(), None, str(uuid4()), "", "")
-    with pytest.raises(PlatformJobRequiresAction) if outcome == "mismatch" else nullcontext():
+    if outcome == "qualification-backoff":
+        row.admitted_revision = row.containers_ready_revision = row.containers_release_digest = None
+        with pytest.raises(cloudflare_enable.PlatformJobFailure) as pending:
+            await cloudflare_enable._qualify_container_revision(context, payload, None, None, TOKEN, release)
+        assert pending.value.code == "CF_CONTAINERS_CLEANUP_PENDING"
+        reserve.assert_not_awaited()
+        return
+    with pytest.raises(PlatformJobRequiresAction) if mismatch else nullcontext():
         result = await cloudflare_enable._qualify_container_revision(
             context, payload, None, None, TOKEN, release, refresh_primary=PrimaryPool("static"),
         )
         assert result == {"verified": True, "retire-pending": True, "transient": "failed", "backoff": "backoff"}.get(outcome)
-    assert row.admitted_revision == row.containers_ready_revision == (None if outcome == "mismatch" else 1)
-    assert row.containers_release_digest == (None if outcome == "mismatch" else release.digest)
+    assert row.admitted_revision == row.containers_ready_revision == (None if mismatch else 1)
+    assert row.containers_release_digest == (None if mismatch else release.digest)
     assert ("container_egress" in row.deployment_evidence) == (outcome in ("verified", "retire-pending"))
     refresh = cloudflare_enable.read_egress_refresh(row)
     if outcome in ("transient", "backoff"):

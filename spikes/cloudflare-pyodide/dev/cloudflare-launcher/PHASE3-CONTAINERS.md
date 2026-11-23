@@ -496,6 +496,10 @@ Capacity distinguishes waiting for demand or headroom from failed refresh and
 shows an operator remedy after three failures. Conflicting evidence closes
 admission in both lanes. Running Containers finish their single current
 workflow, then drain and retire under their existing lifetime and drain bounds.
+Qualification records the next allowed canary start with each reservation.
+Automatic recovery honors the same capped backoff and spend guard even if
+the job loses its lease or canary cleanup is still pending. Conflicting proof
+requires a new operator action.
 A policy with a one-instance ceiling has no spare seat for automatic
 refresh. Scale In followed by Enable runs qualification with the revision
 drained.

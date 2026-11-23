@@ -22,6 +22,7 @@ from src.services.worker_pool.cloudflare_release import installed_workers_releas
 from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
 from src.services.worker_pool.eligibility import timeout_fits_workers_deadline
 from src.services.worker_pool.liveness import HEARTBEAT_LOST_AFTER
+from src.services.worker_pool.sizing import LIVE_STATES
 from src.worker.remote.protocol import (
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     LINUX_RUNTIME_PROFILE,
@@ -46,6 +47,23 @@ class ManagedWorkerOccupancy:
         return len(self.live | self.cloudflare)
 
 
+async def read_shared_managed_worker_cap(db: AsyncSession, *, admitting_installation_id: UUID | None = None) -> int | None:
+    """Use the tightest cap among admitted, still-occupied, and qualifying installations."""
+    pin = CloudflareWorkerReservation
+    unsettled = select(pin.worker_id).join(ExecutionWorker).where(
+        pin.installation_id == CloudflareInstallation.id,
+        (ExecutionWorker.form.in_(MANAGED_WORKER_FORMS) & ExecutionWorker.state.in_(LIVE_STATES))
+        | ExecutionWorker.capacity_resource_deleted_at.is_(None),
+    ).exists()
+    return await db.scalar(select(
+        func.min(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
+    ).where(
+        (CloudflareInstallation.retired_at.is_(None) & CloudflareInstallation.admitted_revision.is_not(None))
+        | unsettled
+        | (CloudflareInstallation.id == admitting_installation_id),
+    ))
+
+
 async def read_managed_worker_occupancy(
     db: AsyncSession, live_workers: Sequence[ExecutionWorker], *, admitting_installation_id: UUID | None = None,
 ) -> ManagedWorkerOccupancy:
@@ -54,16 +72,7 @@ async def read_managed_worker_occupancy(
     pin = CloudflareWorkerReservation
     live_pin = pin.worker_id.in_(live)
     occupied = live_pin | ExecutionWorker.capacity_resource_deleted_at.is_(None)
-    unsettled = select(pin.worker_id).join(ExecutionWorker).where(
-        pin.installation_id == CloudflareInstallation.id, occupied,
-    ).exists()
-    cap = await db.scalar(select(
-        func.min(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
-    ).where(
-        (CloudflareInstallation.retired_at.is_(None) & CloudflareInstallation.admitted_revision.is_not(None))
-        | unsettled
-        | (CloudflareInstallation.id == admitting_installation_id),
-    ))
+    cap = await read_shared_managed_worker_cap(db, admitting_installation_id=admitting_installation_id)
     rows = (await db.execute(select(
         pin.worker_id, pin.scope, ExecutionWorker.state, ExecutionWorker.end_reason,
     ).join(

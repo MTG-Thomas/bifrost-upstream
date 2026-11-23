@@ -327,7 +327,6 @@ async def _settle_enable(
         settings = get_settings()
         primary, _ = await _primary_pool(
             settings, http, kubernetes=await may_manage_jobs(settings),
-            shared_cap=CloudflareCapacityPolicy.model_validate(installation.policy["limits"]).shared_managed_worker_cap,
         )
         if primary is None:
             return {"outcome": "container_egress_refresh_pending"}
@@ -570,16 +569,19 @@ async def _qualify_container_revision(
         installation = await _locked_current(db, context, payload)
         if installation is None:
             return False
-        if refresh:
-            if installation.admitted_revision != payload.revision:
-                return False
-            retry = read_egress_refresh(installation)
-            if retry is not None and retry.retry_at > datetime.now(UTC):
-                return "backoff"
+        if refresh and installation.admitted_revision != payload.revision:
+            return False
         if not refresh and installation.containers_release_digest == release.digest and await db.scalar(
             select(joint_container_readiness(payload.revision)).where(CloudflareInstallation.id == installation.id),
         ):
             return True
+        retry = read_egress_refresh(installation)
+        if retry is not None and retry.retry_at > datetime.now(UTC):
+            if refresh:
+                return "backoff"
+            raise PlatformJobFailure(
+                "CF_CONTAINERS_CLEANUP_PENDING", "Waiting to Retry Cloudflare Container Qualification",
+            )
         origin = installation.worker_ingress_origin
         pin = CloudflareWorkerReservation
         prior = tuple(await db.scalars(select(pin.worker_id).join(
@@ -664,7 +666,7 @@ async def _qualify_container_revision(
         try:
             await retire(reserved.worker_id)
         except PlatformJobFailure:
-            if not refresh or mismatch:
+            if not refresh and not mismatch:
                 raise
     if verified is None:
         if refresh and not mismatch:

@@ -1404,6 +1404,8 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             canary_id = UUID(identity["worker"])
             if path == "/v1/egress-probe":
                 assert len(body["control_key"]) == 64
+                await db_session.refresh(installation)
+                assert installation.deployment_evidence["container_egress_refresh"]["failures"] == 1
                 row = await db_session.get(ExecutionWorker, canary_id)
                 pin = await db_session.get(CloudflareWorkerReservation, canary_id)
                 assert row is not None and row.reserved_for_dispatch_id is None
@@ -3739,11 +3741,56 @@ async def test_supervisor_reserves_and_retires_without_restarting(
 
 
 @pytest.mark.asyncio
+async def test_supervisor_primary_uses_cap_from_unconfirmed_retired_installation(
+    isolated_capacity_installation, monkeypatch,
+) -> None:
+    db, installation = isolated_capacity_installation
+    now, worker_id = datetime.now(UTC), uuid4()
+    retired = CloudflareInstallation(
+        id=uuid4(), account_id="b" * 32, worker_ingress_origin=installation.worker_ingress_origin,
+        consent_version=installation.consent_version, consent_actor="fixture", consent_at=now,
+        desired_state="disconnected", desired_revision=1, retired_at=now,
+        policy={**installation.policy, "limits": {**installation.policy["limits"], "shared_managed_worker_cap": 2}},
+    )
+    worker = ExecutionWorker(id=worker_id, form="external", state="retired", capacity_scope="workers")
+    db.add_all([retired, worker])
+    await db.flush()
+    db.add(seal_credential(
+        CredentialRef(retired.id, retired.account_id, "control_root", "", 1),
+        SecretStr("fixture-control-root"), actor="fixture", now=now,
+    ))
+    await db.flush()
+    db.add(ManagedCloudflareScope(retired.id, "workers", 1).pin(
+        worker_id, 1, reserved_at=now, lifetime=3600, deadline_wire=False,
+    ))
+    await db.flush()
+
+    @asynccontextmanager
+    async def context():
+        yield db
+
+    monkeypatch.setattr(cloudflare_supervisor, "get_db_context", context)
+    monkeypatch.setattr(cloudflare_supervisor, "load_kubernetes_policy", AsyncMock(
+        return_value=KubernetesPolicy(max_workers=6),
+    ))
+    settings = Settings(_env_file=None, worker_capacity_url=None, worker_capacity_token=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(Mock())) as http:
+        assert await cloudflare_supervisor._primary_pool(settings, http, kubernetes=True) == (
+            PrimaryPool("job", ceiling=2), None,
+        )
+        worker.capacity_resource_deleted_at = now
+        await db.flush()
+        assert await cloudflare_supervisor._primary_pool(settings, http, kubernetes=True) == (
+            PrimaryPool("job", ceiling=6), None,
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("shared_cap", "desired_state", "worker_state", "deleted", "expected_jobs", "scenario"), [
-    (10, "enabled", "ready", False, 1, ""),
+    (10, "enabled", "ready", False, 1, "settled_container"),
     (3, "enabled", "ready", False, 0, ""),
     (3, "enabled", "ready", False, 0, "settled_container"),
-    (None, "enabled", "ready", False, 1, ""),
+    (None, "enabled", "ready", False, 1, "settled_container"),
     (3, "scaled_in", "draining", False, 0, "job"),
     (3, "disconnected", "draining", False, 0, "job"),
     (3, "enabled", "draining", False, 0, "policy"),
@@ -3844,7 +3891,7 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
         policy = KubernetesPolicy(max_workers=3, warm_workers=1)
         launched = await primary.launch_for_demand(policy)
         assert len(launched) == expected_jobs
-        if scenario == "settled_container":
+        if scenario == "settled_container" and shared_cap == 3:
             stopped = await db_session.scalar(select(ExecutionWorker).join(CloudflareWorkerReservation).where(
                 CloudflareWorkerReservation.installation_id == installation.id,
                 CloudflareWorkerReservation.container_stopped_at.is_not(None),
@@ -5272,6 +5319,10 @@ async def test_upgrade_migration_pauses_prior_pilot_and_scheduler_pins_the_new_r
     ("failed", "CF_PROVIDER_UNAVAILABLE", True),
     ("requires_action", "CF_SPEND_UNVERIFIED", True),
     ("failed", "CF_CONNECTOR_UNAVAILABLE", True),
+    ("failed", "CF_CONTAINERS_CLEANUP_PENDING", True),
+    ("failed", "CF_CONTAINERS_RELEASE_FETCH", True),
+    ("requires_action", "CF_CONTAINERS_RELEASE_UNAVAILABLE", True),
+    ("requires_action", "CF_CONTAINERS_UNVERIFIED", False),
     ("failed", "unsupported_payload_version", True),
     ("failed", "runner_shutdown", True),
     ("failed", "runner_lost", True),
@@ -5305,20 +5356,34 @@ async def test_upgrade_scheduler_only_requeues_self_healing_actions(
             job.error_code = code
 
     complete(job, now)
+    if code.startswith("CF_CONTAINERS_"):
+        installation.upgrade_release = None
+        installation.drain_required = False
+        installation.deployed_revision = installation.desired_revision
+        assert installation.admitted_revision is None
+    first_retry = 5
+    if code == "CF_CONTAINERS_CLEANUP_PENDING":
+        from src.services.worker_pool.cloudflare_containers_egress import record_egress_refresh_failure
+
+        record_egress_refresh_failure(installation, now - timedelta(minutes=5))
+        record_egress_refresh_failure(installation, now)
+        await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=5))
+        assert await db_session.scalar(count) == 1
+        first_retry = 10
     await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=4))
     assert await db_session.scalar(count) == 1
-    await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=5))
+    await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=first_retry))
     assert await db_session.scalar(count) == (2 if recoverable else 1)
     if recoverable:
         requeued = await db_session.scalar(select(PlatformJob).where(
             PlatformJob.resource_id == str(installation.id), PlatformJob.id != job.id,
         ))
         assert requeued is not None
-        requeued.created_at = now + timedelta(minutes=5)
+        requeued.created_at = now + timedelta(minutes=first_retry)
         complete(requeued, requeued.created_at)
-        await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=14))
+        await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=first_retry + 9))
         assert await db_session.scalar(count) == 2
-        await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=15))
+        await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=first_retry + 10))
         assert await db_session.scalar(count) == 3
     else:
         await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(days=1))

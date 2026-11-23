@@ -41,6 +41,7 @@ from src.services.worker_pool.cloudflare_containers_egress import (
     EGRESS_PROOF_MAX_AGE,
     VerifiedEgress,
     current_container_application,
+    record_egress_refresh_failure,
 )
 from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_CLEANUP_PENDING,
@@ -491,10 +492,15 @@ async def reserve_container_canary(
         capacity.installation, capacity.scope.deployment_revision, release.digest,
     ))).one_or_none() is None:
         return None
-    return await _create_container_reservation(
+    reserved = await _create_container_reservation(
         db, capacity, release, controller_id=controller_id, tenant=QUALIFICATION_CANARY_TENANT,
         canary=(job_id, lease_token),
     )
+    if reserved is not None and refresh_primary is None:
+        # Persist the next paid-start boundary before the canary can run,
+        # even if this attempt loses its lease or cleanup never settles.
+        record_egress_refresh_failure(capacity.installation, capacity.now)
+    return reserved
 
 
 async def _create_container_reservation(

@@ -42,6 +42,7 @@ from src.services.work_dispatch import (
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     PrimaryPool,
+    read_shared_managed_worker_cap,
     workers_release_matches,
 )
 from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
@@ -113,10 +114,11 @@ def _schedule_launch_wake(wake: asyncio.Event, delay: float) -> asyncio.TimerHan
 
 
 async def _primary_pool(
-    settings: Settings, http: httpx.AsyncClient, *, kubernetes: bool, shared_cap: int | None,
+    settings: Settings, http: httpx.AsyncClient, *, kubernetes: bool,
 ) -> tuple[PrimaryPool | None, PrimaryCause | None]:
     async with get_db_context() as db:
         limit = (await load_kubernetes_policy(db)).max_workers
+        shared_cap = await read_shared_managed_worker_cap(db)
     if shared_cap is not None:
         limit = min(limit, shared_cap)
     if settings.worker_capacity_url and settings.worker_capacity_token:
@@ -187,7 +189,6 @@ async def _reconcile_containers(
         )
         verified = read_verified_egress(installation, now) if admitting else None
         release_digest = installation.containers_release_digest
-        primary_cap = CloudflareCapacityPolicy.model_validate(installation.policy["limits"]).shared_managed_worker_cap
 
     async def retire(worker_id: UUID) -> None:
         async with get_db_context() as db:
@@ -227,7 +228,7 @@ async def _reconcile_containers(
         if release.digest != release_digest:
             return
         releases[binding] = release
-    primary, cause = await _primary_pool(settings, http, kubernetes=kubernetes, shared_cap=primary_cap)
+    primary, cause = await _primary_pool(settings, http, kubernetes=kubernetes)
     if primary is None or receipt_limit:
         await record_controller_observation(
             binding, primary=primary, cause=cause, placement_code="container_receipt_limit" if receipt_limit else None,
@@ -330,7 +331,7 @@ async def _reconcile_scope(
     if controller.burst_launch_allowed:
         try:
             controller.cloudflare_primary, cause = await _primary_pool(
-                settings, http, kubernetes=kubernetes, shared_cap=policy.shared_managed_worker_cap,
+                settings, http, kubernetes=kubernetes,
             )
         except (CapacityProtocolError, httpx.HTTPError) as exc:
             cause = "profile_mismatch" if isinstance(exc, CapacityProtocolError) else "unreachable"
