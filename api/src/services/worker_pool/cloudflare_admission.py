@@ -85,7 +85,7 @@ def joint_container_readiness(revision: SQLColumnExpression[int | None] | int) -
         CloudflareOwnedResource.account_id == CloudflareInstallation.account_id,
         CloudflareOwnedResource.scope == CONTAINERS_SCOPE,
         CloudflareOwnedResource.kind == "container_application",
-        CloudflareOwnedResource.deployment_revision == revision,
+        CloudflareOwnedResource.desired_revision == revision,
         CloudflareOwnedResource.artifact_digest == CloudflareInstallation.containers_release_digest,
         CloudflareOwnedResource.state == "present",
         CloudflareOwnedResource.provider_id.is_not(None),

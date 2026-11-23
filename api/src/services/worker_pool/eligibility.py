@@ -70,15 +70,6 @@ def cloudflare_dispatch_sql() -> ColumnElement[bool]:
     )
 
 
-def containers_dispatch_sql() -> ColumnElement[bool]:
-    return (
-        (WorkDispatch.handler == CLOUDFLARE_WORKFLOW_HANDLER[0])
-        & (WorkDispatch.handler_version == CLOUDFLARE_WORKFLOW_HANDLER[1])
-        & (WorkDispatch.execution_lane == "normal")
-        & ~cloudflare_dispatch_sql()
-    )
-
-
 def containers_workflow_fits(handler: str | None, version: int | None, revision: str | None, size: int) -> bool:
     return (handler, version) == CLOUDFLARE_WORKFLOW_HANDLER and (
         revision is None or size > CLOUDFLARE_DEV_BUDGET_BYTES

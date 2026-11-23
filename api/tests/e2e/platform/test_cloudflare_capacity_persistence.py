@@ -3074,14 +3074,12 @@ async def isolated_capacity_session_factory(async_engine, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_container_worker_claims_only_its_reserved_dispatch(isolated_capacity_session_factory, monkeypatch) -> None:
+async def test_unadmitted_container_cannot_use_generic_linux_claims(isolated_capacity_session_factory) -> None:
     worker, older, bound = uuid4(), uuid4(), uuid4()
-    scope = "fixture-containers"
-    monkeypatch.setattr(claim_service, "get_settings", lambda: SimpleNamespace(cloudflare_containers_scope=scope))
     now = datetime.now(UTC)
     async with isolated_capacity_session_factory() as db:
         runner = ExecutionWorker(
-            id=worker, form="external", state="ready", capacity_scope=scope,
+            id=worker, form="external", state="ready", capacity_scope="containers",
             supported_handlers=["workflow.execute"], memory_limit_bytes=1 << 20,
         )
         db.add(runner)
@@ -3095,8 +3093,6 @@ async def test_container_worker_claims_only_its_reserved_dispatch(isolated_capac
         await db.flush()
         runner.reserved_for_dispatch_id = dispatch.id
         await db.commit()
-    claimed = await claim_next(worker, fits_bytes=1 << 20, budget_bytes=1 << 20)
-    assert claimed is not None and claimed.subject_id == bound
     assert await claim_next(worker, fits_bytes=1 << 20, budget_bytes=1 << 20) is None
 
 

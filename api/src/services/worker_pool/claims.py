@@ -10,7 +10,6 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import String, case, cast, exists, false, func, null, select, text, tuple_, update
 
-from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
@@ -34,7 +33,6 @@ from src.services.worker_pool.cloudflare_slots import (
 from src.services.worker_pool.eligibility import (
     cloudflare_active_claims,
     cloudflare_dispatch_sql,
-    containers_dispatch_sql,
     managed_workflow_fits,
 )
 from src.worker.remote.fencing import current_remote_lease_ref, fence_remote_owner
@@ -282,12 +280,11 @@ async def claim_next(
     managed_container = exists().where(
         managed_workers.c.worker_id == incarnation_id, managed_workers.c.container_reserved_at.is_not(None),
     )
-    linux_eligible = (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE) & ~managed_container
-    containers_scope = getattr(get_settings(), "cloudflare_containers_scope", None)
-    if containers_scope is not None:
-        linux_eligible = linux_eligible & (
-            ExecutionWorker.capacity_scope.is_distinct_from(containers_scope) | containers_dispatch_sql()
-        )
+    linux_eligible = (
+        (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE)
+        & ExecutionWorker.capacity_scope.is_distinct_from(CONTAINERS_SCOPE)
+        & ~managed_container
+    )
     profile_eligible = exists().where(
         ExecutionWorker.id == incarnation_id,
         linux_eligible
@@ -327,19 +324,12 @@ async def claim_next(
         .where(ExecutionWorker.id == incarnation_id)
         .scalar_subquery()
     )
-    container_worker = managed_container | exists().where(
-        ExecutionWorker.id == incarnation_id,
-        ExecutionWorker.capacity_scope.in_(
-            [CONTAINERS_SCOPE, containers_scope] if containers_scope is not None else [CONTAINERS_SCOPE],
-        ),
-    )
     unassigned = (
         WorkDispatch.assigned_worker_id.is_(None),
         WorkDispatch.execution_lane == select(ExecutionWorker.execution_lane)
         .where(ExecutionWorker.id == incarnation_id).scalar_subquery(),
         tuple_(WorkDispatch.handler, WorkDispatch.handler_version).in_(pairs),
         profile_eligible,
-        ~container_worker | (WorkDispatch.id == reserved_for),
     )
     worker_supports_handler = exists().where(
         ExecutionWorker.id == incarnation_id,
@@ -680,9 +670,7 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
             if worker_row.execution_lane == "fast_path"
             else policy.warm_workers
         )
-        settings = get_settings()
-        containers_scope = getattr(settings, "cloudflare_containers_scope", None)
-        containers_worker = containers_scope is not None and worker_row.capacity_scope == containers_scope
+        containers_worker = worker_row.capacity_scope == CONTAINERS_SCOPE
         scoped_cloudflare = (
             worker_row.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and worker_row.capacity_scope is not None
         )
@@ -698,8 +686,7 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
                     (ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
                     | ExecutionWorker.capacity_scope.is_(None)
                 )
-                if containers_scope is not None:
-                    ready = ready.where(ExecutionWorker.capacity_scope.is_distinct_from(containers_scope))
+                ready = ready.where(ExecutionWorker.capacity_scope.is_distinct_from(CONTAINERS_SCOPE))
             ready_jobs = await db.scalar(ready) or 0
             if ready_jobs <= keep_ready:
                 return False
