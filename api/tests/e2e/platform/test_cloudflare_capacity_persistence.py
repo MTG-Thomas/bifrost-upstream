@@ -1250,17 +1250,25 @@ async def test_container_application_effect_survives_provisioning_failures(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("canary_ready", [False, True])
 async def test_cold_enable_prepares_image_and_deploys_container_application(
-    db_session, installation, monkeypatch, tmp_path,
+    db_session, installation, monkeypatch, tmp_path, canary_ready,
 ) -> None:
-    from src.services.worker_pool import cloudflare_containers_release, cloudflare_containers_rest
+    from src.models.orm.platform_jobs import PlatformJob
+    from src.services.worker_pool import cloudflare_containers_control, cloudflare_containers_release, cloudflare_containers_rest
+    from src.worker.remote.container_egress import CONTAINER_EGRESS_DENIALS
+    from src.worker.remote.protocol import nonce_digest
 
     container, image, config = make_release()
     manifest = container.manifest
     workers = SimpleNamespace(digest=manifest.workers_release_digest, manifest=SimpleNamespace(
         release_version="1.0.0", release_sequence=1, source_revision=container.manifest.source_revision,
+        meter_bounds=SimpleNamespace(qualification=SimpleNamespace(expected_cpu_ms={"capacity": 9})),
     ))
-    installation.policy = {**installation.policy, "bounds_release": workers.digest}
+    installation.policy = {
+        **installation.policy, "bounds_release": workers.digest,
+        "limits": {**installation.policy["limits"], "monthly_limit_usd": "500"},
+    }
     cloudflare_policy.set_workers_release_floor(installation, workers.digest, TEST_ORDER)
     installation.desired_state = "enabled"
     installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
@@ -1282,6 +1290,18 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     events = []
     bindings = []
     application = None
+    started = stopped = None
+    actor = "f" * 64
+    context = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
+    if canary_ready:
+        db_session.add(PlatformJob(
+            id=context.job_id, job_type="capacity.cloudflare_enable", title="Container qualification",
+            payload={"revision": 1}, status="running", lease_token=context.lease_token,
+            lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            resource_type="cloudflare_installation", resource_id=str(installation.id),
+            requested_by_user_id=str(OPERATOR_ID), requested_by_name="fixture", requested_by_email="fixture@example.test",
+        ))
+        await db_session.flush()
     copied = False
     endpoint = {"enabled": True, "previews_enabled": False}
 
@@ -1323,11 +1343,64 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             case _:
                 pytest.fail(f"Unexpected OCI tool call {executable.name}, {args}")
 
-    def provider(request):
-        nonlocal bindings, application
+    async def provider(request):
+        nonlocal bindings, application, started, stopped
         path = request.url.path
         if request.url.host == "github.com":
             return httpx.Response(200, content=assets[path.split("cloudflare-containers-")[1]])
+        if request.url.host == f"{name}-containers.local-fixture.workers.dev":
+            assert canary_ready and application is not None
+            assert request.headers.get("authorization") is None
+            assert len(request.headers["x-bifrost-request-signature"]) == 128
+            body = json.loads(request.content)
+            identity = body["pin"]
+            assert identity["tenant"] == "qualification-canary"
+            canary_id = UUID(identity["worker"])
+            if path == "/v1/egress-probe":
+                assert len(body["control_key"]) == 64
+                row = await db_session.get(ExecutionWorker, canary_id)
+                pin = await db_session.get(CloudflareWorkerReservation, canary_id)
+                assert row is not None and row.reserved_for_dispatch_id is None
+                assert pin is not None and pin.container_envelope is not None
+                assert pin.canary_job_id == context.job_id
+                started = datetime.fromtimestamp(identity["reservedAt"] / 1000, UTC) + timedelta(milliseconds=1)
+                row.state = "ready"
+                row.remote_hello_sequence = 1
+                row.remote_auth_nonce_digest = nonce_digest(body["nonce"])
+                row.remote_session_generation = 1
+                row.remote_owner_lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+                pin.canary_ack_at = pin.canary_sdk_at = datetime.now(UTC)
+                pin.canary_sdk_generation = 1
+                pin.container_envelope = {
+                    **pin.container_envelope, "denial_generation": 1, "egress_denials": sorted(CONTAINER_EGRESS_DENIALS),
+                }
+                await db_session.flush()
+                events.append("canary")
+                return httpx.Response(200, json={
+                    "nonce": body["nonce"], "worker_id": str(canary_id), "application_id": application["id"],
+                    "provider_version": namespace, "origin": installation.worker_ingress_origin,
+                    "internet_enabled": False, "intercepted_origins": [installation.worker_ingress_origin],
+                    "bounded_relay": True,
+                })
+            assert "control_key" not in body
+            if path == "/v1/stop":
+                if stopped is None:
+                    stopped = datetime.now(UTC)
+                    events.append("stop")
+                return httpx.Response(200, json={"status": "pending", "instance": actor})
+            if path == "/v1/void":
+                return httpx.Response(200, json={"status": "conflict"})
+            assert started is not None and stopped is not None
+            closed_at = int(stopped.timestamp() * 1000)
+            if path == "/v1/retire":
+                assert body["closed_at"] == closed_at
+                events.append("retire")
+                return httpx.Response(200, json={"status": "retired"})
+            assert path == "/v1/close"
+            return httpx.Response(200, json={
+                "status": "closed", "instance": actor, "startedAt": int(started.timestamp() * 1000),
+                "authorizedAt": identity["reservedAt"], "closedAt": closed_at, "meterComplete": False,
+            })
         assert request.url.host == "api.cloudflare.com"
         assert request.headers["Authorization"] == "Bearer synthetic-cloudflare-management-token"
         if path.endswith("/entitlements"):
@@ -1386,34 +1459,63 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 result = application
             else:
                 result = [application] if application else []
+        elif path.endswith(f"/instances/{actor}"):
+            assert application is not None and started is not None and stopped is not None
+            result = {
+                "id": actor, "application_id": application["id"], "image": full_image,
+                "started_at": started.isoformat(), "status": {"state": "stopped", "updated_at": stopped.isoformat()},
+            }
         else:
             assert application is not None and path.endswith(f"/containers/applications/{application['id']}")
             result = application
         return httpx.Response(200, json={"success": True, "result": result})
 
     monkeypatch.setattr(enable_job, "get_db_context", transaction)
+    monkeypatch.setattr(cloudflare_containers_control, "get_db_context", transaction)
     monkeypatch.setattr(enable_job, "_locked_current", locked_current)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     monkeypatch.setattr(cloudflare_containers_release, "_SIGNER_FILE", signer)
     for module in (cloudflare_containers_release, cloudflare_containers_rest):
         monkeypatch.setattr(module, "run_oci_tool", tool)
+    workers_deployments = {}
+
+    async def create_workers(*, api_token, intent, scope_bearer):
+        assert events[-1] == "retire"
+        workers_deployments[intent.target.name] = ResourceObservation(intent, str(uuid4()), str(uuid4()))
+
+    provisioner = SimpleNamespace(
+        observe=AsyncMock(side_effect=lambda *, api_token, intent: workers_deployments.get(intent.target.name)),
+        create=AsyncMock(side_effect=create_workers),
+        configure_endpoint=AsyncMock(side_effect=lambda *, api_token, expected: ConfiguredWorkersScript(
+            "https://capacity.example.test" if expected.intent.target.name.endswith("-capacity") else None, {},
+        )),
+    )
+    monkeypatch.setattr(enable_job, "WorkersRestProvisioner", lambda *_: provisioner)
+    monkeypatch.setattr(enable_job, "probe_worker_ingress", AsyncMock(return_value=ingress_probes.WorkerIngressProbeResult(
+        installation.worker_ingress_origin, True, True, True, (), runtime_canary=ingress_probes.RuntimeCanary(True, True),
+    )))
     payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1)
-    context = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
-        for _ in range(2):  # A repeated Enable must read back the same resources.
-            with pytest.raises(PlatformJobRequiresAction) as held:
-                await enable_job._settle_enable(context, payload, http, workers)
-            assert held.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
-    assert events == ["copy", "prepare", "launcher", "application"]
+        for _ in range(2):
+            if canary_ready:
+                assert (await enable_job._settle_enable(context, payload, http, workers))["outcome"] == "enabled"
+            else:
+                with pytest.raises(PlatformJobRequiresAction) as held:
+                    await enable_job._settle_enable(context, payload, http, workers)
+                assert held.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
+    assert events == ["copy", "prepare", "launcher", "application"] + (["canary", "stop", "retire"] if canary_ready else [])
+    assert provisioner.create.await_count == (3 if canary_ready else 0)
     journals = (await db_session.scalars(select(CloudflareOwnedResource).where(
         CloudflareOwnedResource.installation_id == installation.id,
+        CloudflareOwnedResource.scope == "containers",
     ))).all()
     assert {row.kind for row in journals} == {"container_image", "container_application", "worker_script"}
     assert all(row.state == "present" and row.artifact_digest == digest and row.scope == "containers" for row in journals)
     scope = await db_session.get(CloudflareCapacityScope, (installation.id, "containers", 1))
     assert scope is not None and scope.endpoint == f"https://{name}-containers.local-fixture.workers.dev"
     await db_session.refresh(installation)
-    assert installation.admitted_revision is None and installation.containers_ready_revision is None
+    assert installation.admitted_revision == installation.containers_ready_revision == (1 if canary_ready else None)
+    assert installation.containers_release_digest == (digest if canary_ready else None)
 
 
 @pytest.mark.asyncio

@@ -310,9 +310,21 @@ class ContainersRest(WorkersRestCleanup):
         image: str, not_before: datetime,
     ) -> InstanceStop:
         """Read the exact application and actor without waking the Durable Object."""
+        observed = await self.observe_instance_outcome(
+            token, application, instance_id=instance_id, image=image, not_before=not_before,
+        )
+        if observed is None:
+            raise ObservationPending("Missing instance readback does not witness a stopped placement")
+        return observed
+
+    async def observe_instance_outcome(
+        self, token: SecretStr, application: ResourceObservation, *, instance_id: str,
+        image: str, not_before: datetime,
+    ) -> InstanceStop | None:
+        """Read a confirmed stop or a missing exact actor for fenced reconciliation."""
         placement = await self._instance_inventory(token, application, instance_id)
         if placement is None:
-            raise ObservationPending("Missing instance readback does not witness a stopped placement")
+            return None
         if placement.get("image") != image:
             raise OwnershipConflict("Container placement differs from its journal")
         try:

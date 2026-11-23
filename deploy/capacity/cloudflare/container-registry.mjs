@@ -220,7 +220,13 @@ export class ScopeRegistry {
         return this.storage.transactionSync(() => {
             const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
             if (!start || start.instance !== instance || !Number.isSafeInteger(now)) return { status: "conflict" };
-            if (start.observed_at === null) return { status: "pending" };
+            if (start.observed_at === null) {
+                if (start.closed_at === null) return { status: "pending" };
+                return {
+                    status: "absent", uid, instance, authorizedAt: start.authorized_at,
+                    startDeadline: start.start_deadline, closedAt: start.closed_at,
+                };
+            }
             if (now < start.observed_at - RESERVATION_CLOCK_SKEW_MS) return { status: "conflict" };
             // Keep the durable closure causally after authorization and placement.
             const closedAt = start.closed_at ?? Math.max(now, start.observed_at, start.authorized_at);

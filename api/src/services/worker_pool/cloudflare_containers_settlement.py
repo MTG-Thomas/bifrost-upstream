@@ -187,7 +187,7 @@ async def settle_container_stop(
     )
     if (
         stop.started_at < pin.container_reserved_at - CONTAINER_CLOCK_SKEW
-        or stop.started_at != closure.placement_started_at
+        or int(stop.started_at.timestamp() * 1000) != int(closure.placement_started_at.timestamp() * 1000)
     ):
         raise ObservationPending("Container stop does not match the witnessed start")
     envelope["observed_started_at"] = stop.started_at.isoformat()
