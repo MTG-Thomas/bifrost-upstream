@@ -33,6 +33,7 @@ from src.services.execution.memory_monitor import (
     memory_pressure_ratio,
 )
 from src.services.execution.template_process import TemplateProcess
+from src.worker.remote.container_egress import run_container_egress_checks
 from src.worker.remote.container_guest import ContainerGuest
 from src.worker.remote.control_connection import connect_control, load_control_headers
 from src.worker.remote.identity import LauncherIdentity, load_launcher_identity
@@ -701,25 +702,15 @@ class Launcher:
                     raise ValueError("Invalid launcher memory policy")
                 self.pressure_threshold, self.dangerous_memory_ratio = pressure, dangerous
             elif action == "capacity_canary" and self.container_release is not None:
-                from ssl import create_default_context
-
-                import httpx
-
-                proof = payload.get("proof")
-                if not isinstance(proof, str) or re.fullmatch(r"[a-f0-9]{64}", proof) is None:
+                proof, alternate, address = (payload.get(key) for key in ("proof", "alternate", "address"))
+                if (
+                    not isinstance(proof, str) or re.fullmatch(r"[a-f0-9]{64}", proof) is None
+                    or not isinstance(alternate, str) or not isinstance(address, str)
+                ):
                     raise ValueError("Invalid Container SDK canary proof")
-                origin = os.environ["BIFROST_API_URL"]
-                tls = create_default_context(cafile="/etc/cloudflare/certs/cloudflare-containers-ca.crt")
-                async with httpx.AsyncClient(verify=tls, trust_env=False, follow_redirects=False) as client:
-                    receipt = await client.get(
-                        f"{origin}/api/sdk/capacity-canary/{self.identity.incarnation_id}",
-                        headers={
-                            "Authorization": f"Bearer {proof}",
-                            "X-Bifrost-Canary-Generation": str(generation),
-                        },
-                    )
-                if receipt.status_code != 204 or receipt.headers.get("x-bifrost-worker-ingress") != "v1; allowed":
-                    raise RuntimeError("The Container SDK canary did not reach verified worker ingress")
+                response = {"denied": await run_container_egress_checks(
+                    os.environ["BIFROST_API_URL"], alternate, address, self.identity.incarnation_id, generation, proof,
+                )}
             elif action == "ready":
                 self.on_ready()
             elif action == "retired":

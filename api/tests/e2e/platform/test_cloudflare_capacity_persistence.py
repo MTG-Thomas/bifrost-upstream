@@ -3385,10 +3385,8 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         await nested.rollback()
     if reason == "cold-canary":
         from src.models.orm.platform_jobs import PlatformJob
-        from src.services.worker_pool.cloudflare_containers_egress import (
-            REQUIRED_DENIALS,
-            verify_container_egress,
-        )
+        from src.services.worker_pool.cloudflare_containers_egress import verify_container_egress
+        from src.worker.remote.container_egress import CONTAINER_EGRESS_DENIALS
         from src.worker.remote.protocol import nonce_digest
 
         installation.admitted_revision = installation.containers_ready_revision = None
@@ -3417,14 +3415,21 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
             assert body["pin"]["worker"] == str(worker.id)
             assert body["pin"]["startDeadline"] - body["pin"]["reservedAt"] <= 15_000
             nonce = body["nonce"]
-            # Stand in for the dedicated ingress committing its independently authenticated hello.
+            # Stand in for the signed supervisor and scoped ingress committing their separate witnesses.
             worker.remote_auth_nonce_digest = nonce_digest(nonce)
             worker.remote_owner_lease_expires_at = now + timedelta(minutes=1)
+            worker.remote_session_generation = 1
+            canary.canary_ack_at = now
+            canary.canary_sdk_generation = 1
+            assert canary.container_envelope is not None
+            canary.container_envelope = {
+                **canary.container_envelope, "denial_generation": 1, "egress_denials": sorted(CONTAINER_EGRESS_DENIALS),
+            }
             await db.flush()
             return httpx.Response(200, json={
                 "nonce": nonce, "worker_id": str(worker.id), "application_id": application.provider_id,
                 "provider_version": application.provider_version, "origin": origin, "internet_enabled": False,
-                "intercepted_origins": [origin], "bounded_relay": True, "denied": sorted(REQUIRED_DENIALS),
+                "intercepted_origins": [origin], "bounded_relay": True,
             })
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:

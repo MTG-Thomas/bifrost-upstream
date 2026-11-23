@@ -80,6 +80,7 @@ from src.worker.remote.cloudflare_agent import (
     CloudflareAgentRoutes,
 )
 from src.worker.remote.cloudflare_summary import CloudflareSummaryRoutes, SummaryRoute
+from src.worker.remote.container_egress import CONTAINER_EGRESS_DENIALS
 from src.worker.remote.fencing import (
     LeaseRef,
     current_remote_lease_ref,
@@ -1930,7 +1931,9 @@ class RemoteControlHost:
             from src.services.worker_ingress_probes import CanaryFailure
             from src.services.worker_pool.cloudflare_canary import (
                 cloudflare_sdk_canary_proof,
+                container_probe_target,
                 record_canary_failure,
+                record_container_network_denials,
             )
 
             generation = session.lease.session_generation
@@ -1943,16 +1946,29 @@ class RemoteControlHost:
             if proof is None:
                 await record_canary_failure(worker_id, generation, CanaryFailure("proof", "unavailable"))
                 return
+            command = {"proof": proof}
             try:
-                reply = await session.bridge.request("capacity_canary", {"proof": proof}, expected_generation=generation)
+                if session.bridge.containers:
+                    command["alternate"], command["address"] = await container_probe_target(worker_id)
+                reply = await session.bridge.request("capacity_canary", command, expected_generation=generation)
             except TimeoutError:
                 failure = CanaryFailure("ack", "timeout")
             except (ConnectionError, CredentialRouteChanged):
                 failure = CanaryFailure("launcher", "connection_lost")
-            except RuntimeError:
+            except (OSError, RuntimeError, ValueError):
                 failure = CanaryFailure("ack", "invalid_reply")
             else:
-                if reply == {}:
+                if session.bridge.containers:
+                    denied = reply.get("denied") if isinstance(reply, dict) and set(reply) == {"denied"} else None
+                    if (
+                        isinstance(denied, list) and all(isinstance(item, str) for item in denied)
+                        and set(denied) == CONTAINER_EGRESS_DENIALS
+                        and await record_container_network_denials(worker_id, generation, denied)
+                        and await cloudflare_sdk_canary_proof(worker_id, generation, acknowledged=True) is not None
+                    ):
+                        return
+                    failure = CanaryFailure("ack", "invalid_reply")
+                elif reply == {}:
                     if await cloudflare_sdk_canary_proof(worker_id, generation, acknowledged=True) is not None:
                         return
                     failure = CanaryFailure("ack", "missing_sdk_receipt")

@@ -11,7 +11,6 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareOwnedResource,
 )
 from src.services.worker_pool.cloudflare_containers_egress import (
-    REQUIRED_DENIALS,
     ContainerEgressObservation,
     ProbeReport,
     VerifiedEgress,
@@ -23,6 +22,7 @@ from src.services.worker_pool.cloudflare_containers_release import (
     ContainersManifest,
     VerifiedContainerRelease,
 )
+from src.worker.remote.container_egress import CONTAINER_EGRESS_DENIALS
 
 APP_ID = "c" * 32
 APP_VERSION = "d" * 32
@@ -87,9 +87,9 @@ def successful_probe(
         ProbeReport(
             nonce="fixture", worker_id=uuid4(), application_id=APP_ID, provider_version=APP_VERSION,
             origin=origin, internet_enabled=False, intercepted_origins=frozenset({origin}),
-            bounded_relay=True, denied=REQUIRED_DENIALS,
+            bounded_relay=True,
         ),
-        True,
+        True, CONTAINER_EGRESS_DENIALS,
     )
 
 

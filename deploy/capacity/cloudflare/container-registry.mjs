@@ -276,6 +276,15 @@ export class ScopeRegistry {
         return row?.deadline ?? null;
     }
 
+    meteredEgress(uid, instance) {
+        const row = this.sql.exec(
+            "SELECT ingress, outbound FROM start_fences WHERE uid = ? AND instance = ? "
+            + "AND closed_at IS NULL AND relay_blocked = 0 AND deadline > ?",
+            uid, instance, Date.now(),
+        ).toArray()[0];
+        return !!row && row.ingress > 0 && row.outbound > 0;
+    }
+
     chargeRelay(uid, instance, direction, bytes, now, arrived = false) {
         if ((direction !== "ingress" && direction !== "outbound") || !Number.isSafeInteger(bytes) || bytes <= 0) {
             return false;
@@ -622,16 +631,19 @@ export async function forwardContainerHttp(registry, uid, instance, request, ori
     const prepaid = Math.min(Number.MAX_SAFE_INTEGER, declared);
     const headerBytes = byteSize(request.headers, `${request.method} ${request.url} HTTP/1.1\r\n`);
     const arrival = Math.min(Number.MAX_SAFE_INTEGER, HTTP_RELAY_MULTIPLIER * (headerBytes + prepaid));
-    const local = (status) => {
-        registry.chargeRelay(uid, instance, "ingress", HTTP_RELAY_MULTIPLIER * byteSize([], `HTTP/1.1 ${status}\r\n`),
-            Date.now(), true);
-        return new Response(null, { status });
+    const local = (status, rejection) => {
+        const headers = new Headers(rejection ? { "x-bifrost-container-relay-rejection": rejection } : {});
+        registry.chargeRelay(uid, instance, "ingress",
+            HTTP_RELAY_MULTIPLIER * byteSize(headers, `HTTP/1.1 ${status}\r\n`), Date.now(), true);
+        return new Response(null, { status, headers });
     };
     if (registry.chargeRelay(uid, instance, "outbound", arrival, now, true) !== true) return local(429);
     if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password || url.hash
-        || request.headers.get("host") !== url.host || request.headers.has("upgrade")
-        || policy.version !== 1 || !allowsIngressRoute(policy, request, url)) {
-        return local(403);
+        || request.headers.get("host") !== url.host) {
+        return local(403, "origin");
+    }
+    if (request.headers.has("upgrade") || policy.version !== 1 || !allowsIngressRoute(policy, request, url)) {
+        return local(403, "route");
     }
     const deadline = registry.relayDeadline(uid, instance);
     const remaining = Number.isSafeInteger(deadline) ? deadline - Date.now() : 0;
@@ -649,7 +661,8 @@ export async function forwardContainerHttp(registry, uid, instance, request, ori
     const canaryPrefix = "/api/sdk/capacity-canary/";
     const canary = url.pathname.startsWith(canaryPrefix) && UUID.test(url.pathname.slice(canaryPrefix.length));
     const headers = outboundHeaders(request.headers, [
-        "accept", "authorization", "content-type", ...(canary ? ["x-bifrost-canary-generation"] : []),
+        "accept", "authorization", "content-type",
+        ...(canary ? ["x-bifrost-canary-generation", "x-bifrost-canary-redirect"] : []),
     ]);
     if (remaining <= 0) return local(429);
     const signal = AbortSignal.timeout(remaining);
@@ -664,7 +677,7 @@ export async function forwardContainerHttp(registry, uid, instance, request, ori
         }
         if (response.status >= 300 && response.status < 400) {
             await response.body?.cancel();
-            return local(403);
+            return local(403, "redirect");
         }
         const reply = outboundHeaders(response.headers, [
             "content-type", "content-disposition", "retry-after", ...(canary ? ["x-bifrost-worker-ingress"] : []),

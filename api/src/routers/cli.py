@@ -192,8 +192,13 @@ async def acknowledge_capacity_canary(worker_id: UUID, request: Request) -> Resp
     if canary is None:
         raise HTTPException(404, "Not Found")
     generation, proof = canary
-    if not await cloudflare_sdk_canary_proof(worker_id, generation, received=proof):
+    is_redirect = request.headers.get("X-Bifrost-Canary-Redirect") == "1"
+    if not await cloudflare_sdk_canary_proof(
+        worker_id, generation, received=proof, **({"redirect_challenge": True} if is_redirect else {}),
+    ):
         raise HTTPException(401, "Invalid Capacity Canary Credential")
+    if is_redirect:
+        return Response(status_code=307, headers={"Location": "/__bifrost_canary_denied__", "Cache-Control": "no-store"})
     return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 

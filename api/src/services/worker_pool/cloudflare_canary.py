@@ -3,6 +3,7 @@
 import asyncio
 import hmac
 from datetime import UTC, datetime
+from ipaddress import ip_address
 from uuid import UUID, uuid4
 
 import httpx
@@ -17,6 +18,7 @@ from src.jobs.platform.base import (
     PlatformJobRequiresAction,
 )
 from src.models.orm.cloudflare_capacity import (
+    CloudflareCapacityScope,
     CloudflareInstallation,
     CloudflareUsageIncarnation,
     CloudflareWorkerReservation,
@@ -27,6 +29,7 @@ from src.services.platform_job_lease import LeaseLost, hold_lease
 from src.services.worker_ingress import seal_capacity_canary
 from src.services.worker_ingress_probes import CanaryFailure, RuntimeCanary
 from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_deadline_sql
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_policy import cloudflare_workers_remain
 from src.services.worker_pool.cloudflare_provisioning import (
@@ -78,6 +81,7 @@ def _proof(key: str, worker_id: UUID, lease_token: UUID, generation: int) -> str
 
 async def cloudflare_sdk_canary_proof(
     worker_id: UUID, generation: int, *, received: str | None = None, acknowledged: bool = False,
+    redirect_challenge: bool = False,
 ) -> str | None:
     """Issue or acknowledge the one-purpose SDK credential for a signed session."""
     async with get_db_context() as db:
@@ -109,6 +113,10 @@ async def cloudflare_sdk_canary_proof(
         if received is not None:
             if not hmac.compare_digest(expected, received):
                 return None
+            if redirect_challenge:
+                if binding.scope != CONTAINERS_SCOPE or not binding.container_release or binding.canary_sdk_generation != generation:
+                    return None
+                return expected
             if generation != binding.canary_sdk_generation:
                 binding.canary_ack_at = None
             binding.canary_sdk_at = datetime.now(UTC)
@@ -118,6 +126,59 @@ async def cloudflare_sdk_canary_proof(
                 return None
             binding.canary_ack_at = datetime.now(UTC)
         return expected
+
+
+async def record_container_network_denials(
+    worker_id: UUID, generation: int, denied: list[str],
+) -> bool:
+    """Store observations from the supervisor's signed, lease-bound control channel."""
+    pin = CloudflareWorkerReservation
+    worker = ExecutionWorker
+    async with get_db_context() as db:
+        binding = await db.scalar(select(pin).join(
+            worker, worker.id == pin.worker_id,
+        ).join(PlatformJob, _active_lease()).where(
+            pin.worker_id == worker_id, pin.scope == CONTAINERS_SCOPE, pin.container_release.is_not(None),
+            pin.canary_sdk_generation == generation,
+            worker.remote_session_generation == generation, worker.state == "ready",
+            worker.remote_owner_lease_expires_at > func.clock_timestamp(),
+            pin.container_stopped_at.is_(None), container_deadline_sql() > func.clock_timestamp(),
+        ).with_for_update(of=pin))
+        if binding is None or binding.container_envelope is None:
+            return False
+        binding.container_envelope = {
+            **binding.container_envelope, "denial_generation": generation, "egress_denials": denied,
+        }
+    return True
+
+
+async def container_probe_target(worker_id: UUID) -> tuple[str, str]:
+    """Use the installed control endpoint as a known reachable, alternate destination."""
+    pin = CloudflareWorkerReservation
+    async with get_db_context() as db:
+        target = (await db.execute(select(CloudflareCapacityScope.endpoint, CloudflareInstallation.worker_ingress_origin)
+                                  .join(pin, and_(
+                                      CloudflareCapacityScope.installation_id == pin.installation_id,
+                                      CloudflareCapacityScope.deployment_revision == pin.deployment_revision,
+                                      CloudflareCapacityScope.scope == pin.scope,
+                                  )).join(PlatformJob, _active_lease()).join(
+                                      CloudflareInstallation, CloudflareInstallation.id == pin.installation_id,
+                                  ).where(pin.worker_id == worker_id, pin.scope == CONTAINERS_SCOPE))).one_or_none()
+    if target is None:
+        raise ValueError("No live Container challenge scope")
+    endpoint, ingress = target
+    alternate = httpx.URL(endpoint)
+    if alternate.scheme != "https" or alternate.port is not None or alternate.host == httpx.URL(ingress).host:
+        raise ValueError("Container challenge requires a separate HTTPS control origin")
+    async with asyncio.timeout(5):
+        _, writer = await asyncio.open_connection(alternate.host, 443)
+    try:
+        peer = writer.get_extra_info("peername")
+        address = str(ip_address(peer[0]))
+    finally:
+        writer.close()
+        await writer.wait_closed()
+    return endpoint, address
 
 
 async def record_canary_failure(worker_id: UUID, generation: int, failure: CanaryFailure) -> None:

@@ -31,13 +31,13 @@ from src.services.worker_pool.cloudflare_credentials import (
     open_credential,
 )
 from src.services.worker_pool.cloudflare_tunnel_rest import dedicated_hostname
+from src.worker.remote.container_egress import CONTAINER_EGRESS_DENIALS
 from src.worker.remote.protocol import nonce_digest
 
 _MINT = object()
 # A brief cache lets the planner reuse a successful probe within one
 # reconciliation window. A provider version change invalidates it immediately.
 EGRESS_PROOF_MAX_AGE = timedelta(minutes=5)
-REQUIRED_DENIALS = frozenset({"alternate-origin", "wrong-host", "raw-tcp", "disallowed-route", "redirect"})
 
 
 def _active_probe_job():
@@ -59,7 +59,6 @@ class ProbeReport(BaseModel):
     internet_enabled: bool
     intercepted_origins: frozenset[str]
     bounded_relay: bool
-    denied: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +72,7 @@ class ContainerEgressObservation:
     observed_at: datetime
     report: ProbeReport
     signed_control_round_trip: bool
+    denied: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -165,20 +165,22 @@ async def _probe_container_egress(
     if report.nonce != nonce or report.worker_id != probe_worker_id:
         return None
 
-    # The scope's report alone cannot witness signed control. Only the API
-    # accepts this nonce, over the dedicated ingress, on the reserved canary.
-    signed = await db.scalar(select(worker.id).join(pin, pin.worker_id == worker.id).join(
+    # The API records the signed supervisor's own network observations only
+    # after the dedicated ingress accepted the same session's SDK credential.
+    witness = await db.scalar(select(pin.container_envelope).select_from(worker).join(pin, pin.worker_id == worker.id).join(
         PlatformJob, _active_probe_job(),
     ).where(
         worker.id == probe_worker_id,
         worker.remote_auth_nonce_digest == nonce_digest(nonce),
         worker.remote_owner_lease_expires_at > func.clock_timestamp(),
+        pin.canary_ack_at.is_not(None), pin.canary_sdk_generation == worker.remote_session_generation,
+        pin.container_envelope["denial_generation"].as_integer() == worker.remote_session_generation,
         pin.installation_id == installation_id, pin.deployment_revision == revision,
         container_identity_matches(worker.id, release_digest),
     ))
     return ContainerEgressObservation(
         installation_id, revision, release_digest, origin, app.provider_id, app.provider_version,
-        observed_at, report, signed is not None,
+        observed_at, report, witness is not None, frozenset(witness.get("egress_denials", ())) if witness else frozenset(),
     )
 
 
@@ -207,7 +209,7 @@ async def verify_container_egress(
         or report.intercepted_origins != {origin}
         or not observation.signed_control_round_trip
         or not report.bounded_relay
-        or not REQUIRED_DENIALS <= report.denied
+        or observation.denied != CONTAINER_EGRESS_DENIALS
     ):
         return None
     return VerifiedEgress(observation, _mint=_MINT)

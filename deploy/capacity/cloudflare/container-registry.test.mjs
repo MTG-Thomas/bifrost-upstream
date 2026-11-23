@@ -550,6 +550,7 @@ test("HTTP interception forwards only the exact ingress and shares the bidirecti
     const scope = registry();
     assert.equal(reserve(scope, slot).status, "reserved");
     assert.equal(scope.authorizeStart(slot.uid, instance, reservedAt, slot.deadline).status, "authorized");
+    assert.equal(scope.meteredEgress(slot.uid, instance), false);
     const calls = [];
     const upstream = async (url, options) => {
         calls.push(String(url));
@@ -566,8 +567,12 @@ test("HTTP interception forwards only the exact ingress and shares the bidirecti
         }, body: "{}",
     }), origin, policy, upstream);
     assert.equal((await visit("https://elsewhere.example.test" + path, "ingress.example.test")).status, 403);
-    assert.equal((await visit(origin + path, "elsewhere.example.test")).status, 403);
-    assert.equal((await visit(origin + "/api/users/me/permissions", "ingress.example.test")).status, 403);
+    const wrongHost = await visit(origin + path, "elsewhere.example.test");
+    assert.equal(wrongHost.status, 403);
+    assert.equal(wrongHost.headers.get("x-bifrost-container-relay-rejection"), "origin");
+    const deniedRoute = await visit(origin + "/api/users/me/permissions", "ingress.example.test");
+    assert.equal(deniedRoute.status, 403);
+    assert.equal(deniedRoute.headers.get("x-bifrost-container-relay-rejection"), "route");
     assert.equal((await visit(origin + "/api/sdk/%63onfig/get", "ingress.example.test")).status, 403);
     assert.deepEqual(calls, []);
     const pending = db.prepare("SELECT outbound, ingress FROM start_fences WHERE uid = ?").get(slot.uid);
@@ -576,12 +581,15 @@ test("HTTP interception forwards only the exact ingress and shares the bidirecti
     const reply = await visit(origin + path, "ingress.example.test");
     assert.equal(await reply.text(), "fixture response");
     assert.deepEqual(calls, [origin + path]);
+    assert.equal(scope.meteredEgress(slot.uid, instance), true);
+    assert.equal(scope.meteredEgress(slot.uid, "a".repeat(64)), false);
     const tooLarge = await forwardContainerHttp(scope, slot.uid, instance, new Request(origin + path, {
         method: "POST", headers: { host: "ingress.example.test", "content-length": "4096" }, body: "{}",
     }), origin, policy, upstream);
     assert.equal(tooLarge.status, 429);
     assert.ok(db.prepare("SELECT outbound FROM start_fences WHERE uid = ?").get(slot.uid).outbound >= 2 * 4096);
     assert.equal(scope.chargeRelay(slot.uid, instance, "ingress", 1, Date.now()), false);
+    assert.equal(scope.meteredEgress(slot.uid, instance), false);
 });
 
 test("ingress canary headers are preserved only for the exact worker canary route", async (t) => {
@@ -599,9 +607,12 @@ test("ingress canary headers are preserved only for the exact worker canary rout
         ["/api/organizations", null],
     ]) {
         const response = await forwardContainerHttp(scope, slot.uid, instance, new Request(origin + path, {
-            headers: { host: "ingress.example.test", "x-bifrost-canary-generation": "3" },
+            headers: {
+                host: "ingress.example.test", "x-bifrost-canary-generation": "3", "x-bifrost-canary-redirect": "1",
+            },
         }), origin, policy, async (_url, options) => {
             assert.equal(options.headers.get("x-bifrost-canary-generation"), generation);
+            assert.equal(options.headers.get("x-bifrost-canary-redirect"), generation ? "1" : null);
             return new Response(null, { status: 204, headers: { "x-bifrost-worker-ingress": "v1; allowed" } });
         });
         assert.equal(response.status, 204);

@@ -25,7 +25,6 @@ from src.services.worker_pool.cloudflare_containers_admission import (
 )
 from src.services.worker_pool.cloudflare_containers_auth import container_scope_public_key, request_container_control
 from src.services.worker_pool.cloudflare_containers_egress import (
-    REQUIRED_DENIALS,
     VerifiedEgress,
     verify_container_egress,
 )
@@ -377,7 +376,7 @@ async def test_egress_proof_requires_exact_release_and_observed_network_controls
     origin = "https://worker.example.test"
     installation_id = uuid4()
     observation = successful_probe(installation_id, 1, "a" * 64, origin)
-    if "signed_control_round_trip" in change:
+    if "signed_control_round_trip" in change or "denied" in change:
         observation = replace(observation, **change)
     else:
         observation = replace(observation, report=observation.report.model_copy(update=change))
@@ -394,7 +393,7 @@ async def test_egress_proof_requires_exact_release_and_observed_network_controls
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["verified", "wrong-nonce", "no-ingress-witness", "redirect"])
+@pytest.mark.parametrize("case", ["verified", "wrong-nonce", "no-ingress-witness", "missing-denial", "redirect"])
 async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case) -> None:
     installation, worker = uuid4(), uuid4()
     now, origin, digest = datetime.now(UTC), "https://worker.example.test", "a" * 64
@@ -420,7 +419,10 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
         Mock(one_or_none=Mock(return_value=SimpleNamespace(provider_id=APP_ID, provider_version=APP_VERSION))),
         Mock(one_or_none=Mock(return_value=(reservation, "e" * 32))),
     ]
-    db.scalar.side_effect = [now, None if case == "no-ingress-witness" else worker]
+    expected = successful_probe(installation, 1, digest, origin).denied
+    db.scalar.side_effect = [now, None if case == "no-ingress-witness" else {
+        "egress_denials": sorted(expected if case != "missing-denial" else expected - {"raw-tcp"}),
+    }]
 
     def probe(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST" and str(request.url) == endpoint + "/v1/egress-probe"
@@ -439,7 +441,7 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
             "nonce": "stale" if case == "wrong-nonce" else body["nonce"], "worker_id": str(worker),
             "application_id": APP_ID, "provider_version": APP_VERSION, "origin": origin,
             "internet_enabled": False, "intercepted_origins": [origin],
-            "bounded_relay": True, "denied": sorted(REQUIRED_DENIALS),
+            "bounded_relay": True,
         })
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(probe), follow_redirects=True) as client:

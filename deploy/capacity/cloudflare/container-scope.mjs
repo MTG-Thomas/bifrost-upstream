@@ -35,6 +35,10 @@ export class ContainerScopeRegistry extends DurableObject {
         return this.registry.retire(uid, instance, closedAt);
     }
 
+    meteredEgress(uid, instance) {
+        return this.registry.meteredEgress(uid, instance);
+    }
+
     async fetch(request) {
         // Only the bound egress Worker can invoke this fetch path. Use the
         // fetch transport so a WebSocket upgrade can cross the DO boundary.
@@ -134,7 +138,16 @@ export default {
             const uid = pin.uid;
             switch (operation) {
                 case "/v1/start": return Response.json(await actor().start(pin, controlKey));
-                case "/v1/egress-probe": return Response.json(await actor().start(pin, controlKey, nonce));
+                case "/v1/egress-probe": {
+                    const started = await actor().start(pin, controlKey, nonce);
+                    if (started.status !== "pending" && started.status !== "observed") return Response.json(started);
+                    if (!await registry().meteredEgress(uid, instance)) return Response.json(started);
+                    return Response.json({
+                        nonce, worker_id: pin.worker, application_id: data.application_id,
+                        provider_version: data.provider_version, origin: env.CONTAINERS_ORIGIN,
+                        internet_enabled: false, intercepted_origins: [env.CONTAINERS_ORIGIN], bounded_relay: true,
+                    });
+                }
                 case "/v1/stop": return Response.json(await actor().stop(uid));
                 case "/v1/void": return Response.json(await registry().voidUnstarted(pin, instance));
                 case "/v1/observe-start": return Response.json(await registry().observeStart(uid, instance, data.started_at));
