@@ -856,8 +856,13 @@ class ContainerRehearsal(Rehearsal):
             path.unlink(missing_ok=True)
 
     def run(self):
-        with self.raw_tcp_boundary():
-            self._run()
+        self.successor = None
+        try:
+            with self.raw_tcp_boundary():
+                self._run()
+        finally:
+            if self.successor is not None:
+                subprocess.run(["docker", "rm", "-f", self.successor], check=True, stdout=subprocess.DEVNULL)
 
     def _run(self):
         assert "containers" in self.cfg and "managementToken" not in self.cfg
@@ -921,6 +926,7 @@ from bifrost import tables, workflow
 @workflow(name="qualification_container")
 async def qualification_container(case: str, hold: int):
     tables_visible = await tables.list()
+    await tables.list()
     captured = subprocess.check_output([sys.executable, "-c", "print('linux-child')"], text=True).strip()
     return {"case": case, "child": captured, "native": _ssl.OPENSSL_VERSION, "table_count": len(tables_visible)}
 """
@@ -930,6 +936,18 @@ async def qualification_container(case: str, hold: int):
             "exec", "-T", "--user", "1000:1000", "api", "python", "/rehearsal-site/containers_fixture.py",
             installation_id, str(UUID(workflow)),
         ], check=True)
+        original_api = self.api_container
+        self.successor = subprocess.check_output(self.compose + ["run", "-d", "--no-deps", "api"], text=True).strip()
+        successor_address = self.verify_isolation(successor=self.successor)
+        successor_origin = f"http://{successor_address}:8000"
+
+        def successor_ready():
+            try:
+                return http(successor_origin + "/health/ready", "GET")[0] == 200
+            except OSError:
+                return False
+
+        wait("successor API ready", successor_ready)
         self.primary_hold()
         execution = self.submit("container-overflow", "linux")
 
@@ -947,10 +965,28 @@ async def qualification_container(case: str, hold: int):
             return None
 
         try:
+            wait("Container SDK request in flight", lambda: execution in self.provider("/local/held-reads"))
+            dispatch, = [row for row in self.provider("/local/evidence")
+                         if row["kind"] == "dispatch" and row["execution"] == execution]
+            worker = str(UUID(dispatch["worker"]))
+            generation = self.sql(f"SELECT remote_session_generation FROM execution_workers WHERE id='{worker}'")
+            self.provider("/local/ingress", "POST", {"host": successor_address})
+            self.provider("/local/interrupt", "POST", {"worker": worker})
+            self.origin = successor_origin
+            self.api_container = self.successor
+            subprocess.run(["docker", "stop", original_api], check=True, stdout=subprocess.DEVNULL)
+            wait("original Container adopts the successor API", lambda: self.sql(
+                f"SELECT remote_session_generation FROM execution_workers WHERE id='{worker}'"
+            ) > generation)
+            self.provider("/local/release-sdk", "POST", {"execution": execution})
             terminal = wait("native Container workflow", witness)
             assert terminal["status"] == "Success"
             assert terminal["result"]["case"] == "container-overflow"
             assert terminal["result"]["child"] == "linux-child" and terminal["result"]["native"].startswith("OpenSSL")
+            assert terminal["worker"] == worker
+            assert sum(row["kind"] == "dispatch" and row["execution"] == execution
+                       for row in self.provider("/local/evidence")) == 1
+            evidence("container-api-handoff", {"worker": worker, "original_dispatches": 1})
             evidence("container-overflow", {"execution": execution, "worker": terminal["worker"], "child_exit": 0})
         finally:
             self.release_primary()

@@ -396,6 +396,14 @@ async function provider(req, res) {
     return ok({});
   }
   if (relayOnly) return missing();
+  if (path === '/local/release-sdk' && method === 'POST') {
+    const {execution} = await json();
+    const release = heldQueries.get(execution);
+    assert.ok(release);
+    heldQueries.delete(execution);
+    release();
+    return ok({});
+  }
   if (path === '/local/interrupt' && method === 'POST') {
     const {worker} = await json();
     assert.ok(sockets.get(worker));
