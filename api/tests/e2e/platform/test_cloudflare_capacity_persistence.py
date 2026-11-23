@@ -1253,6 +1253,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
         release_version="1.0.0", release_sequence=1, source_revision=container.manifest.source_revision,
     ))
     installation.policy = {**installation.policy, "bounds_release": workers.digest}
+    cloudflare_policy.set_workers_release_floor(installation, workers.digest, TEST_ORDER)
     installation.desired_state = "enabled"
     installation.containers_policy = {"enabled": True}
     await db_session.flush()
@@ -1551,7 +1552,8 @@ async def test_enable_keeps_admission_closed_on_unverified_readback(
     digest = "d" * 64
     installation.policy = {**installation.policy, "bounds_release": digest}
     release = SimpleNamespace(digest=digest, manifest=SimpleNamespace(
-        release_version="1.1.0", release_sequence=1, workers={"gateway": SimpleNamespace(exports={})},
+        release_version="1.1.0", release_sequence=1,
+        workers={role: SimpleNamespace(exports={}) for role in ("gateway", "launcher")},
     ))
     job, _ = await enable_job.enqueue_cloudflare_enable(
         db_session, _platform_operator(), installation_id=installation.id, expected_revision=1,
