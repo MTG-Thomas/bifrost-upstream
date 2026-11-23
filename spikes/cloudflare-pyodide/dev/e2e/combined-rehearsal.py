@@ -350,15 +350,16 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
                 FROM execution_workers WHERE form='static' AND state='ready' AND execution_lane='normal'
                   AND supported_handlers @> '["workflow.execute"]'::jsonb""")
 
-        def replacement_ready():
+        def idle_primaries():
             rows = primaries()
-            if len(rows) == 1:
-                row = rows[0]
-                if row["current"] and row["lease_live"] and row["reserved"] == 0 and not row["pressured"]:
-                    return rows
-            return None
+            if worker_hostname and (len(rows) != 1 or not rows[0]["current"]):
+                return None
+            return rows if rows and all(
+                row["lease_live"] and row["reserved"] == 0 and not row["pressured"] for row in rows
+            ) else None
 
-        rows = wait("replacement primary is ready and idle", replacement_ready, 30) if worker_hostname else primaries()
+        # Terminal job readback can precede the local runner releasing memory.
+        rows = wait("primary workers are ready and idle", idle_primaries, 30)
         current = [row["budget"] for row in rows]
         assert current and min(current) > 160
         for index, size in enumerate(current):
@@ -545,11 +546,12 @@ async def {name}():
     def scripts(self):
         return {row["id"] for row in self.provider("/client/v4/accounts/" + self.account + "/workers/scripts")}
 
-    def worker_receipts(self):
-        return self.sql("""SELECT coalesce(json_agg(json_build_object(
+    def worker_receipts(self, *, installation_id=None):
+        owner = f" AND installation_id='{UUID(installation_id)}'" if installation_id is not None else ""
+        return self.sql(f"""SELECT coalesce(json_agg(json_build_object(
             'script', target_name, 'state', state, 'observed', observed_at,
             'revision', desired_revision, 'namespaces', namespace_ids)), '[]')
-            FROM cloudflare_owned_resources WHERE kind='worker_script'""")
+            FROM cloudflare_owned_resources WHERE kind='worker_script'{owner}""")
 
     def verify_receipts_absent(self, receipts):
         root = "/client/v4/accounts/" + self.account
@@ -638,7 +640,8 @@ async def {name}():
         old = wait("upgrade live original claim", lambda: self.held(["upgrade"]))["upgrade"]
         assert old["claim"]
         self.release_primary()
-        receipts = [row for row in self.worker_receipts() if row["revision"] == old["revision"]]
+        install_id = str(UUID(self.install()["installation_id"]))
+        receipts = [row for row in self.worker_receipts(installation_id=install_id) if row["revision"] == old["revision"]]
         assert len(receipts) == 3 and sum(len(row["namespaces"]) for row in receipts) == 4
         original_api = subprocess.check_output(
             self.compose + ["ps", "-q", "api"], text=True, timeout=8,
@@ -671,7 +674,7 @@ async def {name}():
         upgrade_events_start = len(self.provider("/local/evidence")) if "managementToken" not in self.cfg else None
         job = self.job("upgrade")
         pinned = Path(".release-2.checked").read_text().split()[1]
-        install_id = str(UUID(self.install()["installation_id"]))
+
         def fenced():
             row = self.sql(f"""SELECT json_build_object('admitted', admitted_revision, 'upgrade', upgrade_release)
                 FROM cloudflare_installations WHERE id='{install_id}'""")
@@ -694,7 +697,8 @@ async def {name}():
 
             checkpoint = wait("Upgrade verified retirement checkpoint", checkpoint, 35)
             assert checkpoint["admitted"] is None
-            old_receipts = [row for row in self.worker_receipts() if row["revision"] == old["revision"]]
+            old_receipts = [row for row in self.worker_receipts(installation_id=install_id)
+                            if row["revision"] == old["revision"]]
             assert len(old_receipts) == 3 and all(row["state"] == "absent" and row["observed"] for row in old_receipts)
             drained = datetime.fromisoformat(checkpoint["drained"])
             assert max(datetime.fromisoformat(row["observed"]) for row in old_receipts) <= drained
@@ -724,7 +728,8 @@ async def {name}():
             assert any(entry["kind"] == "ack" and entry["id"] == replies[-1]["id"]
                        and entry["connection"] == dispatch["connection"] for entry in wire)
             new_revision = checkpoint["desired"]
-            replacement = [row for row in self.worker_receipts() if row["revision"] == new_revision]
+            replacement = [row for row in self.worker_receipts(installation_id=install_id)
+                           if row["revision"] == new_revision]
             assert len(replacement) == 3 and all(row["state"] == "present" and row["observed"] for row in replacement)
             assert drained < min(datetime.fromisoformat(row["observed"]) for row in replacement)
             assert new_revision > old["revision"]
