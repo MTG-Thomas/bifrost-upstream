@@ -2,6 +2,7 @@
 
 import base64
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from hmac import compare_digest
@@ -206,31 +207,110 @@ async def _owned_tunnel(db: AsyncSession, row: CloudflareInstallation, client: T
     return receipt
 
 
-async def verify(db: AsyncSession, row: CloudflareInstallation, client: TunnelRest) -> None:
-    await client.verify_zone()
-    tunnel = await _owned_tunnel(db, row, client)
+@dataclass(frozen=True, slots=True)
+class ConnectorSnapshot:
+    receipt: ResourceObservation
+    fence: tuple[object, ...]
+    excluded: frozenset[str]
+    projected: bool
+
+    def ready(self, connectors: frozenset[str]) -> bool:
+        return self.projected and bool(connectors) and not (connectors & self.excluded)
+
+
+def _resource_fence(item: CloudflareOwnedResource) -> tuple[object, ...]:
+    return (item.id, item.state, _intent(item), item.provider_id, item.provider_version)
+
+
+def connector_fence(row: CloudflareInstallation, item: CloudflareOwnedResource) -> tuple[object, ...]:
+    details = item.provider_details
+    return (
+        row.id, row.desired_revision, row.desired_state, row.admitted_revision, row.api_token_version,
+        row.tunnel_token_version, row.tunnel_token_projected_version, row.reachability_mode,
+        row.account_id, row.zone_id, row.worker_ingress_origin, _resource_fence(item),
+        details.get("rotation_version"), frozenset(details.get("rotation_previous_connectors", ())),
+        details.get("rotation_intent_version"), frozenset(details.get("rotation_candidates", ())),
+    )
+
+
+def snapshot_connector(row: CloudflareInstallation, item: CloudflareOwnedResource) -> ConnectorSnapshot:
+    receipt = _recorded(item)
+    if receipt is None:
+        raise TunnelUnavailable(
+            "The recorded Cloudflare tunnel is absent", OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ABSENT,
+        )
+    excluded = frozenset()
+    if item.provider_details.get("rotation_version") == row.tunnel_token_version:
+        excluded = frozenset(item.provider_details.get("rotation_previous_connectors", ()))
+    projected = row.tunnel_token_version is not None and row.tunnel_token_projected_version == row.tunnel_token_version
+    return ConnectorSnapshot(receipt, connector_fence(row, item), excluded, projected)
+
+
+async def observe_connector(client: TunnelRest, snapshot: ConnectorSnapshot) -> frozenset[str]:
+    provider_id = snapshot.receipt.provider_id
+    connectors = await client.connectors(provider_id)
+    stale_sessions = connectors & snapshot.excluded
+    if snapshot.projected and stale_sessions:
+        # The job releases its transaction before provider I/O so Secret projection
+        # can proceed. Eviction is idempotent and targets exact pre-activation session
+        # IDs on the journaled tunnel, even if the job loses its lease during the call.
+        await client.evict_connectors(snapshot.receipt, set(stale_sessions))
+        connectors = await client.connectors(provider_id)
+    return connectors
+
+
+@dataclass(frozen=True, slots=True)
+class TunnelVerification:
+    connector: ConnectorSnapshot
+    dns: ResourceObservation
+    identity: tuple[object, ...]
+    origin: str
+    secret: SecretStr
+
+
+def verification_identity(
+    row: CloudflareInstallation, item: CloudflareOwnedResource, record: CloudflareOwnedResource,
+) -> tuple[object, ...]:
+    return (
+        row.id, row.reachability_mode, row.account_id, row.zone_id, row.worker_ingress_origin,
+        row.api_token_version, row.tunnel_token_version, _resource_fence(item), _resource_fence(record),
+    )
+
+
+async def snapshot_verification(db: AsyncSession, row: CloudflareInstallation) -> TunnelVerification:
+    item = await resource(db, row, TUNNEL)
+    if item is None:
+        raise TunnelUnavailable(
+            "The recorded Cloudflare tunnel is absent", OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ABSENT,
+        )
+    connector = snapshot_connector(row, item)
     record = await resource(db, row, DNS)
     receipt = _recorded(record) if record is not None else None
-    if receipt is None or await client.dns(receipt.intent, receipt, tunnel.provider_id) is None:
+    if record is None or receipt is None:
         raise TunnelUnavailable("The recorded Cloudflare DNS record is absent")
-    assert record is not None
-    record.observed_at = datetime.now(UTC)
-    await client.verify_ingress(tunnel, tunnel_origin())
-    await client.verify_private_routes(tunnel.provider_id)
     if row.tunnel_token_version is None:
         raise ObservationPending("Managed Tunnel has not published a connector credential")
-    expected = await _credential(db, _ref(row, "tunnel_secret", row.tunnel_token_version))
-    if not compare_digest(await client.secret(tunnel.provider_id), expected.get_secret_value()):
+    secret = await _credential(db, _ref(row, "tunnel_secret", row.tunnel_token_version))
+    return TunnelVerification(connector, receipt, verification_identity(row, item, record), tunnel_origin(), secret)
+
+
+async def verify(client: TunnelRest, snapshot: TunnelVerification) -> frozenset[str]:
+    await client.verify_zone()
+    tunnel = snapshot.connector.receipt
+    if await client.tunnel(tunnel.intent, tunnel) is None:
+        raise TunnelUnavailable(
+            "The recorded Cloudflare tunnel is absent", OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ABSENT,
+        )
+    if await client.dns(snapshot.dns.intent, snapshot.dns, tunnel.provider_id) is None:
+        raise TunnelUnavailable("The recorded Cloudflare DNS record is absent")
+    await client.verify_ingress(tunnel, snapshot.origin)
+    await client.verify_private_routes(tunnel.provider_id)
+    if not compare_digest(await client.secret(tunnel.provider_id), snapshot.secret.get_secret_value()):
         raise OwnershipConflict(
             "The Cloudflare tunnel credential changed outside Bifrost",
             OwnershipResource.CONNECTOR_CREDENTIAL, OwnershipCheck.CONNECTOR_SECRET,
         )
-    if not await connector_ready(db, row, client):
-        raise TunnelUnavailable("Cloudflare has no connected tunnel supervisor")
-
-
-async def repair_ingress(db: AsyncSession, row: CloudflareInstallation, client: TunnelRest) -> None:
-    await client.write_ingress(await _owned_tunnel(db, row, client), tunnel_origin(), repair=True)
+    return await observe_connector(client, snapshot.connector)
 
 
 async def verify_management_writes(
@@ -262,27 +342,21 @@ async def verify_management_writes(
         record.observed_at = datetime.now(UTC)
 
 
-async def connector_ready(db: AsyncSession, row: CloudflareInstallation, client: TunnelRest) -> bool:
+async def connector_resource(db: AsyncSession, row: CloudflareInstallation) -> CloudflareOwnedResource:
     item = await resource(db, row, TUNNEL)
     if item is None or item.provider_id is None:
         raise ObservationPending(
             "The recorded Cloudflare tunnel is absent", OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ABSENT,
         )
-    connectors = await client.connectors(item.provider_id)
+    return item
+
+
+def record_connector_readiness(
+    row: CloudflareInstallation, item: CloudflareOwnedResource, snapshot: ConnectorSnapshot,
+    connectors: frozenset[str],
+) -> bool:
     rotating = item.provider_details.get("rotation_version") == row.tunnel_token_version
-    excluded = set(item.provider_details.get("rotation_previous_connectors", [])) if rotating else set()
-    if rotating and excluded and row.tunnel_token_projected_version == row.tunnel_token_version:
-        receipt = _recorded(item)
-        if receipt is None:
-            raise OwnershipConflict("Managed Tunnel rotation has no exact receipt")
-        if connectors & excluded:
-            await client.evict_connectors(receipt, excluded)
-            connectors = await client.connectors(item.provider_id)
-    ready = (
-        bool(connectors) and not (connectors & excluded)
-        and row.tunnel_token_version is not None
-        and row.tunnel_token_projected_version == row.tunnel_token_version
-    )
+    ready = snapshot.ready(connectors)
     item.provider_details = {**item.provider_details, "connectors": sorted(connectors)}
     checked_at = datetime.now(UTC).isoformat()
     row.deployment_evidence = {

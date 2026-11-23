@@ -476,7 +476,11 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # stage by installation ID. Gate seconds remain a JSON number for readers.
     # CLI-breaking: retiring Cloudflare PATCH connect removes a request sent by
     # older CLIs. The replacement preflight and activate ship with 1.4.3.
-    "b59827b297476ee1fe12c9031fa74313e7410dab01c2053b7f134427f9b78940"
+    # Cloudflare capacity status adds a primary cleanup reason to its raw JSON.
+    # Older CLI clients print the JSON unchanged. Fingerprint only.
+    # Admission-closure drains add a distinct placement reason to raw status JSON.
+    # The same status includes Container readiness, egress, cooldown and receipt reasons.
+    "c85dd7e7beaac592299d65a457fc0ff6611d271b9e0cc1121f7a7af0ad2d7527"
 )
 
 

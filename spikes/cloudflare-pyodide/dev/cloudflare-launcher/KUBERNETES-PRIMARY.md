@@ -49,8 +49,11 @@ does not switch to the build class when the isolation setting is enabled.
 [Job catalog](../../../../api/src/jobs/platform/catalog.py#L58) · [Runner receipt](../../../../api/src/jobs/platform/runner.py#L81)
 
 The production component assumes compatible DNS resolution and NetworkPolicy
-enforcement. For NodeLocal DNS, the consuming overlay must allow the actual
-resolver destination. Confirm TCP/UDP 7844 to the configured edge addresses
+enforcement. Kubernetes API discovery and readback can establish that a
+NetworkPolicy object exists, but cannot determine whether the installed CNI
+enforces it. Use a selected pod and an unselected control to verify that
+disallowed traffic is blocked. For NodeLocal DNS, the consuming overlay
+must allow the actual resolver destination. Confirm TCP/UDP 7844 to the configured edge addresses
 and TCP 8001 to the ingress Service on the installed CNI. The provisioned
 connector receives the tunnel token file. Workers receives scoped credentials
 and derived incarnation keys. Bifrost platform secrets stay on Bifrost.
@@ -61,18 +64,27 @@ and derived incarnation keys. Bifrost platform secrets stay on Bifrost.
   to patch that exact Secret. The authorization review has no persistent
   write. Projection uses the API pod namespace even when Jobs run in another
   namespace.
-- Worker credential rotation schedules its existing second and third
-  attempts after delays of 15 and 165 seconds. That gives the final check
-  at least 180 seconds from the first failed check. The window covers a
-  one-minute kubelet sync, a one-minute TTL cache where configured, and a
-  minute of margin for the child restart and session attachment. Clusters
-  configured with longer sync or cache intervals can exceed the window.
-  [Kubernetes Secret projection](https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod) · [Retry timing test](../../../../api/tests/unit/jobs/test_platform_job_catalog.py#L84)
+- Activate, Enable, Upgrade, and connector rotation share a readiness
+  wait. It begins after the first not-ready observation and checks again
+  every five seconds for up to 180 seconds, with a final observation at
+  the deadline. A probe uses the job lease and current revision, and
+  commits before sleeping so Secret projection can take the installation
+  lock. The budget allows 60 seconds for the default kubelet sync,
+  60 seconds for caching when the TTL strategy uses its default TTL, and
+  60 seconds for the connector child to start and attach, including
+  polling margin. A cluster with longer sync or cache intervals can
+  exceed the window. The job returns `CF_CONNECTOR_UNAVAILABLE` when
+  readiness is still missing at the deadline. Provider-error retries
+  retain the 15- and 45-second delays.
+  [Secret projection](https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod) · [Kubelet defaults](https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/#kubeletconfiguration) · [Secret cache TTL](https://github.com/kubernetes/kubernetes/blob/v1.31.0/pkg/kubelet/secret/secret_manager.go)
 - The primary keeps its own ceiling while pinned Workers launchers or
   Containers instances are present. An explicit shared ceiling counts
-  each live resource once and retains pending provider deletions. Job and
-  VM-provider status pack the same Linux executor budgets as the controller,
-  including static executors. Cohort health still uses heartbeat freshness.
+  each live resource once and retains pending provider deletions while
+  admission is closed. Job and VM-provider status pack the same Linux
+  executor budgets as the controller, including static executors. For a
+  pending worker the forecast uses calibration from its launch build,
+  package generation, memory threshold, and provider scope. Cohort health
+  still uses heartbeat freshness.
   [Containers ceiling regression](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py#L2306)
 - The [local tunnel overlay](../../../../k8s/local-cloudflare-tunnel/kustomization.yaml)
   adds the existing connector component to the local manifests. It binds
@@ -167,9 +179,8 @@ creation. The connector started 81.3 seconds after the last successful
 Secret patch and 15.8 seconds after the job failed. Status showed
 `connector_unavailable` and `setup_required`. After the local connector
 session attached, Enable on the same installation succeeded in 4.6
-seconds and recorded `remote_launcher`. Initial Managed Tunnel Enable
-still needs a readiness window that covers kubelet projection. The
-longer window already applied to rotation handled the same boundary.
+seconds and recorded `remote_launcher`. This run established the initial
+Enable timing failure that the shared connector-readiness wait addresses.
 
 | Check | Observed result |
 | --- | --- |
@@ -186,3 +197,206 @@ removed node volumes contained the six imported images. The kubeconfig,
 binary, archive, local fixture cache copy, and scratch directory were removed.
 Docker reported 84 GiB free after teardown. The rehearsal made zero hosted
 Cloudflare requests and incurred zero model spend.
+
+### First Activate with the readiness wait
+
+The follow-up tested `2351e6d1934b405912d7b2e3f03b4461b5a3ca83` on a fresh Kind v0.24.0 node
+running Kubernetes v1.31.0, with one API replica and one warm Job worker.
+The adapter validated all 23 rendered resources and used the local provider
+fixture with node egress isolated. One Activate request created one Enable
+job and one connector credential. Enable succeeded on attempt one in
+51.5 seconds and recorded `remote_launcher`. The Kubernetes Secret advanced,
+and its connector child started about 38.8 seconds after the last patch.
+The provider reported one attached session and the connector pod recorded
+zero container restarts. The persistence tests exercise readiness at 140
+simulated seconds and terminal `CF_CONNECTOR_UNAVAILABLE` at 180 seconds.
+
+Disconnect was still pending when the rehearsal's 90-second observation
+ended. The teardown deleted the disposable node and verified the absence
+of its volume, its six imported images, both trial image references, the
+bridge, the kubeconfig, and the source and fixture files. The local provider
+state existed only in that cluster. Hosted Cloudflare requests and model
+calls were both zero.
+
+### Disconnect settlement after first Activate
+
+The first-Activate log captured the capacity reasons `cleanup_pending` and
+`setup_required` at submission. The rehearsal reached its 90-second
+observation cutoff with the job still active. That log lacked the job phase
+and connector readbacks needed to identify its last step.
+
+The instrumented Kind replay at `d3d64529aeaef4a1968f49bb56ca85448b74f72c`
+started Disconnect immediately after the first successful Enable. There were
+zero live Workers usage incarnations and zero unreleased slots throughout.
+The job ran on attempt one. The timings below are sampled from the
+rehearsal's first job poll.
+
+| Elapsed | Observed state |
+| --- | --- |
+| 3.2 s | All three Workers scripts were absent. The database wanted no connector token. The job was `running` in `Verifying Cloudflare Deletion`. |
+| 5.7 s | The Kubernetes Secret object was empty, DNS was absent, and the tunnel receipt was `deleting`. The connector pod still had the previous mounted token and one provider session. |
+| 57.3 s | The token mount and the attached session were empty. The tunnel still awaited a deletion check. |
+| 66.0 s | Attempt one was `succeeded` with outcome `disconnected`. The tunnel was deleted, three script and four namespace reads returned HTTP 404, and there were no live usage rows, unreleased slots, stored credentials, or non-absent ownership receipts. |
+
+The wait was for the mounted Secret to refresh and the connector to detach,
+followed by the next deletion poll. The cleanup journal had already verified
+Workers and DNS absence before that wait. Shared-cap persistence could
+affect placement but did not participate in this path, and the connector
+readiness wait runs in Enable, Upgrade, Reconcile when it provisions, and rotation. While the job was
+`running`, its error and result codes were empty. The capacity status reason
+was `cleanup_pending`, with `setup_required` also present. The earlier
+7.6-second run submitted Disconnect after Scale In and did not capture when
+the Secret mount refreshed. Its successful readback shows that the wait can
+finish on an early deletion poll.
+
+A controlled replay changed only the disposable node's kubelet sync period
+to 105 seconds. The Secret object, DNS, and Workers scripts were clear by
+5.6 seconds. At 90.4 seconds the pod still held the token and the provider
+still reported one session. The job was `running` in `Verifying Cloudflare
+Deletion`, with no PlatformJob error or result code. The installation
+still reported `cleanup_pending`. At 100.5 seconds the mounted token and
+session had cleared. Disconnect succeeded on attempt one at 125.6 seconds
+and verified the same absence checks as the default replay.
+
+Kubernetes documents that a mounted Secret update is eventually consistent.
+The delay includes kubelet synchronization and cache propagation. Kubernetes
+v1.31 also jitters regular pod resync by up to 50 percent. An empty Secret
+object and a still-present token in the pod can therefore coexist, especially
+when Disconnect follows shortly after the token was first projected. [Kubernetes Secret volume updates](https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod). [Kubernetes v1.31 pod worker resync](https://github.com/kubernetes/kubernetes/blob/v1.31.0/pkg/kubelet/pod_workers.go).
+
+The rehearsal now waits up to 16 minutes for Disconnect to reach a terminal
+PlatformJob state. This covers the 15-minute attempt limit and one minute to
+claim the job. It logs status, attempt, phase, and code on transitions and
+still requires verified absence. Within the attempt, deletion checks back
+off from 2 seconds to at most 30 seconds. If deletion is still settling at
+the first unresolved check after the 10-minute drain deadline, the job
+requires action with `CF_CLEANUP_PENDING`. Both live jobs finished as
+`succeeded` with the final progress message `Completed`.
+
+A managed primary can still be constrained by an explicit shared cap while
+Cloudflare deletions remain unverified. Status reports
+`primary_limited_by_cloudflare_cleanup` when completing those deletions
+would open primary room for queued demand. Live workers finishing work
+after admission closed report `primary_limited_by_cloudflare_drain`, even
+when a policy change closed admission without a job. Routine lifetime
+retirements continue to consume the cap while outstanding. The status
+uses the job's title only if the current lifecycle action covers those
+resources. The diagnostic reasons appear alongside any Cleanup Pending
+blocker.
+
+Reconcile uses the Enable connector wait when it enters the provisioning
+path. This is intentional. Reconcile can admit a new deployment, so it must
+verify the same projected token and attached session. A connector that
+remains unready after the 180-second wait ends that job with non-retryable
+`CF_CONNECTOR_UNAVAILABLE`. A later explicit replay can reuse the
+journaled connector credential. The existing `provision_dns` path seals
+the initial connector credential only when `tunnel_token_version` is
+unset and commits it before Enable enters the connector wait. The wait
+releases the installation lock before every provider call and sleep.
+The existing ingress watcher reconciles the desired projection on each
+pass, so a timeout leaves it eligible to try again.
+
+Reconcile verification and rotation readiness checks also release the
+transaction before provider reads. Reconcile rechecks the job lease,
+installation revision, tunnel and DNS receipts, and credential versions.
+A confirmed ingress or ownership problem, missing tunnel or DNS record,
+or unavailable connector closes admission for the same target. Readiness
+results require the same projection state. Reconcile retries if projection
+moves across the read. If the attempt budget is exhausted and the last
+read confirmed a problem, Reconcile closes admission and reports that
+problem's recovery code. A confirmed connector outage remains eligible
+for scheduled Reconcile after backoff. Without a confirmed problem, the
+job reports `CF_TUNNEL_VERIFICATION_CHANGED`. Once the current credential
+has projected and the connector has attached, run Reconcile again.
+Repair runs after admission closure commits and rechecks the job before
+its PUT and after readback. The `cloudflare-installation:{id}` job lock
+serializes lifecycle writers for an installation, including ingress
+repair and credential rotation. The provider ingress PUT relies on this
+serialization and the exact tunnel receipt.
+
+Eviction targets only exact session IDs captured before the token was
+activated, so a connector attached by a concurrent rotation is outside
+that set. The following provider calls still hold the installation lock
+and can delay a projection attempt:
+
+- Connector credential rotation journals the old sessions and applies and
+  adopts the replacement under the lease. Projection of the replacement
+  starts after the credential commits.
+- Account-token rotation verifies management writes, including the ingress
+  PUT, before promoting the staged account credential.
+- Enable provisions the tunnel and DNS under their journal fences. The
+  initial connector credential is first available to project when the DNS
+  transaction commits.
+- Enable's final Upgrade inventory read runs with the admission transaction
+  so the verified receipts and deployment promotion stay fenced. It runs
+  after the connector has projected and attached.
+- Disable's tunnel cleanup advances one journaled step under the lock.
+  Withdrawal of the connector credential commits before cleanup waits for
+  the empty projection and proceeds with provider deletion.
+
+Strict kubeconform validated all 23 adapted manifests in each replay. Both
+replays removed the namespace and connector workload, then verified that
+the trial containers, node volumes containing the six imported images,
+bridge, and two trial image references were absent. The source, fixtures,
+local bundle copy, kubeconfig, and Kind binary were removed. Only the
+rehearsal evidence was retained. Both runs used the isolated local provider
+with zero hosted Cloudflare requests or model calls.
+
+### Connector NetworkPolicy qualification
+
+Kind v0.24.0 shipped kindnet with a bundled `kube-network-policies`
+controller. On the pinned Kubernetes v1.31.0 node image it started the
+controller and synchronized nftables rules. Kindnet
+`v20240813-c6f155d6` had manifest digest
+`sha256:e59a687ca28ae274a2fc92f1e2f5f1c739f353178a43a23aafc71adb802ed166`.
+[Kind v0.24.0 release](https://github.com/kubernetes-sigs/kind/releases/tag/v0.24.0)
+
+The connector used the rendered egress rules before the follow-up added
+ingress isolation. Listening fixtures used
+the rendered Service selectors and target ports. An unselected pod in the
+same namespace reached all 22 targets. The node had no IPv4 or IPv6 default
+route. A route inside the disposable node sent the allowed edge address and
+a separate test address to a local listener.
+
+| Connector destination | NetworkPolicy result | Unselected control |
+| --- | --- | --- |
+| Cluster DNS via Service and direct endpoint, TCP and UDP 53 | Reachable | Reachable |
+| Worker ingress via Service and direct endpoint, TCP 8001 | Reachable | Reachable |
+| Local Cloudflare edge fixture, TCP and UDP 7844 | Reachable | Reachable |
+| Edge fixture on TCP 443 and arbitrary destination on TCP 443 and TCP/UDP 7844 | Blocked | Reachable |
+| Bifrost main API, Postgres, Redis and SeaweedFS, each via Service and direct endpoint | Blocked | Reachable |
+| Kubernetes API via Service and same-node control-plane endpoint | Reachable | Reachable |
+
+Kindnet and its bundled policy controller allowed egress to the local
+node. In this single-node layout, the Kubernetes API Service also led to
+that node. Other CNIs can handle own-node and host-network traffic
+differently. Probe the Service and direct endpoint in each cluster. A temporary
+node-local firewall rule scoped to the connector's source address blocked
+both API paths. The same rule left edge and worker ingress reachable from
+the connector and left both API paths reachable from the control pod. The
+rule was removed after the check. Deployments that require this boundary
+need a host firewall or CNI-specific host policy.
+The portable component retains the connector's token-free ServiceAccount
+configuration. The probe verified the token was absent and an uncredentialed
+Kubernetes API request returned HTTP 403. [Kubernetes NetworkPolicy scope](https://kubernetes.io/docs/concepts/services-networking/network-policies/#the-two-sorts-of-pod-isolation)
+
+
+With the shipped policy still applied, the full Bifrost replay used one
+Kubernetes Job worker and the offline Miniflare provider. The connector's
+local cloudflared stand-in attached through the allowed edge route on TCP
+7844 without an additional connector NetworkPolicy. The actual API pod
+still reached Postgres, Redis, SeaweedFS, the Kubernetes API, and the local
+provider. All four PlatformJobs succeeded on attempt one.
+
+| Live action | Time | Readback |
+| --- | ---: | --- |
+| Enable | 60.7 s | One attached connector session and a successful `remote_launcher` canary |
+| Scale In | 2.7 s | Admission closed and no live usage rows remained |
+| Rotate connector token | 73.0 s | The Secret advanced, one old session was evicted, one replacement attached, and the old token returned HTTP 403 |
+| Disconnect | 66.0 s | The Secret was empty, sessions and tunnel DNS were absent, the tunnel was deleted, and three scripts and four namespaces returned HTTP 404 |
+
+The namespace, connector, edge fixture, and Kind node were removed. The
+verification checked the node volume containing the imported and bundled CNI
+images, the test image references, and the disposable bridge. The kubeconfig,
+Kind binary, and fixture files were removed. No separate CNI image pulls,
+hosted Cloudflare requests, or model calls were needed.

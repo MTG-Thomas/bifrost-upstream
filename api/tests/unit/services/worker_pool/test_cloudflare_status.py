@@ -89,6 +89,18 @@ def test_lane_placement_reason_has_remedy(fields, approvals, code, next_at):
     assert result.next_eligible_at == next_at
 
 
+def test_changed_tunnel_verification_blocks_placement_with_the_recovery_remedy():
+    code = "CF_TUNNEL_VERIFICATION_CHANGED"
+    blocker, = placement_blockers(
+        enabled=True, admitted=True, release_matches=True, cleanup_pending=False,
+        spend_ready=True, connector_session="connected", job_code=code, cooldown_until=None,
+    )
+    recovery = recovery_for_job(PlatformJob(status="requires_action", result={"code": code}))
+    assert recovery is not None
+    assert blocker.label == "Managed Tunnel Verification Changed"
+    assert blocker.remedy == recovery.remedy
+
+
 def test_recovery_does_not_return_provider_values():
     job = PlatformJob(status="requires_action", result={
         "code": "CF_OWNERSHIP_CONFLICT",
@@ -98,6 +110,13 @@ def test_recovery_does_not_return_provider_values():
     assert recovery is not None
     assert recovery.resource_class is None
     assert recovery.remedy
+
+
+def test_tunnel_verification_changed_remedy():
+    job = PlatformJob(status="requires_action", result={"code": "CF_TUNNEL_VERIFICATION_CHANGED"})
+    recovery = recovery_for_job(job)
+    assert recovery is not None
+    assert "projected" in recovery.remedy and "run Reconcile again" in recovery.remedy
 
 
 @pytest.mark.parametrize("status", ["queued", "running"])

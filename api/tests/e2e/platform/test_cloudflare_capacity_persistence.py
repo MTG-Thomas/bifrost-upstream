@@ -84,6 +84,7 @@ from src.services.authorization.enforce import Caller
 from src.services.execution import cloudflare_approval
 from src.services.execution.workflow_dispatch import release_workflow_run
 from src.services.kubernetes_execution import KubernetesExecutionService, KubernetesPolicy
+from src.services.memory_requests import JOB_BASELINE_ESTIMATE_BYTES
 from src.services.work_dispatch import WAKE_WORKFLOW, stage_dispatch
 from src.services.worker_pool import claims as claim_service
 from src.services.worker_pool import (
@@ -213,11 +214,12 @@ class _TunnelAPI:
     dns_id = "c" * 32
     tunnel_id = "20000000-0000-4000-8000-000000000001"
 
-    def __init__(self, *, initial_configuration="version_zero"):
+    def __init__(self, *, initial_configuration="version_zero", lose_create_responses=True):
         self.tunnel = None
         self.dns = None
         self.config = None
         self.initial_configuration = initial_configuration
+        self.lose_create_responses = lose_create_responses
         self.config_version = 0
         self.secret = None
         self.connectors = []
@@ -269,7 +271,9 @@ class _TunnelAPI:
             if self.initial_configuration == "default_404":
                 self.config = {"ingress": [{"service": "http_status:404"}], "warp-routing": {"enabled": False}}
                 self.config_version = 1
-            raise httpx.ReadError("lost tunnel create response", request=request)
+            if self.lose_create_responses:
+                raise httpx.ReadError("lost tunnel create response", request=request)
+            return result(self.tunnel)
         if path == tunnel and method == "GET":
             return result(self.tunnel)
         if path == tunnel and method == "DELETE":
@@ -314,10 +318,12 @@ class _TunnelAPI:
             return result([self.dns] if self.dns else [])
         if path == records and method == "POST":
             self.dns_creates += 1
-            if self.dns_creates == 1:
+            if self.lose_create_responses and self.dns_creates == 1:
                 return httpx.Response(503)
             self.dns = {**json.loads(request.content), "id": self.dns_id, "modified_on": "fixture-dns-version"}
-            raise httpx.ReadError("lost DNS create response", request=request)
+            if self.lose_create_responses:
+                raise httpx.ReadError("lost DNS create response", request=request)
+            return result(self.dns)
         if path == f"{records}/{self.dns_id}" and method == "GET":
             return result(self.dns) if self.dns and self.dns.get("id") == self.dns_id else httpx.Response(404)
         if path == f"{records}/{self.dns_id}" and method == "PATCH":
@@ -358,6 +364,19 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
         async with context() as db:
             row = await db.get(CloudflareInstallation, installation_id)
             return await operation(db, row, client, **kwargs)
+
+    async def connector_ready(db, row, client):
+        item = await cloudflare_tunnel.connector_resource(db, row)
+        snapshot = cloudflare_tunnel.snapshot_connector(row, item)
+        connectors = await cloudflare_tunnel.observe_connector(client, snapshot)
+        return cloudflare_tunnel.record_connector_readiness(row, item, snapshot, connectors)
+
+    async def verify(db, row, client):
+        snapshot = await cloudflare_tunnel.snapshot_verification(db, row)
+        connectors = await cloudflare_tunnel.verify(client, snapshot)
+        item = await cloudflare_tunnel.connector_resource(db, row)
+        if not cloudflare_tunnel.record_connector_readiness(row, item, snapshot.connector, connectors):
+            raise ObservationPending("Cloudflare has no connected tunnel supervisor")
 
     settings = SimpleNamespace(cloudflare_tunnel_channel=layout)
     monkeypatch.setattr(cloudflare_tunnel, "get_settings", lambda: settings)
@@ -430,6 +449,22 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             key = await cloudflare_connector_channel.project_connector(None)
             first = delivered()
             assert first == (await client.connector_token(provider.tunnel_id)).get_secret_value()
+            credential_key = (installation_id, "connector_token", "", 1)
+            async with context() as db:
+                current = await db.get(CloudflareCredential, credential_key)
+                assert current is not None and current.ciphertext is not None
+                original_ciphertext = current.ciphertext
+                row = await db.get(CloudflareInstallation, installation_id)
+                await cloudflare_tunnel.prepare(db, row, actor=actor)
+            await change(cloudflare_tunnel.provision_tunnel, client)
+            await change(cloudflare_tunnel.provision_dns, client, actor=actor)
+            async with context() as db:
+                current = await db.get(CloudflareCredential, credential_key)
+                row = await db.get(CloudflareInstallation, installation_id)
+                assert current is not None and current.ciphertext == original_ciphertext
+                assert row is not None and row.tunnel_token_version == 1
+            assert await cloudflare_connector_channel.project_connector(key) == key
+            assert delivered() == first and provider.tunnel_creates == 1 and provider.dns_creates == 2
             old, new = str(uuid4()), str(uuid4())
             provider.connectors = [old]
             assert provider.config
@@ -440,7 +475,7 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             async with context() as db:
                 row = await db.get(CloudflareInstallation, installation_id)
                 row.deployment_evidence = {**(row.deployment_evidence or {}), "connector_session": "disconnected"}
-            await change(cloudflare_tunnel.verify, client)
+            await change(verify, client)
             await db_session.refresh(installation)
             evidence = await cloudflare_status.deployment_evidence(db_session, installation)
             assert evidence.connector_session == "connected"
@@ -520,9 +555,18 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                 patch.setattr(cloudflare_tunnel, "adapter", lambda *_: client)
                 provider.config["warp-routing"] = {"enabled": True}
                 provider.connectors = []
+                elapsed = 0.0
+
+                async def advance(seconds: float) -> None:
+                    nonlocal elapsed
+                    elapsed += seconds
+
+                patch.setattr(lifecycle_job, "monotonic", lambda: elapsed)
+                patch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=advance))
                 with pytest.raises(PlatformJobFailure) as unavailable:
                     await lifecycle_job._reconcile(running, reconcile)
                 assert unavailable.value.code == "CF_CONNECTOR_UNAVAILABLE"
+                assert not unavailable.value.retryable and elapsed == 180
                 await db_session.refresh(installation)
                 assert installation.admitted_revision is None
                 assert provider.config["warp-routing"] == {"enabled": False}
@@ -588,14 +632,14 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             await db_session.flush()
             provider.connectors = []
             with pytest.raises(ObservationPending, match="no connected"):
-                await change(cloudflare_tunnel.verify, client)
+                await change(verify, client)
             provider.connectors = [old]
-            await change(cloudflare_tunnel.verify, client)
+            await change(verify, client)
             async with context() as db:
                 row = await db.get(CloudflareInstallation, installation_id)
                 await cloudflare_tunnel.stage_rotation(db, row, version=2, actor=actor)
             await change(cloudflare_tunnel.record_rotation_intent, client, version=2)
-            assert await change(cloudflare_tunnel.connector_ready, client)
+            assert await change(connector_ready, client)
             assert not provider.evicted
             late = str(uuid4())
             provider.connectors.append(late)
@@ -616,10 +660,10 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                 assert job.payload["replacement_version"] == 3
             await change(cloudflare_tunnel.record_rotation_intent, client, version=3)
             # Enable's readiness check must still evict both v1 sessions after v3 aborts.
-            assert not await change(cloudflare_tunnel.connector_ready, client)
+            assert not await change(connector_ready, client)
             assert provider.evicted == sorted([old, late])
             provider.connectors = [new]
-            assert await change(cloudflare_tunnel.connector_ready, client)
+            assert await change(connector_ready, client)
             assert not await change(cloudflare_tunnel.cleanup, client)
             with pytest.raises(DeletionSettling, match="projection"):
                 await change(cloudflare_tunnel.cleanup, client)
@@ -1780,16 +1824,22 @@ async def test_enable_keeps_admission_closed_on_unverified_readback(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("aborted_rotation", [0, 2, 3])
+@pytest.mark.parametrize(("aborted_rotation", "connector_delay"), [
+    (0, None), (2, None), (3, None),
+    (0, 140), (0, -1),
+], ids=["existing", "rotation-intent", "rotation-eviction", "slow-projection", "no-connector"])
 async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
-    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, aborted_rotation,
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, aborted_rotation, connector_delay,
 ) -> None:
     installation.policy = {**installation.policy, "bounds_release": "d" * 64}
-    if aborted_rotation:
+    connector = str(uuid4())
+    connectors: set[str] = set()
+    if aborted_rotation or connector_delay is not None:
         installation.reachability_mode = "managed_tunnel"
         installation.zone_id = _TunnelAPI.zone
-        active_version = aborted_rotation - 1
-        installation.tunnel_token_version = installation.tunnel_token_projected_version = active_version
+        active_version = aborted_rotation - 1 if aborted_rotation else 1
+        installation.tunnel_token_version = active_version
+        installation.tunnel_token_projected_version = active_version if connector_delay is None else 0
         receipt = CloudflareOwnedResource(
             id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
             scope="reachability", kind=cloudflare_tunnel.TUNNEL, target_name="fixture-tunnel", desired_revision=1,
@@ -1798,8 +1848,8 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         )
         db_session.add(receipt)
         await db_session.flush()
-        connector = str(uuid4())
-        connectors = {connector}
+        if connector_delay is None:
+            connectors.add(connector)
         previous = str(uuid4())
         if active_version == 2:
             receipt.provider_details = {"rotation_version": 2, "rotation_previous_connectors": [previous]}
@@ -1809,8 +1859,9 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             connectors=AsyncMock(side_effect=lambda _: frozenset(connectors)),
             evict_connectors=AsyncMock(side_effect=lambda _, excluded: connectors.difference_update(excluded)),
         )
-        await cloudflare_tunnel.record_rotation_intent(db_session, installation, tunnel, version=aborted_rotation)
-        assert set(receipt.provider_details["rotation_candidates"]) == connectors
+        if aborted_rotation:
+            await cloudflare_tunnel.record_rotation_intent(db_session, installation, tunnel, version=aborted_rotation)
+            assert set(receipt.provider_details["rotation_candidates"]) == connectors
         # The replacement failed before activation, so the incumbent connector must remain eligible.
         monkeypatch.setattr(cloudflare_tunnel, "adapter", lambda *_: tunnel)
         for step in ("prepare", "provision_tunnel", "provision_dns"):
@@ -1832,11 +1883,26 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             await session.commit()
 
     monkeypatch.setattr(enable_job, "get_db_context", context)
+    monkeypatch.setattr(lifecycle_job, "get_db_context", context)
     monkeypatch.setattr(cloudflare_spend, "get_db_context", context)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     observed = {}
     writes = []
-    provider_seconds = 0
+    provider_seconds = 0.0
+
+    async def advance(seconds: float) -> None:
+        nonlocal provider_seconds
+        provider_seconds += seconds
+        if connector_delay is not None and 0 <= connector_delay <= provider_seconds and not connectors:
+            async with context() as db:
+                row = await db.get(CloudflareInstallation, installation.id)
+                assert row is not None
+                row.tunnel_token_projected_version = row.tunnel_token_version
+            connectors.add(connector)
+
+    if connector_delay is not None:
+        monkeypatch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=advance))
+        monkeypatch.setattr(lifecycle_job, "monotonic", lambda: provider_seconds)
     capacity_namespaces_visible_at = None
 
     class Provider:
@@ -1849,7 +1915,7 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             assert (scope_bearer is not None) == intent.target.name.endswith("-capacity")
             writes.append(intent.target.name)
             observed[intent.target.name] = ResourceObservation(intent, str(uuid4()), str(uuid4()))
-            if scope_bearer is not None and not aborted_rotation:
+            if scope_bearer is not None and not aborted_rotation and connector_delay is None:
                 capacity_namespaces_visible_at = provider_seconds + 10
 
         async def configure_endpoint(self, *, api_token, expected):
@@ -1922,6 +1988,23 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         ),
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider_read)) as http:
+        if connector_delay is not None:
+            if connector_delay < 0:
+                with pytest.raises(PlatformJobFailure) as unavailable:
+                    await enable_job._settle_enable(running, payload, http, release)
+                assert unavailable.value.code == "CF_CONNECTOR_UNAVAILABLE"
+                assert not unavailable.value.retryable and provider_seconds == 180
+                assert not writes
+            else:
+                probe_results = iter((reachable,))
+                canary.side_effect = None
+                canary.return_value = ingress_probes.RuntimeCanary(True, True)
+                result = await enable_job._settle_enable(running, payload, http, release)
+                assert result["outcome"] == "enabled" and provider_seconds == 140
+            await db_session.refresh(installation)
+            assert installation.admitted_revision == (None if connector_delay < 0 else payload.revision)
+            return
+
         with monkeypatch.context() as patch:
             patch.setattr(enable_job, "cloudflare_workers_remain", AsyncMock(return_value=True))
             recovering = AsyncMock(return_value="settling")
@@ -1994,6 +2077,381 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     assert sum(path.endswith("/entitlements") for path in paid_reads) == 3
     await db_session.refresh(installation)
     assert installation.admitted_revision == 1
+
+
+@pytest.fixture
+def isolated_connector_projection(isolated_capacity_session_factory, monkeypatch, tmp_path):
+    sessions = isolated_capacity_session_factory
+    settings = SimpleNamespace(cloudflare_tunnel_channel="compose")
+    monkeypatch.setattr(cloudflare_tunnel, "get_settings", lambda: settings)
+    monkeypatch.setattr(cloudflare_connector_channel, "get_settings", lambda: settings)
+    token_file = tmp_path / "token"
+    monkeypatch.setattr(cloudflare_connector_channel, "COMPOSE_PATH", token_file)
+
+    @asynccontextmanager
+    async def projection_context():
+        async with sessions.begin() as db:
+            await db.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            yield db
+
+    monkeypatch.setattr(cloudflare_connector_channel, "get_db_context", projection_context)
+    monkeypatch.setattr(lifecycle_job, "get_db_context", sessions.begin)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    return sessions, token_file
+
+
+@pytest.mark.asyncio
+async def test_enable_replays_tunnel_after_readiness_timeout_without_blocking_projection(
+    isolated_connector_projection, monkeypatch,
+) -> None:
+    sessions, token_file = isolated_connector_projection
+    provider = _TunnelAPI(lose_create_responses=False)
+    async with sessions.begin() as db:
+        installation_id = await create_installation(db, provider.account)
+        row = await db.get(CloudflareInstallation, installation_id)
+        assert row is not None
+        row.reachability_mode, row.zone_id = "managed_tunnel", provider.zone
+        row.policy = {**row.policy, "bounds_release": "d" * 64}
+        job, _ = await enable_job.enqueue_cloudflare_enable(
+            db, _platform_operator(), installation_id=installation_id, expected_revision=1,
+        )
+        lease = uuid4()
+        job.status, job.lease_token = "running", lease
+    monkeypatch.setattr(enable_job, "get_db_context", sessions.begin)
+    monkeypatch.setattr(cloudflare_spend, "get_db_context", sessions.begin)
+    create_script = AsyncMock()
+    monkeypatch.setattr(enable_job, "request_creation", create_script)
+
+    async def install_script(_adapter, resource, *, token):
+        resource.state = "present"
+        resource.provider_id = resource.target_name
+        resource.provider_version = "fixture-replay"
+        endpoint = "https://capacity.example.test" if resource.target_name.endswith("-capacity") else None
+        return ConfiguredWorkersScript(endpoint, {})
+
+    monkeypatch.setattr(enable_job, "_install_script", install_script)
+    monkeypatch.setattr(enable_job, "probe_worker_ingress", AsyncMock(return_value=SimpleNamespace(
+        ready=True, verified_at=None, runtime_canary=None, http_connections_as_result=lambda: [],
+    )))
+
+    elapsed = 0.0
+    replaying = False
+    projected = False
+
+    async def advance(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    async def slow_provider(request):
+        nonlocal projected
+        if replaying and not projected and request.url.path.endswith("/connections"):
+            # The provider has not returned the readiness read yet. Projection uses
+            # a different DB connection and must still acquire the installation row.
+            await cloudflare_connector_channel.project_connector(None)
+            projected = True
+            assert token_file.read_bytes()
+            provider.connectors.append(str(uuid4()))
+        return provider(request)
+
+    async def connector_credentials():
+        async with sessions() as db:
+            return (await db.execute(select(CloudflareCredential.version, CloudflareCredential.ciphertext).where(
+                CloudflareCredential.installation_id == installation_id,
+                CloudflareCredential.purpose == "connector_token",
+            ))).all()
+
+    monkeypatch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=advance))
+    monkeypatch.setattr(lifecycle_job, "monotonic", lambda: elapsed)
+    running = PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), "operator@example.test", "")
+    payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
+    release = SimpleNamespace(
+        digest="d" * 64, manifest=SimpleNamespace(
+            release_version="1.1.0", release_sequence=1,
+            meter_bounds=SimpleNamespace(qualification=SimpleNamespace(expected_cpu_ms={"capacity": 9})),
+        ),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow_provider)) as http:
+        with pytest.raises(PlatformJobFailure) as first:
+            await enable_job._settle_enable(running, payload, http, release)
+        assert first.value.code == "CF_CONNECTOR_UNAVAILABLE" and not first.value.retryable
+        assert elapsed == 180
+        create_script.assert_not_awaited()
+        credentials = await connector_credentials()
+        assert len(credentials) == 1 and credentials[0].version == 1 and credentials[0].ciphertext
+        replaying = True
+        assert (await enable_job._settle_enable(running, payload, http, release))["outcome"] == "enabled"
+    assert projected
+    assert create_script.await_count == 3
+    assert await connector_credentials() == credentials
+    assert provider.tunnel_creates == 1 and provider.rotations == 0
+    async with sessions() as db:
+        row = await db.get(CloudflareInstallation, installation_id)
+        assert row is not None and row.deployment_evidence["connector_session"] == "connected"
+        assert row.admitted_revision == row.deployed_revision == payload.revision
+
+
+@pytest.fixture
+async def managed_tunnel_for_projection(isolated_connector_projection):
+    sessions, token_file = isolated_connector_projection
+    provider = _TunnelAPI(lose_create_responses=False)
+    actor = str(OPERATOR_ID)
+    async with sessions.begin() as db:
+        installation_id = await create_installation(db, provider.account)
+        row = await db.get(CloudflareInstallation, installation_id)
+        assert row is not None
+        row.reachability_mode, row.zone_id = "managed_tunnel", provider.zone
+        await cloudflare_tunnel.prepare(db, row, actor=actor)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http, sessions.begin() as db:
+        row = await db.get(CloudflareInstallation, installation_id)
+        assert row is not None
+        client = cloudflare_tunnel.adapter(http, row, SecretStr("synthetic-cloudflare-management-token"))
+        await cloudflare_tunnel.provision_tunnel(db, row, client)
+        await cloudflare_tunnel.provision_dns(db, row, client, actor=actor)
+    return sessions, token_file, installation_id, provider
+
+
+def _running_tunnel_job(
+    db: AsyncSession, installation_id: UUID, job_type: str, payload: dict,
+) -> PlatformJobContext:
+    job_id, lease = uuid4(), uuid4()
+    db.add(PlatformJob(
+        id=job_id, job_type=job_type, title="Fixture Managed Tunnel", payload=payload,
+        status="running", lease_token=lease, lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        resource_type="cloudflare_installation", resource_id=str(installation_id),
+        requested_by_user_id=str(OPERATOR_ID), requested_by_name="Fixture Operator",
+        requested_by_email="operator@example.test",
+    ))
+    return PlatformJobContext(job_id, lease, None, str(OPERATOR_ID), "operator@example.test", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("race", "code"), [
+    ("disconnected", "CF_CONNECTOR_UNAVAILABLE"),
+    ("projection_completed", None),
+    ("projection_completed_final", "CF_TUNNEL_VERIFICATION_CHANGED"),
+    ("disconnected_final", "CF_CONNECTOR_UNAVAILABLE"),
+    ("credential_denied", "CF_MANAGEMENT_CREDENTIAL"),
+    ("credential_denied_final", "CF_MANAGEMENT_CREDENTIAL"),
+    ("inventory_unverified_final", "CF_DEPLOYMENT_UNVERIFIED"),
+    ("credential_replaced", None),
+    ("ownership", "CF_OWNERSHIP_CONFLICT"),
+    ("repair", "CF_TUNNEL_INGRESS_MISMATCH"),
+    ("repair_superseded_before_reads", None),
+    ("repair_superseded", None),
+    ("repair_superseded_after_readback", None),
+    ("target_replaced", None),
+    ("admission_superseded", None),
+    ("unhealthy_admission_superseded", None),
+    ("healthy_projection_changed", None),
+])
+async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_projection, monkeypatch, race, code) -> None:
+    sessions, token_file, installation_id, provider = managed_tunnel_for_projection
+    payload = lifecycle_job.CloudflareReconcilePayload(installation_id=installation_id, revision=1)
+    healthy_read = race in ("admission_superseded", "healthy_projection_changed", "inventory_unverified_final")
+    if healthy_read or race in (
+        "repair", "disconnected", "disconnected_final", "credential_denied", "credential_denied_final",
+        "credential_replaced",
+    ):
+        assert await cloudflare_connector_channel.project_connector(None) == (installation_id, 1, 1)
+    if healthy_read:
+        provider.connectors = [str(uuid4())]
+    if race == "ownership":
+        provider.private_routes = [{"tunnel_id": provider.tunnel_id, "network": "192.0.2.0/24"}]
+    if race.startswith("repair"):
+        provider.config["warp-routing"] = {"enabled": True}
+    async with sessions.begin() as db:
+        row = await db.get(CloudflareInstallation, installation_id)
+        assert row is not None
+        row.desired_state = "enabled"
+        row.admitted_revision = row.deployed_revision = 1
+        row.deployment_evidence = {"connector_session": "disconnected"}
+        running = _running_tunnel_job(db, installation_id, lifecycle_job.RECONCILE_JOB, payload.model_dump(mode="json"))
+        await db.flush()
+        job = await db.get(PlatformJob, running.job_id)
+        assert job is not None
+        job.max_attempts = 3
+        job.attempt = job.max_attempts if race.endswith("_final") else 1
+
+    reads = writes = 0
+    superseded_after_closure = False
+
+    @asynccontextmanager
+    async def supersede_after_closure():
+        nonlocal superseded_after_closure
+        async with sessions.begin() as db:
+            yield db
+        if not superseded_after_closure:
+            async with sessions.begin() as db:
+                row = await db.get(CloudflareInstallation, installation_id)
+                assert row is not None
+                if row.admitted_revision is None:
+                    row.desired_revision = 2
+                    superseded_after_closure = True
+
+    if race == "repair_superseded_before_reads":
+        monkeypatch.setattr(lifecycle_job, "get_db_context", supersede_after_closure)
+
+    async def slow_provider(request):
+        nonlocal reads, writes
+        if request.url.path.endswith("/configurations"):
+            # The provider waits for a separate projection transaction to finish.
+            assert await cloudflare_connector_channel.project_connector(None) == (installation_id, 1, 1)
+            assert token_file.read_bytes()
+            if request.method == "PUT":
+                writes += 1
+            else:
+                reads += 1
+            async with sessions.begin() as db:
+                row = await db.get(CloudflareInstallation, installation_id)
+                assert row is not None
+                if race.startswith("repair") and reads >= 2:
+                    assert row.admitted_revision is None
+                    if race == "repair_superseded" or (
+                        race == "repair_superseded_after_readback" and request.method == "GET" and writes == 1
+                    ):
+                        row.desired_revision = 2
+                if race == "credential_replaced":
+                    version = row.api_token_version + 1
+                    db.add(seal_credential(
+                        CredentialRef(row.id, row.account_id, "account_token", "", version),
+                        SecretStr("synthetic-replacement-management-token"), actor=str(OPERATOR_ID), now=datetime.now(UTC),
+                    ))
+                    row.api_token_version = version
+                if race == "target_replaced":
+                    item = await cloudflare_tunnel.connector_resource(db, row)
+                    item.provider_version = "replacement-receipt"
+                if race.endswith("admission_superseded"):
+                    row.admitted_revision = None
+                if race in (
+                    "healthy_projection_changed", "disconnected_final", "credential_denied_final",
+                    "inventory_unverified_final",
+                ):
+                    row.tunnel_token_projected_version = 0
+            if race in ("credential_denied", "credential_denied_final", "credential_replaced"):
+                return httpx.Response(403)
+        return provider(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow_provider)) as http:
+        reconcile = lifecycle_job._settle_reconcile(running, payload, WorkersRestCleanup(http), tunnel_http=http)
+        if code is not None:
+            with pytest.raises(PlatformJobRequiresAction) as issue:
+                await reconcile
+            assert issue.value.result == {"code": code}
+            if race == "disconnected_final":
+                # Persist the actual terminal outcome consumed by the scheduler.
+                now = datetime.now(UTC)
+                async with sessions.begin() as db:
+                    job = await db.get(PlatformJob, running.job_id)
+                    assert job is not None
+                    job.status, job.completed_at, job.result = "requires_action", now, issue.value.result
+                async with sessions.begin() as db:
+                    query = select(PlatformJob).where(
+                        PlatformJob.resource_id == str(installation_id), PlatformJob.id != running.job_id,
+                    )
+                    await lifecycle_job.schedule_cloudflare_reconcile(db, now=now + timedelta(minutes=4))
+                    assert await db.scalar(query) is None
+                    await lifecycle_job.schedule_cloudflare_reconcile(db, now=now + timedelta(minutes=5))
+                    followup = await db.scalar(query)
+                    assert followup is not None and followup.status == "queued"
+                    assert followup.payload["revision"] == 1 and followup.payload["operation"] == "reconcile"
+        elif race in ("healthy_projection_changed", "projection_completed"):
+            with pytest.raises(PlatformJobFailure) as failure:
+                await reconcile
+            assert failure.value.code == "CF_TUNNEL_VERIFICATION_CHANGED" and failure.value.retryable
+        else:
+            assert await reconcile == {"outcome": "superseded"}
+
+    assert superseded_after_closure == (race == "repair_superseded_before_reads")
+    assert reads == {
+        "repair": 3, "repair_superseded": 2, "repair_superseded_after_readback": 3,
+    }.get(race, 1)
+    wrote_ingress = race in ("repair", "repair_superseded_after_readback")
+    assert writes == int(wrote_ingress)
+    if race.startswith("repair"):
+        assert provider.config["warp-routing"] == {"enabled": not wrote_ingress}
+    async with sessions() as db:
+        row = await db.get(CloudflareInstallation, installation_id)
+        assert row is not None
+        still_admitted = race in (
+            "target_replaced", "healthy_projection_changed", "projection_completed", "projection_completed_final",
+            "credential_replaced",
+        )
+        assert row.admitted_revision == (1 if still_admitted else None)
+        if race == "disconnected":
+            assert row.deployment_evidence["connector_session"] == "disconnected"
+            assert row.deployment_evidence["connector_observed_token_version"] == 1
+        else:
+            assert row.deployment_evidence == {"connector_session": "disconnected"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deny_readback", [False, True])
+async def test_rotation_evicts_only_old_sessions_when_a_new_token_projects_in_flight(
+    managed_tunnel_for_projection, deny_readback: bool,
+) -> None:
+    sessions, token_file, installation_id, provider = managed_tunnel_for_projection
+    actor = str(OPERATOR_ID)
+    old, active, replacement = (str(uuid4()) for _ in range(3))
+    provider.connectors = [old]
+
+    async def rotate(version: int) -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+            async with sessions.begin() as db:
+                row = await db.get(CloudflareInstallation, installation_id)
+                assert row is not None
+                client = cloudflare_tunnel.adapter(http, row, SecretStr("synthetic-cloudflare-management-token"))
+                await cloudflare_tunnel.stage_rotation(db, row, version=version, actor=actor)
+                await cloudflare_tunnel.record_rotation_intent(db, row, client, version=version)
+            # The fixture loses the provider's PATCH response after applying it. The replay adopts the token.
+            with pytest.raises(CloudflareRestUnavailable):
+                async with sessions.begin() as db:
+                    row = await db.get(CloudflareInstallation, installation_id)
+                    assert row is not None
+                    await cloudflare_tunnel.rotate(db, row, client, version=version, actor=actor)
+            async with sessions.begin() as db:
+                row = await db.get(CloudflareInstallation, installation_id)
+                assert row is not None
+                await cloudflare_tunnel.rotate(db, row, client, version=version, actor=actor)
+
+    await rotate(2)
+    provider.connectors.append(active)
+    assert await cloudflare_connector_channel.project_connector(None) == (installation_id, 2, 1)
+    initial_token = token_file.read_bytes()
+    payload = lifecycle_job.CloudflareRotateWorkerPayload(
+        installation_id=installation_id, revision=1, credential="connector_token", replacement_version=2,
+    )
+    async with sessions.begin() as db:
+        row = await db.get(CloudflareInstallation, installation_id)
+        assert row is not None
+        row.desired_state = "scaled_in"
+        row.deployment_evidence = {"connector_session": "disconnected"}
+        running = _running_tunnel_job(db, installation_id, lifecycle_job.ROTATE_WORKER_JOB, payload.model_dump(mode="json"))
+
+    async def slow_provider(request):
+        if request.url.path.endswith("/connections"):
+            if request.method == "DELETE":
+                assert await cloudflare_connector_channel.project_connector(None) == (installation_id, 2, 1)
+                assert request.url.params["client_id"] == old
+                await rotate(3)
+                provider.connectors.append(replacement)
+            elif provider.evicted:
+                assert await cloudflare_connector_channel.project_connector(None) == (installation_id, 3, 1)
+                assert token_file.read_bytes() != initial_token
+                if deny_readback:
+                    return httpx.Response(403)
+        return provider(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow_provider)) as http:
+        assert await lifecycle_job._rotate_connector(running, payload, http) == {"outcome": "superseded"}
+    assert provider.evicted == [old]
+    assert provider.connectors == [active, replacement]
+    async with sessions.begin() as db:
+        row = await db.get(CloudflareInstallation, installation_id)
+        assert row is not None and row.tunnel_token_projected_version == row.tunnel_token_version == 3
+        item = await cloudflare_tunnel.connector_resource(db, row)
+        assert item.provider_details["rotation_version"] == 3
+        assert set(item.provider_details["rotation_previous_connectors"]) == {old, active}
+        assert row.deployment_evidence == {"connector_session": "disconnected"}
 
 
 @pytest.mark.asyncio
@@ -3225,9 +3683,31 @@ async def test_supervisor_reserves_and_retires_without_restarting(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("shared_cap", "expected_jobs"), [(10, 1), (3, 0), (None, 1)])
-async def test_container_pins_only_consume_an_explicit_shared_ceiling(
-    isolated_capacity_installation, monkeypatch, shared_cap, expected_jobs,
+@pytest.mark.parametrize(("shared_cap", "desired_state", "worker_state", "deleted", "expected_jobs", "scenario"), [
+    (10, "enabled", "ready", False, 1, ""),
+    (3, "enabled", "ready", False, 0, ""),
+    (3, "enabled", "ready", False, 0, "settled_container"),
+    (None, "enabled", "ready", False, 1, ""),
+    (3, "scaled_in", "draining", False, 0, "job"),
+    (3, "disconnected", "draining", False, 0, "job"),
+    (3, "enabled", "draining", False, 0, "policy"),
+    (3, "enabled", "draining", False, 0, "policy_stop_unconfirmed"),
+    (3, "enabled", "draining", False, 0, "policy_idle"),
+    (3, "enabled", "draining", False, 0, "policy_memory"),
+    (3, "enabled", "draining", False, 0, "policy_claimless_idle"),
+    (3, "scaled_in", "draining", False, 0, "lifetime"),
+    (3, "disconnected", "retired", False, 0, "job"),
+    (3, "disconnected", "retired", False, 0, "unrelated"),
+    (3, "disconnected", "retired", False, 0, "action_mismatch"),
+    (3, "enabled", "retired", False, 0, "upgrade"),
+    (3, "enabled", "retired", False, 0, "upgrade_without_release"),
+    (3, "disconnected", "retired", False, 0, "current_revision"),
+    (3, "disconnected", "retired", False, 0, "partial"),
+    (3, "disconnected", "retired", True, 1, ""),
+    (10, "disconnected", "retired", False, 1, "job"),
+])
+async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
+    isolated_capacity_installation, monkeypatch, shared_cap, desired_state, worker_state, deleted, expected_jobs, scenario,
 ) -> None:
     db_session, installation = isolated_capacity_installation
     connection = await db_session.connection()
@@ -3239,31 +3719,64 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
 
     monkeypatch.setattr(controller, "get_db_context", context)
     monkeypatch.setattr(controller, "_publish_launchable", AsyncMock())
-    installation.desired_state = "enabled"
-    installation.admitted_revision = 1
+    installation.desired_state = desired_state
+    installation.desired_revision = 1 if desired_state == "enabled" else 2
+    installation.admitted_revision = 1 if desired_state == "enabled" else None
     installation.policy = {
         **installation.policy,
         "limits": {**installation.policy["limits"], "shared_managed_worker_cap": shared_cap},
     }
     now = datetime.now(UTC)
-    stopped = None
+    policy_drains = {
+        "policy": None, "policy_stop_unconfirmed": "cloudflare_stop_unconfirmed", "policy_idle": "idle",
+        "policy_memory": None, "policy_claimless_idle": "idle",
+    }
+    reserved_only = scenario in ("policy_memory", "policy_claimless_idle")
+    worker_pins = []
     for index in range(3):
         worker_id = uuid4()
-        worker = ExecutionWorker(
-            id=worker_id, form="external", state="retired" if index == 0 else "ready",
-            capacity_scope="containers", heartbeat_at=now, memory_budget_bytes=128 * 2**20,
-        )
-        if index == 0:
-            stopped = worker
-        db_session.add(worker)
-        await db_session.flush()
-        db_session.add(CloudflareWorkerReservation(
-            worker_id=worker_id, installation_id=installation.id, scope="containers", deployment_revision=1,
-            control_root_version=installation.control_root_version,
-            container_tenant=str(uuid4()), container_release="c" * 64,
-            container_envelope={}, container_reserved_at=now,
-            container_stopped_at=now if index == 0 else None,
+        end_reason = None
+        if worker_state == "draining":
+            end_reason = "max_lifetime" if scenario == "lifetime" else "cloudflare_admission_closed"
+        workers_lane = worker_state == "draining"
+        settled = scenario == "settled_container" and index == 0
+        state = "ready" if scenario in ("policy", "policy_memory") else worker_state
+        if settled:
+            state = "retired"
+        if scenario in policy_drains:
+            end_reason = policy_drains[scenario]
+        db_session.add(ExecutionWorker(
+            id=worker_id, form="external", state=state,
+            capacity_scope="workers" if workers_lane else "containers",
+            runtime_profile="cloudflare-python-v1" if workers_lane else "linux-process-v1",
+            end_reason=end_reason, memory_reserved_bytes=1 if reserved_only else 0,
+            capacity_resource_deleted_at=now if deleted else None,
+            heartbeat_at=now, memory_budget_bytes=128 * 2**20,
         ))
+        await db_session.flush()
+        if workers_lane:
+            scope = ManagedCloudflareScope(installation.id, "workers", 1)
+            pin = scope.pin(worker_id, 1, reserved_at=now - timedelta(seconds=120), lifetime=3600, deadline_wire=False)
+            worker_pins.append(pin)
+            if scenario in policy_drains and not reserved_only:
+                running = Execution(
+                    id=uuid4(), workflow_name="fixture", executed_by_name="fixture",
+                    status=ExecutionStatus.RUNNING, started_at=now - timedelta(seconds=60),
+                )
+                db_session.add_all([
+                    running, ExecutionWorkerClaim(worker_id=worker_id, family=WAKE_WORKFLOW, subject_id=running.id),
+                ])
+        else:
+            current = scenario == "current_revision" or (scenario == "partial" and index == 2)
+            pin = CloudflareWorkerReservation(
+                worker_id=worker_id, installation_id=installation.id, scope="containers",
+                deployment_revision=installation.desired_revision if current else 1,
+                control_root_version=installation.control_root_version,
+                container_tenant=str(uuid4()), container_release="c" * 64,
+                container_envelope={}, container_reserved_at=now,
+                container_stopped_at=now if settled else None,
+            )
+        db_session.add(pin)
     await db_session.flush()
 
     settings = Settings(_env_file=None)
@@ -3275,12 +3788,118 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
         policy = KubernetesPolicy(max_workers=3, warm_workers=1)
         launched = await primary.launch_for_demand(policy)
         assert len(launched) == expected_jobs
-        if shared_cap == 3:
+        if scenario == "settled_container":
+            stopped = await db_session.scalar(select(ExecutionWorker).join(CloudflareWorkerReservation).where(
+                CloudflareWorkerReservation.installation_id == installation.id,
+                CloudflareWorkerReservation.container_stopped_at.is_not(None),
+            ))
             assert stopped is not None
             stopped.capacity_resource_deleted_at = now
             await db_session.flush()
             launched = await primary.launch_for_demand(policy)
             assert len(launched) == 1
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.example.test")
+    monkeypatch.setattr(cloudflare_status, "load_kubernetes_policy", AsyncMock(
+        return_value=KubernetesPolicy(max_workers=3, warm_workers=1),
+    ))
+    if desired_state == "enabled":
+        # Policy edits can close admission without starting a cleanup job.
+        installation.admitted_revision = None
+        installation.desired_revision += 1
+        await db_session.flush()
+    idle = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert not any(reason.code == "primary_limited_by_cloudflare_cleanup" for reason in idle.placement_reasons)
+    assert not any(reason.code == "primary_limited_by_cloudflare_drain" for reason in idle.placement_reasons)
+    if scenario in (
+        "job", "lifetime", "unrelated", "action_mismatch", "upgrade", "upgrade_without_release",
+        "current_revision", "partial",
+    ):
+        title = "Drain Fixture Workers" if worker_state == "draining" else "Disconnect Fixture Capacity"
+        action = "scale_in" if desired_state == "scaled_in" else "disconnect"
+        job_type = (
+            "capacity.cloudflare_reconcile" if scenario in ("unrelated", "upgrade", "upgrade_without_release")
+            else "capacity.cloudflare_disable"
+        )
+        payload = {"revision": installation.desired_revision, "action": action}
+        if scenario == "unrelated":
+            title = "Unrelated Fixture Reconcile"
+        if scenario == "action_mismatch":
+            payload["action"] = "scale_in"
+        if scenario in ("upgrade", "upgrade_without_release"):
+            title = "Upgrade Fixture Capacity"
+            payload["operation"] = "upgrade"
+            installation.upgrade_release = "fixture-release" if scenario == "upgrade" else None
+        db_session.add(PlatformJob(
+            job_type=job_type, title=title, status="requires_action",
+            resource_type="cloudflare_installation", resource_id=str(installation.id),
+            requested_by_user_id=str(OPERATOR_ID), requested_by_email="operator@example.test",
+            requested_by_name="Fixture Operator", payload=payload,
+        ))
+    run = Execution(workflow_name="fixture", executed_by_name="fixture")
+    db_session.add(run)
+    await db_session.flush()
+    db_session.add(WorkDispatch(
+        family="workflow", handler="workflow.execute", handler_version=1, subject_id=run.id,
+        message={}, payload={}, memory_request_bytes=64 * 2**20, created_at=now - timedelta(seconds=10),
+    ))
+    await db_session.flush()
+    if scenario in policy_drains:
+        @asynccontextmanager
+        async def retirement_context():
+            async with context() as db:
+                yield db
+                await db.commit()
+
+        monkeypatch.setattr(external_controller, "get_db_context", retirement_context)
+        profile = external_controller.WorkerCapacityProfile.model_validate({
+            "protocol_version": 2, "scope": "workers", "worker_version": "test",
+            "runtime_profile": "cloudflare-python-v1", "memory_limit_bytes": 128 * 2**20,
+            "max_workers": 3, "max_lifetime_seconds": 3600,
+        })
+        async with httpx.AsyncClient(transport=httpx.MockTransport(Mock())) as http:
+            client = external_controller.ExternalCapacityClient("https://capacity.example.test", "t" * 40, http=http)
+            supervisor = external_controller.ExternalWorkerPoolController(client, settings, profile)
+            supervisor.managed_cloudflare_scope = ManagedCloudflareScope(installation.id, "workers", 1)
+            for pin in worker_pins:
+                await supervisor._retire_closed_worker(pin.worker_id)
+            before_expiry = await get_cloudflare_capacity_status(db_session, _platform_operator())
+            assert any(reason.code == "primary_limited_by_cloudflare_drain" for reason in before_expiry.placement_reasons) == (
+                scenario != "policy_claimless_idle"
+            )
+            for pin in worker_pins:
+                pin.workers_deadline_at = now - timedelta(seconds=60)
+                pin.workers_lifetime_seconds = 60
+            await db_session.flush()
+            for pin in worker_pins:
+                await supervisor._retire_closed_worker(pin.worker_id)
+                worker = await db_session.get(ExecutionWorker, pin.worker_id, populate_existing=True)
+                assert worker is not None and worker.state == "draining"
+                expected_reason = "idle" if scenario == "policy_claimless_idle" else "cloudflare_admission_closed"
+                assert worker.end_reason == expected_reason
+
+    status = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    cleanup_limit = next((reason for reason in status.placement_reasons
+                          if reason.code == "primary_limited_by_cloudflare_cleanup"), None)
+    assert (cleanup_limit is not None) == (shared_cap == 3 and worker_state == "retired" and not deleted)
+    if cleanup_limit is not None:
+        expected = {
+            "job": "Disconnect Fixture Capacity", "upgrade": "Upgrade Fixture Capacity",
+        }.get(scenario, "Verify deletion of the outstanding")
+        assert expected in cleanup_limit.remedy
+        assert "Unrelated Fixture Reconcile" not in cleanup_limit.remedy
+    drain_limit = next((reason for reason in status.placement_reasons
+                        if reason.code == "primary_limited_by_cloudflare_drain"), None)
+    assert (drain_limit is not None) == (
+        shared_cap == 3 and worker_state == "draining" and scenario not in ("lifetime", "policy_claimless_idle")
+    )
+    if drain_limit is not None:
+        expected = "Drain Fixture Workers" if scenario == "job" else "Workers finish their current work"
+        assert expected in drain_limit.remedy
+        assert all(drain_limit in lane.reasons for lane in status.lanes)
+        if desired_state == "disconnected":
+            cleanup = next(reason for reason in status.placement_reasons if reason.code == "cleanup_pending")
+            assert cleanup.label == "Cleanup Pending"
+            assert all(cleanup in lane.reasons for lane in status.lanes)
     for worker_id in launched:
         worker = await db_session.get(ExecutionWorker, worker_id)
         assert worker is not None and worker.form == "job" and worker.state == "reserved"
@@ -7054,7 +7673,7 @@ async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
     "setup_required", "workflow_review_required", "waiting_for_demand", "primary_has_capacity",
     "primary_capacity_unverified", "waiting_for_launch_gate", "tenant_limit_reached", "installation_slots_full",
     "spend_guard_closed", "cleanup_pending", "cloudflare_capacity_unavailable", "release_mismatch",
-    "connector_unavailable", "eligible_for_overflow",
+    "connector_unavailable", "eligible_for_overflow", "measured_primary_budget",
 ])
 async def test_status_explains_placement_over_rest(
     isolated_capacity_installation, monkeypatch, code,
@@ -7075,6 +7694,8 @@ async def test_status_explains_placement_over_rest(
     as_of = await db_session.scalar(select(func.statement_timestamp()))
     assert as_of is not None
     primary = None if code == "primary_capacity_unverified" else PrimaryPool("external", "gap5-fixture", 1)
+    if code == "measured_primary_budget":
+        primary = PrimaryPool("job", ceiling=2)
     cooldown = as_of + timedelta(seconds=30) if code == "cloudflare_capacity_unavailable" else None
     monkeypatch.setattr(cloudflare_status, "_controller_observation", AsyncMock(return_value=(primary, cooldown, None)))
     if code != "setup_required":
@@ -7091,7 +7712,7 @@ async def test_status_explains_placement_over_rest(
 
     queue_codes = {
         "primary_has_capacity", "primary_capacity_unverified", "waiting_for_launch_gate",
-        "tenant_limit_reached", "installation_slots_full", "eligible_for_overflow",
+        "tenant_limit_reached", "installation_slots_full", "eligible_for_overflow", "measured_primary_budget",
     }
     if code in queue_codes:
         run = Execution(workflow_name="fixture", executed_by_name="fixture")
@@ -7100,12 +7721,36 @@ async def test_status_explains_placement_over_rest(
             heartbeat_at=as_of, supported_handlers=["workflow.execute"],
             memory_budget_bytes=2**28, memory_reserved_bytes=0 if code == "primary_has_capacity" else 2**28,
         )
+        request_memory = {}
+        if code == "measured_primary_budget":
+            primary_worker.form = "job"
+            primary_worker.capacity_scope = None
+            primary_worker.kubernetes_namespace = "test"
+            settings = cloudflare_status.get_settings()
+            threshold = settings.memory_pressure_threshold
+            limit = 1024 * 2**20
+            environment = {"form": "job", "version": "test", "package_generation": 0,
+                           "threshold": threshold, "image": "api:test"}
+            measurement = {"version": "test", "package_generation": 0, "threshold": threshold,
+                           "limit_bytes": limit, "baseline_bytes": JOB_BASELINE_ESTIMATE_BYTES + 64 * 2**20}
+            db_session.add_all((
+                ExecutionWorker(
+                    form="job", state="starting", kubernetes_namespace="test", memory_limit_bytes=limit,
+                    supported_handlers=["workflow.execute"], memory_calibration={"environment": environment},
+                ),
+                ExecutionWorker(
+                    form="job", state="retired", kubernetes_namespace="test", memory_limit_bytes=limit,
+                    memory_calibration={"environment": environment, "measurement": measurement},
+                ),
+            ))
+            request_memory = {"memory_request_bytes": int(limit * threshold) - JOB_BASELINE_ESTIMATE_BYTES - 32 * 2**20}
         db_session.add_all((run, primary_worker))
         await db_session.flush()
         db_session.add(WorkDispatch(
             family=WAKE_WORKFLOW, handler="workflow.execute", handler_version=1, subject_id=run.id,
             message={}, payload={}, cloudflare_revision="c" * 64,
             created_at=as_of if code == "waiting_for_launch_gate" else as_of - timedelta(minutes=1),
+            **request_memory,
         ))
         count = {"tenant_limit_reached": 4, "installation_slots_full": 9}.get(code, 0)
         db_session.add_all(CloudflareWorkflowSlot(
@@ -7129,6 +7774,7 @@ async def test_status_explains_placement_over_rest(
     expected = {
         "setup_required": ["setup_required", "waiting_for_demand"],
         "installation_slots_full": ["installation_slots_full", "tenant_limit_reached"],
+        "measured_primary_budget": ["eligible_for_overflow"],
         **{blocker: [blocker, "waiting_for_demand"] for blocker in (
             "spend_guard_closed", "cleanup_pending", "cloudflare_capacity_unavailable",
             "release_mismatch", "connector_unavailable",

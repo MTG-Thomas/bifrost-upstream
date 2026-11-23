@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -36,20 +37,32 @@ from src.models.orm.workflows import Workflow
 from src.services.authorization.enforce import Caller
 from src.services.authorization.execution_access import execution_list_filter
 from src.services.kubernetes_execution import load_kubernetes_policy
+from src.services.memory_requests import JOB_BASELINE_ESTIMATE_BYTES
 from src.services.pool_cadence import CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS, POOL_RECONCILE_SPACING_SECONDS
 from src.services.work_dispatch import WAKE_WORKFLOW
-from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope, PrimaryPool
+from src.services.worker_pool.calibration import load_packing_baselines
+from src.services.worker_pool.cloudflare_admission import (
+    ManagedCloudflareScope,
+    PrimaryPool,
+    read_managed_worker_occupancy,
+)
 from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION, linux_source_current_sql
 from src.services.worker_pool.cloudflare_containers_egress import read_verified_egress
 from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
 from src.services.worker_pool.cloudflare_provisioning import ObservationCheck, OwnershipCheck, OwnershipResource
 from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admission, tenant_key
-from src.services.worker_pool.controller import Request, linux_capacity_budgets, take_first_budget, waiting_capacity_rows
+from src.services.worker_pool.controller import (
+    Request,
+    linux_capacity_budgets,
+    managed_worker_room,
+    take_first_budget,
+    waiting_capacity_rows,
+)
 from src.services.worker_pool.demand import pending_local_platform_job_ids
 from src.services.worker_pool.eligibility import cloudflare_dispatch_sql
 from src.services.worker_pool.external_client import CapacityProtocolCheck
 from src.services.worker_pool.liveness import HEARTBEAT_LOST_AFTER
-from src.services.worker_pool.sizing import LIVE_STATES, JobSizing, job_baseline
+from src.services.worker_pool.sizing import LIVE_STATES, JobSizing
 from src.worker.remote.protocol import CLOUDFLARE_WORKFLOW_HANDLER, LINUX_RUNTIME_PROFILE
 
 logger = logging.getLogger(__name__)
@@ -77,6 +90,14 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
     "tenant_limit_reached": ("Tenant Limit Reached", "Wait for tenant slots to release or review the per-tenant limit."),
     "installation_slots_full": ("Installation Slots Full", "Wait for capacity to retire or review the installation limits."),
     "spend_guard_closed": ("Spend Guard Closed", "Verify the ledger and review the monthly limit or wait for the UTC reset."),
+    "primary_limited_by_cloudflare_cleanup": (
+        "Primary Limited by Cloudflare Cleanup",
+        "Verify deletion of the outstanding Cloudflare resources to free room for primary workers.",
+    ),
+    "primary_limited_by_cloudflare_drain": (
+        "Primary Limited by Draining Cloudflare Workers",
+        "Cloudflare admission closed. Workers finish their current work before releasing room for the primary.",
+    ),
     "cleanup_pending": ("Cleanup Pending", "Run Scale In to verify retirement or finish an outstanding Disconnect."),
     "cloudflare_capacity_unavailable": (
         "Cloudflare Capacity Unavailable", "Wait for the controller to observe provider capacity again, then check deployment status.",
@@ -106,6 +127,12 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
 }
 
 
+TUNNEL_VERIFICATION_CHANGED_REMEDY = (
+    "Check that the current connector credential is projected and the connector is attached. "
+    "Once rotation and projection have settled, run Reconcile again."
+)
+
+
 def reason(code: CloudflarePlacementCode, at: datetime | None = None) -> CloudflarePlacementReason:
     label, remedy = PLACEMENT[code]
     return CloudflarePlacementReason(code=code, label=label, remedy=remedy, next_eligible_at=at)
@@ -133,6 +160,7 @@ def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | Non
         "CF_CONTAINERS_UNVERIFIED": PLACEMENT["container_readiness_unverified"][1],
         "CF_CONTAINERS_CLEANUP_PENDING": PLACEMENT["cleanup_pending"][1],
         "CF_CONTAINERS_RELEASE_UNAVAILABLE": PLACEMENT["release_mismatch"][1],
+        "CF_TUNNEL_VERIFICATION_CHANGED": TUNNEL_VERIFICATION_CHANGED_REMEDY,
     }
     if not isinstance(code, str) or code not in remedies:
         return None
@@ -296,10 +324,11 @@ async def deployment_evidence(db: AsyncSession, installation: CloudflareInstalla
 
 
 def primary_coverage(
-    workers: list[ExecutionWorker], waiting: list[Request], sizing: JobSizing,
+    workers: list[ExecutionWorker], waiting: list[Request], sizing: JobSizing, *,
+    baselines: dict[UUID, int] | None = None,
 ) -> set[UUID]:
     """Pack primary capacity oldest first, honoring pinned dispatches."""
-    free, covered = linux_capacity_budgets(workers, waiting, sizing)
+    free, covered = linux_capacity_budgets(workers, waiting, sizing, baselines=baselines)
     rooms = [budget.bytes for budget in free]
     slots = [dict(budget.handler_slots) for budget in free]
     for request in waiting:
@@ -321,11 +350,85 @@ def placement_blockers(
         blockers.append(reason("cleanup_pending"))
     if not spend_ready:
         blockers.append(reason("spend_guard_closed"))
-    if connector_session in ("waiting_for_projection", "disconnected") or job_code == "CF_CONNECTOR_UNAVAILABLE":
+    if job_code == "CF_TUNNEL_VERIFICATION_CHANGED":
+        blockers.append(CloudflarePlacementReason(
+            code="connector_unavailable", label="Managed Tunnel Verification Changed",
+            remedy=TUNNEL_VERIFICATION_CHANGED_REMEDY,
+        ))
+    elif connector_session in ("waiting_for_projection", "disconnected") or job_code == "CF_CONNECTOR_UNAVAILABLE":
         blockers.append(reason("connector_unavailable"))
     if job_code == "CF_PROVIDER_UNAVAILABLE":
         blockers.append(reason("cloudflare_capacity_unavailable", cooldown_until))
     return blockers
+
+
+async def primary_cleanup_limits(
+    db: AsyncSession, installation: CloudflareInstallation, *, now: datetime, job: PlatformJob | None,
+) -> list[CloudflarePlacementReason]:
+    settings = get_settings()
+    if not (os.environ.get("KUBERNETES_SERVICE_HOST") or (settings.worker_capacity_url and settings.worker_capacity_token)):
+        return []
+    workers = list(await db.scalars(select(ExecutionWorker).where(ExecutionWorker.state.in_(LIVE_STATES))))
+    usage = await read_managed_worker_occupancy(db, workers)
+    cap, cleanup, draining = usage.shared_cap, usage.cleanup, usage.draining
+    if cap is None or not (cleanup or draining):
+        return []
+    policy = await load_kubernetes_policy(db)
+    primary = usage.primary_count
+    occupied = usage.live | usage.cloudflare
+    room, _ = managed_worker_room(policy.max_workers, primary, cap, len(occupied))
+
+    def limits(releasing: set[UUID]) -> bool:
+        after, _ = managed_worker_room(policy.max_workers, primary, cap, len(occupied - releasing))
+        return room == 0 and after > 0
+
+    if not limits(cleanup | draining):
+        return []
+
+    waiting = await waiting_capacity_rows(db, await pending_local_platform_job_ids(db, policy, now), now)
+    sizing = JobSizing.of(policy, settings.memory_pressure_threshold, JOB_BASELINE_ESTIMATE_BYTES)
+    requests = [
+        Request(row.id, row.memory_request_bytes, row.handler, row.handler_version, row.cloudflare_revision,
+                row.tenant_id)
+        for row in waiting
+    ]
+    linux = [worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
+    covered = primary_coverage(
+        linux, requests, sizing,
+        baselines=await load_packing_baselines(db, linux),
+    )
+    if not any(request.id not in covered and request.bytes <= sizing.largest_budget_bytes for request in requests):
+        return []
+    owns_cleanup = job is not None and (
+        (
+            job.job_type == "capacity.cloudflare_disable"
+            and (job.payload.get("action"), installation.desired_state)
+            in (("scale_in", "scaled_in"), ("disconnect", "disconnected"))
+        )
+        or (
+            job.job_type == "capacity.cloudflare_reconcile"
+            and job.payload.get("operation") == "upgrade" and installation.upgrade_release is not None
+        )
+    )
+    owned: set[UUID] = set()
+    if owns_cleanup:
+        pin = CloudflareWorkerReservation
+        owned = set(await db.scalars(select(pin.worker_id).where(
+            pin.worker_id.in_(cleanup | draining), pin.installation_id == installation.id,
+            pin.deployment_revision < installation.desired_revision,
+        )))
+    notices = []
+    if cleanup:
+        notice = reason("primary_limited_by_cloudflare_cleanup")
+        if job is not None and cleanup <= owned:
+            notice.remedy = f"Check the {job.title} job for progress or recovery instructions."
+        notices.append(notice)
+    if draining:
+        notice = reason("primary_limited_by_cloudflare_drain")
+        if job is not None and draining <= owned:
+            notice.remedy = f"Check the {job.title} job for progress or recovery instructions."
+        notices.append(notice)
+    return notices
 
 
 async def overflow_status(
@@ -362,13 +465,17 @@ async def overflow_status(
             cause = None if state == "saturated" else state
         pool_policy = await load_kubernetes_policy(db)
         waiting = await waiting_capacity_rows(db, await pending_local_platform_job_ids(db, pool_policy, now), now)
-        threshold = get_settings().memory_pressure_threshold
-        sizing = JobSizing.of(pool_policy, threshold, job_baseline([], pool_policy.worker_memory_mib * 2**20, threshold))
-        covered = primary_coverage(workers, [
+        settings = get_settings()
+        sizing = JobSizing.of(pool_policy, settings.memory_pressure_threshold, JOB_BASELINE_ESTIMATE_BYTES)
+        requests = [
             Request(row.id, row.memory_request_bytes, row.handler, row.handler_version, row.cloudflare_revision,
                     row.tenant_id)
             for row in waiting
-        ], sizing)
+        ]
+        covered = primary_coverage(
+            workers, requests, sizing,
+            baselines=await load_packing_baselines(db, workers),
+        )
     slots = await read_workflow_slot_admission(db, installation.id, policy.workers)
     queue = select(WorkDispatch.id).select_from(WorkDispatch).join(
         Execution, Execution.id == WorkDispatch.subject_id,

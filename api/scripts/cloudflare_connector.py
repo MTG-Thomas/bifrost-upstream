@@ -31,7 +31,8 @@ def token_fingerprint(path: Path) -> bytes | None:
 
 async def launch(path: Path) -> asyncio.subprocess.Process:
     return await asyncio.create_subprocess_exec(
-        CLOUDFLARED, "tunnel", "--no-autoupdate", "run", "--token-file", str(path),
+        CLOUDFLARED, "tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241",
+        "run", "--token-file", str(path),
         env={"HOME": "/tmp", "PATH": "/usr/bin:/bin"},
         stdout=asyncio.subprocess.DEVNULL,
     )

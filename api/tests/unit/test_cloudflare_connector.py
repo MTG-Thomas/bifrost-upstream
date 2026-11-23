@@ -91,7 +91,8 @@ async def test_connector_child_gets_only_token_file_and_minimal_environment(monk
     await cloudflare_connector.launch(path)
     spawn.assert_awaited_once()
     assert spawn.call_args.args == (
-        "/usr/local/bin/cloudflared", "tunnel", "--no-autoupdate", "run", "--token-file", str(path),
+        "/usr/local/bin/cloudflared", "tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241",
+        "run", "--token-file", str(path),
     )
     assert spawn.call_args.kwargs["env"] == {"HOME": "/tmp", "PATH": "/usr/bin:/bin"}
     _publish_file(path, "")

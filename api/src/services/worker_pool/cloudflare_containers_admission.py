@@ -334,9 +334,9 @@ async def _lock_container_capacity(
         return None
     workers = list(await db.scalars(select(ExecutionWorker).where(ExecutionWorker.state.in_(LIVE_STATES))))
     shared_seats_remaining = None
-    if policy.shared_managed_worker_cap is not None:
-        occupancy = await read_managed_worker_occupancy(db, workers, include_pending_deletions=True)
-        shared_seats_remaining = policy.shared_managed_worker_cap - occupancy.shared_count
+    occupancy = await read_managed_worker_occupancy(db, workers, admitting_installation_id=installation_id)
+    if occupancy.shared_cap is not None:
+        shared_seats_remaining = occupancy.shared_cap - occupancy.shared_count
         if shared_seats_remaining <= 0:
             return None
     seats = await read_workflow_slot_admission(db, installation_id, policy.workers)

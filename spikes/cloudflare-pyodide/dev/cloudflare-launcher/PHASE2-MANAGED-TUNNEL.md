@@ -26,10 +26,28 @@ cloudflared with a token file. Kubernetes users add
 out the API and connector with the matching release image. The component
 gives the API ServiceAccount get and patch access to one pre-created Secret.
 The connector mounts only that Secret and has no ServiceAccount token.
-The component's egress policy permits worker ingress on TCP 8001, cluster DNS,
+The component denies pod ingress and permits outbound worker ingress on TCP 8001, cluster DNS,
 and documented global Cloudflare Tunnel endpoints on TCP/UDP 7844. Validate
-Service and DNS handling with the installed CNI. A CNI without NetworkPolicy
-enforcement silently ignores this policy. For NodeLocal DNSCache or another
+Service and DNS handling with the installed CNI before enabling a Managed
+Tunnel. Kubernetes can store a NetworkPolicy even when no CNI enforces it.
+The API's read-only preflight verifies permission to project the connector
+Secret. Prove enforcement with a live denied connection from a pod selected
+by the connector policy and a successful connection to the same listening
+target from an unselected pod. Check both Service IPs and direct endpoints
+where applicable. Egress to the local node and host-network workloads
+depends on the CNI and Service routing. Kindnet allowed both the Kubernetes
+API Service and the direct same-node endpoint in the rehearsal. Require a
+cluster-specific host firewall or CNI host policy when the connector must be
+unable to reach the control plane, and probe both paths from the connector.
+The component disables the connector's ServiceAccount token independently
+of network enforcement.
+[Kubernetes NetworkPolicy reference](https://kubernetes.io/docs/reference/kubernetes-api/networking/network-policy-v1/)
+
+Cloudflared establishes outbound connections and listens for metrics on
+loopback. The Deployment has no inbound health probes.
+[Cloudflare Tunnel connections](https://developers.cloudflare.com/tunnel/configuration/)
+
+For NodeLocal DNSCache or another
 nonstandard resolver, patch the DNS egress rule in the consuming Kustomize
 overlay to match the actual resolver destination and CNI behavior.
 The global edge IPs are hard-coded in the component's `network-policy.yaml`.

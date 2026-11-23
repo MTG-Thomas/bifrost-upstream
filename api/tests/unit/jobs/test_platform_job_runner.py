@@ -88,9 +88,20 @@ async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("attempt", "delay_seconds"), [(1, 15), (2, 45), (3, None), (1, 0)])
+@pytest.mark.parametrize(("attempt", "delay_seconds", "job_type", "failure_code"), [
+    (1, 15, "capacity.cloudflare_enable", "CF_DEPLOYMENT_UNVERIFIED"),
+    (2, 45, "capacity.cloudflare_enable", "CF_DEPLOYMENT_UNVERIFIED"),
+    (3, None, "capacity.cloudflare_enable", "CF_DEPLOYMENT_UNVERIFIED"),
+    (1, 0, None, "CF_DEPLOYMENT_UNVERIFIED"),
+    (1, 15, "capacity.cloudflare_enable", "CF_PROVIDER_UNAVAILABLE"),
+    (2, 45, "capacity.cloudflare_enable", "CF_PROVIDER_UNAVAILABLE"),
+    (1, 15, "capacity.cloudflare_rotate_worker_credential", "CF_PROVIDER_UNAVAILABLE"),
+    (2, 45, "capacity.cloudflare_rotate_worker_credential", "CF_PROVIDER_UNAVAILABLE"),
+    (1, 15, "capacity.cloudflare_reconcile", "CF_PROVIDER_UNAVAILABLE"),
+    (2, 45, "capacity.cloudflare_reconcile", "CF_PROVIDER_UNAVAILABLE"),
+])
 async def test_runner_schedules_handler_failure_retries_and_fails_at_the_limit(
-    monkeypatch, attempt, delay_seconds,
+    monkeypatch, attempt, delay_seconds, job_type, failure_code,
 ) -> None:
     from src.jobs.platform import runner
     from src.jobs.platform.catalog import get_platform_job_metadata
@@ -98,8 +109,8 @@ async def test_runner_schedules_handler_failure_retries_and_fails_at_the_limit(
 
     job = _running_job(payload_version=1, payload={"value": "ok"})
     policy = PlatformJobPolicy(timeout_seconds=30, retry_on_failure=True)
-    if delay_seconds != 0:
-        job.job_type = "capacity.cloudflare_enable"
+    if job_type is not None:
+        job.job_type = job_type
         metadata = get_platform_job_metadata(job.job_type)
         assert metadata is not None
         policy = metadata.policy
@@ -116,9 +127,9 @@ async def test_runner_schedules_handler_failure_retries_and_fails_at_the_limit(
     async def db_context():
         yield db
 
-    result = {"code": "CF_DEPLOYMENT_UNVERIFIED", "details": {"check": "namespace_exports"}}
+    result = {"code": failure_code}
     handler = AsyncMock(side_effect=PlatformJobFailure(
-        "CF_DEPLOYMENT_UNVERIFIED", "Waiting for Deployment Readback", retryable=True, result=result,
+        failure_code, "Waiting for provider readback", retryable=True, result=result,
     ))
     definition = PlatformJobDefinition(
         job_type=job.job_type, payload_version=1, payload_model=_Payload, handler=handler, policy=policy,
@@ -133,7 +144,7 @@ async def test_runner_schedules_handler_failure_retries_and_fails_at_the_limit(
     requeued = await run_claimed_platform_job(job.id, job.lease_token)
 
     assert job.lease_token is None
-    assert job.result == result and job.error_code == "CF_DEPLOYMENT_UNVERIFIED"
+    assert job.result == result and job.error_code == failure_code
     if delay_seconds is None:
         assert not requeued and job.status == "failed"
         assert job.completed_at == now and not job.error_retryable

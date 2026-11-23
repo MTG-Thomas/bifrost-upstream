@@ -105,13 +105,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 policy, max_workers=self.profile.max_workers, warm_workers=0,
                 reserved_fast_path_workers=0,
             ))
-        try:
-            return await super().launch_for_demand(policy)
-        except CapacityProtocolError:
-            if not self.dual_capacity:
-                raise
-            logger.warning("Capacity policy blocks new reservations in scope %s", self.profile.scope, exc_info=True)
-            return []
+        return await super().launch_for_demand(policy)
 
     @property
     def profile(self) -> WorkerCapacityProfile:
@@ -129,12 +123,9 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         scope = and_(ExecutionWorker.form == "external", ExecutionWorker.capacity_scope == self.profile.scope)
         if self.managed_cloudflare_scope is not None:
             return scope & self.managed_cloudflare_scope.owns(ExecutionWorker.id) & ~active_cloudflare_canary(ExecutionWorker.id)
-        scope = scope & ~select(CloudflareWorkerReservation.worker_id).where(
+        return scope & ~select(CloudflareWorkerReservation.worker_id).where(
             CloudflareWorkerReservation.worker_id == ExecutionWorker.id,
         ).exists()
-        if self.dual_capacity and self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
-            scope = scope & (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
-        return scope
 
     def _cleanup_scope(self) -> Any:
         # An outage must not turn an unconfirmed physical deletion into an orphan.
@@ -158,11 +149,6 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         try:
             validate_external_policy(
                 policy, self.profile, max_lifetime_seconds=self.settings.pool_max_lifetime_seconds,
-                peer=self.peer_profile,
-                primary_only=(
-                    self.dual_capacity and self.runtime_profile == LINUX_RUNTIME_PROFILE
-                    and self.peer_profile is None
-                ),
             )
         except ValueError as exc:
             raise CapacityProtocolError(f"Worker policy differs from provider capabilities: {exc}") from exc
@@ -228,7 +214,10 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                     ExecutionWorkerClaim.worker_id == worker_id,
                 ).exists().select()
             )
-            worker.end_reason = "max_lifetime" if expired is not None else "cloudflare_admission_closed"
+            if worker.end_reason is None:
+                worker.end_reason = "max_lifetime" if expired is not None else "cloudflare_admission_closed"
+            elif active and expired is None:
+                worker.end_reason = "cloudflare_admission_closed"
             if worker.active_runs or worker.memory_reserved_bytes or active:
                 worker.state = "draining"
             else:
@@ -236,8 +225,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 worker.ended_at = _now()
 
     async def reconcile_worker(self, worker_id: UUID, policy: KubernetesPolicy) -> None:
-        if not self.dual_capacity:
-            self._sizing(policy, [])
+        self._sizing(policy, [])
         # Provider I/O never holds the worker row lock. Managed sends take the
         # installation's admission lock for their bounded request.
         await self._retire_closed_worker(worker_id)
@@ -331,8 +319,6 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         if state == "reserved":
             if not self.burst_launch_allowed:
                 return
-            if self.dual_capacity:
-                self._sizing(policy, [])
             created = resource is None
             if resource is None:
                 if limit is None:
@@ -415,8 +401,6 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             elif resource.state == "prepared":
                 if not self.burst_launch_allowed:
                     return
-                if self.dual_capacity:
-                    self._sizing(policy, [])
                 assert uid is not None
                 await self._start_prepared(worker_id, uid)
                 return

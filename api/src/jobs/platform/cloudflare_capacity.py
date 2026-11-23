@@ -2,8 +2,10 @@
 
 import asyncio
 import secrets
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Any, Literal
 from uuid import UUID
 
@@ -114,6 +116,7 @@ ROTATE_JOB = "capacity.cloudflare_rotate_account_token"
 ROTATE_WORKER_JOB = "capacity.cloudflare_rotate_worker_credential"
 RECONCILE_INTERVAL_SECONDS = 5 * 60
 RECONCILE_MAX_BACKOFF_SECONDS = 60 * 60
+TUNNEL_VERIFICATION_CHANGED = "CF_TUNNEL_VERIFICATION_CHANGED"
 SELF_HEALING_RECONCILE_CODES = frozenset({
     "CF_DRAIN_TIMEOUT", "CF_CLEANUP_PENDING", "CF_RELEASE_MISMATCH",
     "CF_PROVIDER_UNAVAILABLE", "CF_SPEND_UNVERIFIED", "CF_CONNECTOR_UNAVAILABLE",
@@ -195,6 +198,48 @@ async def _management_token(db: AsyncSession, installation: CloudflareInstallati
         return await load_account_token(db, installation)
     except ValueError:
         raise CloudflareManagementDenied from None
+
+
+async def _wait_for_connector(
+    load_current: Callable[[AsyncSession], Awaitable[CloudflareInstallation | None]],
+    http: httpx.AsyncClient,
+) -> bool:
+    """Wait for token projection and attachment while the job owns this revision."""
+    deadline = None
+    while True:
+        async with get_db_context() as db:
+            row = await load_current(db)
+            if row is None:
+                return False
+            tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
+            item = await cloudflare_tunnel.connector_resource(db, row)
+            snapshot = cloudflare_tunnel.snapshot_connector(row, item)
+        failure = None
+        try:
+            connectors = await cloudflare_tunnel.observe_connector(tunnel, snapshot)
+        except (CloudflareRestUnavailable, CloudflareManagementDenied, ObservationPending, OwnershipConflict) as exc:
+            failure = exc
+            connectors = None
+        async with get_db_context() as db:
+            row = await load_current(db)
+            if row is None:
+                return False
+            item = await cloudflare_tunnel.resource(db, row, cloudflare_tunnel.TUNNEL)
+            if item is not None and cloudflare_tunnel.connector_fence(row, item) == snapshot.fence:
+                if failure is not None:
+                    raise failure
+                assert connectors is not None
+                if cloudflare_tunnel.record_connector_readiness(row, item, snapshot, connectors):
+                    return True
+        now = monotonic()
+        if deadline is None:
+            # One minute to sync, one for cache propagation, and one to attach.
+            deadline = now + 180
+        remaining = deadline - now
+        if remaining <= 0:
+            raise PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Managed Tunnel Connector Did Not Become Ready")
+        # The job retains its lease. The transaction locks are released before waiting.
+        await asyncio.sleep(min(5, remaining))
 
 
 def _next_cleanup_resource(
@@ -826,6 +871,19 @@ async def _stage_reconcile(
         set_workers_release_floor(row, release, order)
 
 
+async def _current_tunnel_resources(
+    db: AsyncSession, installation: CloudflareInstallation, snapshot: cloudflare_tunnel.TunnelVerification,
+) -> tuple[CloudflareOwnedResource, CloudflareOwnedResource] | None:
+    item = await cloudflare_tunnel.resource(db, installation, cloudflare_tunnel.TUNNEL)
+    record = await cloudflare_tunnel.resource(db, installation, cloudflare_tunnel.DNS)
+    if (
+        item is not None and record is not None
+        and cloudflare_tunnel.verification_identity(installation, item, record) == snapshot.identity
+    ):
+        return item, record
+    return None
+
+
 async def _settle_reconcile(
     context: PlatformJobContext, payload: CloudflareReconcilePayload, adapter: WorkersRestCleanup,
     *, tunnel_http: httpx.AsyncClient | None = None,
@@ -834,6 +892,9 @@ async def _settle_reconcile(
     token = None
     advisory = None
     repair_tunnel_ingress = False
+    tunnel_snapshot = None
+    tunnel_client = None
+    connectors = None
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
         installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
@@ -849,15 +910,8 @@ async def _settle_reconcile(
             if installation.reachability_mode == "managed_tunnel":
                 if tunnel_http is None:
                     raise RuntimeError("Managed Tunnel requires the Cloudflare REST client")
-                tunnel = cloudflare_tunnel.adapter(tunnel_http, installation, token)
-                try:
-                    await cloudflare_tunnel.verify(db, installation, tunnel)
-                except IngressMismatch:
-                    issue = ("Verify Cloudflare Tunnel Ingress", "CF_TUNNEL_INGRESS_MISMATCH")
-                    # Commit closure before asking the provider to change its route.
-                    installation.admitted_revision = admitted_revision = None
-                    wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
-                    repair_tunnel_ingress = True
+                tunnel_client = cloudflare_tunnel.adapter(tunnel_http, installation, token)
+                tunnel_snapshot = await cloudflare_tunnel.snapshot_verification(db, installation)
         except CloudflareManagementDenied:
             issue = ("Reconnect Cloudflare", "CF_MANAGEMENT_CREDENTIAL")
         except OwnershipConflict:
@@ -867,6 +921,28 @@ async def _settle_reconcile(
         except ObservationPending:
             raise CloudflareRestUnavailable("Managed Tunnel inventory could not be confirmed") from None
 
+    if tunnel_snapshot is not None and tunnel_client is not None:
+        try:
+            connectors = await cloudflare_tunnel.verify(tunnel_client, tunnel_snapshot)
+            if not tunnel_snapshot.connector.ready(connectors):
+                issue = ("Verify Managed Tunnel Connector and DNS", "CF_CONNECTOR_UNAVAILABLE")
+        except IngressMismatch:
+            issue = ("Verify Cloudflare Tunnel Ingress", "CF_TUNNEL_INGRESS_MISMATCH")
+            repair_tunnel_ingress = True
+        except CloudflareManagementDenied:
+            issue = ("Reconnect Cloudflare", "CF_MANAGEMENT_CREDENTIAL")
+        except OwnershipConflict:
+            issue = ("Verify Cloudflare Tunnel Ownership", "CF_OWNERSHIP_CONFLICT")
+        except (cloudflare_tunnel.TunnelUnavailable, ValueError):
+            issue = ("Verify Managed Tunnel Connector and DNS", "CF_CONNECTOR_UNAVAILABLE")
+        except ObservationPending:
+            raise CloudflareRestUnavailable("Managed Tunnel inventory could not be confirmed") from None
+
+    # An empty session list is only meaningful for the projection state we sampled.
+    tunnel_problem = (
+        tunnel_snapshot is not None and connectors is None and issue is not None
+        and issue[1] != "CF_MANAGEMENT_CREDENTIAL"
+    )
     if token is not None and issue is None:
         try:
             roles = {receipt.intent.target.name.rsplit("-", 1)[-1] for receipt in inventory}
@@ -899,31 +975,89 @@ async def _settle_reconcile(
             issue = ("Reconnect Cloudflare", "CF_MANAGEMENT_CREDENTIAL")
 
     estimated_usage = None
+    verification_changed = False
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
         installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
-        if (
-            installation is None or not _current_reconcile(installation, payload.revision)
-            or installation.api_token_version != token_version
-            or installation.admitted_revision != admitted_revision
+        if installation is None or not _current_reconcile(installation, payload.revision):
+            return {"outcome": "superseded"}
+        tunnel_resources = None
+        if tunnel_snapshot is not None:
+            tunnel_resources = await _current_tunnel_resources(db, installation, tunnel_snapshot)
+            if tunnel_resources is None:
+                return {"outcome": "superseded"}
+        if installation.api_token_version != token_version or (
+            installation.admitted_revision is None and admitted_revision is not None
+        ):
+            return {"outcome": "superseded"}
+        if not tunnel_problem and (
+            installation.admitted_revision != admitted_revision
             or await _inventory_snapshot(db, installation.id, revision=payload.revision) != inventory
             or await usage_script_identities(db, installation.id) != usage_identities
         ):
             return {"outcome": "superseded"}
-        if issue is not None:
+        if tunnel_snapshot is not None and tunnel_resources is not None:
+            item, record = tunnel_resources
+            current_connector = cloudflare_tunnel.connector_fence(installation, item) == tunnel_snapshot.connector.fence
+            if not current_connector and not tunnel_problem:
+                job = await db.get(PlatformJob, context.job_id)
+                if job is None:
+                    raise PlatformJobCancelled
+                if job.attempt < job.max_attempts:
+                    raise PlatformJobFailure(
+                        TUNNEL_VERIFICATION_CHANGED, "Managed Tunnel Changed During Verification", retryable=True,
+                    )
+                # An unprojected credential gives no evidence about the connector
+                # that may have attached since the read. Keep other confirmed issues
+                # under their own recovery codes when closing admission.
+                verification_changed = issue is None or (
+                    issue[1] == "CF_CONNECTOR_UNAVAILABLE" and not tunnel_snapshot.connector.projected
+                )
+            if current_connector and connectors is not None:
+                record.observed_at = datetime.now(UTC)
+                cloudflare_tunnel.record_connector_readiness(installation, item, tunnel_snapshot.connector, connectors)
+        if not verification_changed and issue is not None:
+            # Fail closed on a confirmed problem with this tunnel, even if projection
+            # advanced while the provider call was in flight.
             installation.admitted_revision = None
-            if repair_tunnel_ingress and tunnel_http is not None and token is not None:
-                try:
-                    tunnel = cloudflare_tunnel.adapter(tunnel_http, installation, token)
-                    await cloudflare_tunnel.repair_ingress(db, installation, tunnel)
-                except (CloudflareManagementDenied, CloudflareRestUnavailable, ObservationPending, OwnershipConflict):
-                    issue = ("Repair Cloudflare Tunnel Ingress", "CF_TUNNEL_INGRESS_MISMATCH")
-        else:
+        elif not verification_changed:
             installation.usage_advisory = advisory
             estimated_usage = await db.scalar(
                 select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id),
             )
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+    if verification_changed:
+        raise PlatformJobRequiresAction(
+            "Managed Tunnel Kept Changing During Verification", {"code": TUNNEL_VERIFICATION_CHANGED},
+        )
+    if repair_tunnel_ingress and tunnel_snapshot is not None and tunnel_client is not None:
+        snapshot = tunnel_snapshot
+
+        async def current_repair() -> bool:
+            async with get_db_context() as db:
+                await _hold_installation_lease(db, context, payload.installation_id)
+                row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+                return (
+                    row is not None and _current_reconcile(row, payload.revision)
+                    and row.admitted_revision is None and row.api_token_version == token_version
+                    and await _current_tunnel_resources(db, row, snapshot) is not None
+                )
+
+        # Admission closure has committed. Check the lease and exact target again
+        # before the write and after readback. Repair records no health evidence.
+        if not await current_repair():
+            return {"outcome": "superseded"}
+        try:
+            repaired = await tunnel_client.write_ingress(
+                snapshot.connector.receipt, snapshot.origin, repair=True, before_write=current_repair,
+            )
+        except (CloudflareManagementDenied, CloudflareRestUnavailable, ObservationPending, OwnershipConflict):
+            issue = ("Repair Cloudflare Tunnel Ingress", "CF_TUNNEL_INGRESS_MISMATCH")
+        else:
+            if not repaired:
+                return {"outcome": "superseded"}
+        if not await current_repair():
+            return {"outcome": "superseded"}
     if issue is not None:
         raise PlatformJobRequiresAction(issue[0], {"code": issue[1]})
     if estimated_usage is None:
@@ -1284,14 +1418,13 @@ async def _rotate_connector(
                 actor_override=ActorContext(None, None, source="scheduler"),
             )
     await context.report("Verifying Managed Tunnel Connector Rollout")
-    async with get_db_context() as db:
+
+    async def current_rotation(db: AsyncSession) -> CloudflareInstallation | None:
         row = await current(db)
-        if row is None:
-            return {"outcome": "superseded"}
-        tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
-        ready = await cloudflare_tunnel.connector_ready(db, row, tunnel)
-    if not ready:
-        raise PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Waiting for Managed Tunnel Connector Rollout", retryable=True)
+        return row if row is not None and row.tunnel_token_version == payload.replacement_version else None
+
+    if not await _wait_for_connector(current_rotation, http):
+        return {"outcome": "superseded"}
     return {"outcome": "rotated", "credential_version": payload.replacement_version}
 
 
@@ -1390,8 +1523,12 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
     ).with_for_update(skip_locked=True))
     if installation is None:
         return
-    was_admitted = installation.admitted_revision is not None
-    if not was_admitted and installation.upgrade_release is None and not installation.drain_required:
+    needs_staging = (
+        installation.admitted_revision is not None
+        or installation.upgrade_release is not None
+        or installation.drain_required
+    )
+    if not needs_staging and installation.deployed_revision is None:
         return
     active_enable = await db.scalar(select(PlatformJob.id).where(
         PlatformJob.job_type == "capacity.cloudflare_enable",
@@ -1400,8 +1537,9 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
     ).limit(1))
     if active_enable is not None:
         return
-    release, order = installed_workers_release_digest(), installed_workers_release_order()
-    await _stage_reconcile(db, installation, release=release, order=order)
+    if needs_staging:
+        release, order = installed_workers_release_digest(), installed_workers_release_order()
+        await _stage_reconcile(db, installation, release=release, order=order)
     active = await db.scalar(select(PlatformJob.id).where(
         PlatformJob.job_type == RECONCILE_JOB,
         PlatformJob.resource_id == str(installation.id),
@@ -1415,6 +1553,8 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
         PlatformJob.payload["revision"].as_integer() == installation.desired_revision,
     )
     latest = await db.scalar(history.order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
+    if not needs_staging and (latest is None or latest.status == "succeeded"):
+        return
     if latest is not None and latest.status != "succeeded":
         code = (latest.result or {}).get("code") if latest.status == "requires_action" else latest.error_code
         if (

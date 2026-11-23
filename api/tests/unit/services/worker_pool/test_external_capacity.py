@@ -429,101 +429,20 @@ async def test_unbound_cloudflare_prepare_holds_room_until_cleanup(db, capacity,
     assert len(await pool.launch_for_demand(policy)) == 1
 
 
-async def test_terminal_scope_slot_holds_physical_room_but_does_not_trigger_burst(db, capacity):
-    linux = capacity.provider.profile.model_copy(update={"max_workers": 1})
-    cloudflare = linux.model_copy(update={
-        "scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
-    })
-    burst = ExternalWorkerPoolController(capacity.client, SETTINGS, cloudflare)
-    burst.peer_profile = linux
-    async with db.context() as session:
-        session.add(ExecutionWorker(
-            id=uuid4(), form="external", state="lost", capacity_scope=linux.scope,
-            capacity_resource_uid="unconfirmed",
-        ))
-    async with db.context() as session:
-        assert await burst._external_scope_counts(session, cloudflare, linux) == {linux.scope: 1}
-    await _set_request(db.sessions, await _accept_pool_run(), 1, approved=True)
-    assert await burst.launch_for_demand(capacity.policy) == []
+async def test_external_capacity_uses_only_its_own_provider_profile(capacity):
+    assert capacity.pool.profile == capacity.provider.profile
+    assert not hasattr(capacity.pool, "peer_profile")
+    assert not hasattr(capacity.pool, "additional_profile")
 
 
-async def test_burst_terminal_still_holds_shared_physical_room(db, capacity):
-    pool = capacity.pool
-    pool.peer_profile = pool.profile.model_copy(update={"scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE})
-    async with db.context() as session:
-        session.add(ExecutionWorker(
-            id=uuid4(), form="external", state="retired", capacity_scope="burst",
-            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, capacity_resource_uid="unconfirmed",
-        ))
-    assert await pool.launch_for_demand(replace(capacity.policy, max_workers=1, warm_workers=1)) == []
-
-
-@pytest.mark.parametrize("warm", [0, 1])
-async def test_linux_can_reclaim_an_idle_cloudflare_slot(db, capacity, warm):
-    pool = capacity.pool
-    pool.peer_profile = pool.profile.model_copy(update={
-        "scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-    })
-    policy = replace(capacity.policy, max_workers=1, warm_workers=warm)
-    worker_id = uuid4()
-    async with db.context() as session:
-        session.add(ExecutionWorker(
-            id=worker_id, form="external", state="ready", resource_class="standard",
-            capacity_scope=pool.peer_profile.scope, runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-            memory_limit_bytes=2 * CLOUDFLARE_DEV_BUDGET_BYTES,
-            memory_budget_bytes=2 * CLOUDFLARE_DEV_BUDGET_BYTES, supported_handlers=["workflow.execute"],
-            remote_owner_lease_expires_at=controller._now() + timedelta(minutes=1),
-            version=pool.peer_profile.worker_version,
-        ))
-    if not warm:
-        await _accept_pool_run()
-    assert await pool.launch_for_demand(policy) == []
-    async with db.context() as session:
-        worker = await session.get(ExecutionWorker, worker_id)
-        assert worker.end_reason == "capacity_replacement"
-        assert worker.state == "draining"
-
-
-async def test_linux_warm_fill_does_not_replace_linux_without_a_launch_plan(db, capacity, monkeypatch):
-    pool = capacity.pool
-    pool.peer_profile = pool.profile.model_copy(update={
-        "scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-    })
-    linux_id = uuid4()
-    async with db.context() as session:
-        session.add_all([
-            ExecutionWorker(
-                id=linux_id, form="external", state="ready", resource_class="standard",
-                version=pool.version, capacity_scope=pool.profile.scope, memory_budget_bytes=GIB,
-                active_handler_counts={}, supported_handlers=["workflow.execute"],
-            ),
-            ExecutionWorker(
-                id=uuid4(), form="external", state="ready", resource_class="standard",
-                capacity_scope=pool.peer_profile.scope, runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-                active_runs=1,
-            ),
-        ])
-    await _set_request(db.sessions, await _accept_pool_run(), 2 * GIB)
-    # The oversized request has no launchable worker after Linux calibration.
-    monkeypatch.setattr(controller, "_plan_launches", lambda *args, **kwargs: controller.LaunchPlan(0, []))
-    assert await pool.launch_for_demand(replace(capacity.policy, warm_workers=2)) == []
-    async with db.context() as session:
-        assert (await session.get(ExecutionWorker, linux_id)).state == "ready"
-
-
-async def test_dual_limits_apply_after_discovery_without_blocking_burst_delete(db, capacity):
+async def test_closed_burst_admission_does_not_block_retirement(db, capacity):
     primary = capacity.pool
     capacity.provider.profile = primary.profile.model_copy(update={
         "scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
         "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
     })
     burst = ExternalWorkerPoolController(capacity.client, primary.settings, capacity.provider.profile)
-    policy = replace(capacity.policy, max_workers=primary.profile.max_workers + burst.profile.max_workers + 1)
-    primary.peer_profile = burst.profile
-    burst.peer_profile = primary.profile
-    with pytest.raises(CapacityProtocolError, match="max_workers"):
-        primary._sizing(policy, [])
+    policy = capacity.policy
 
     worker_id = uuid4()
     prepared = await capacity.client.prepare(WorkerCapacityReservation(
@@ -546,7 +465,6 @@ async def test_outdated_uses_the_worker_scope_version_even_if_other_scope_runs_t
         "scope": "burst", "worker_version": "new-burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     })
     pool = ExternalWorkerPoolController(capacity.client, SETTINGS, burst)
-    pool.peer_profile = linux
     pool.live = controller.LiveControllers(ids=frozenset(), versions=frozenset({linux.worker_version, burst.worker_version}))
     row = ExecutionWorker(
         form="external", state="ready", capacity_scope=burst.scope,
@@ -569,34 +487,6 @@ async def test_idle_cloudflare_drains_even_when_linux_floor_is_unfilled(db, capa
         linux_id, burst_id = linux.id, burst.id
     assert not await claims.begin_idle_drain(linux_id)
     assert await claims.begin_idle_drain(burst_id)
-
-
-async def test_cloudflare_burst_waits_for_linux_ceiling_and_respects_shared_cap(db, capacity):
-    linux = capacity.provider.profile.model_copy(update={"max_workers": 1})
-    cloudflare = capacity.provider.profile.model_copy(update={
-        "scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
-    })
-    capacity.pool.profile = linux
-    capacity.pool.peer_profile = cloudflare
-    burst = ExternalWorkerPoolController(capacity.client, SETTINGS, cloudflare)
-    burst.peer_profile = linux
-    for _ in range(2):
-        await _set_request(
-            db.sessions, await _accept_pool_run(), CLOUDFLARE_DEV_BUDGET_BYTES, approved=True,
-        )
-    assert await burst.launch_for_demand(capacity.policy) == []
-    [linux_id] = await capacity.pool.launch_for_demand(capacity.policy)
-    assert await burst.launch_for_demand(capacity.policy) == []
-    async with db.context() as session:
-        worker = await session.get(ExecutionWorker, linux_id)
-        worker.state = "ready"
-        worker.memory_pressured = True
-        await session.commit()
-    [burst_id] = await burst.launch_for_demand(capacity.policy)
-    assert burst_id != linux_id
-    assert await burst.launch_for_demand(capacity.policy) == []
-    assert await capacity.pool.launch_for_demand(capacity.policy) == []
 
 
 @pytest.mark.parametrize("max_workers", [1, 2], ids=["at-cap", "spare-slot"])

@@ -5,12 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
-from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, Mock
-from uuid import uuid4
-
-import pytest
+from datetime import timedelta
 
 
 def test_catalog_metadata_matches_each_materialized_definition() -> None:
@@ -72,51 +67,13 @@ def test_cloudflare_provisioning_jobs_wait_for_provider_settlement() -> None:
     opted_in = {
         item.job_type: item.policy.retry_delay
         for item in list_platform_job_metadata()
-        if item.policy.retry_delay and item.job_type != "capacity.cloudflare_rotate_worker_credential"
+        if item.policy.retry_delay
     }
     assert opted_in == {
         "capacity.cloudflare_enable": delays,
         "capacity.cloudflare_reconcile": delays,
+        "capacity.cloudflare_rotate_worker_credential": delays,
     }
-
-
-@pytest.mark.asyncio
-async def test_rotation_can_observe_a_connector_after_kubelet_sync_and_cache_delay(monkeypatch) -> None:
-    from src.jobs.platform.base import PlatformJobFailure
-    from src.jobs.platform.catalog import get_platform_job_metadata
-    from src.models.orm.platform_jobs import PlatformJob
-    from src.services import platform_jobs
-
-    metadata = get_platform_job_metadata("capacity.cloudflare_rotate_worker_credential")
-    assert metadata is not None
-    policy = metadata.policy
-    started = now = datetime(2026, 11, 23, tzinfo=UTC)
-    # A minute each for the kubelet sync and TTL cache, then time to attach.
-    connector_ready_at = started + timedelta(seconds=140)
-    job = PlatformJob(id=uuid4(), max_attempts=policy.max_attempts, revision=0)
-    db = AsyncMock()
-    db.execute.return_value = Mock(scalar_one_or_none=Mock(return_value=job))
-
-    @asynccontextmanager
-    async def context():
-        yield db
-
-    monkeypatch.setattr(platform_jobs, "get_db_context", context)
-    monkeypatch.setattr(platform_jobs, "publish_platform_job_update", AsyncMock())
-    monkeypatch.setattr(platform_jobs, "_now", lambda: now)
-    failure = PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Waiting for projection", retryable=True)
-    for attempt in range(1, policy.max_attempts):
-        assert now < connector_ready_at
-        lease = uuid4()
-        job.status, job.attempt, job.lease_token = "running", attempt, lease
-        assert await platform_jobs.retry_platform_job_failure(
-            job.id, lease, failure, enabled=policy.retry_on_failure, retry_delay=policy.retry_delay,
-        )
-        assert job.status == "queued"
-        assert job.available_at > now
-        now = job.available_at
-
-    assert connector_ready_at <= now <= started + timedelta(minutes=3)
 
 
 def test_metadata_lookup_imports_no_handler_modules_in_a_fresh_process() -> None:

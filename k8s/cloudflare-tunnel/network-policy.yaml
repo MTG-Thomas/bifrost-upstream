@@ -7,7 +7,10 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: bifrost-cloudflare-connector
-  policyTypes: [Egress]
+  # Own-node and host-network egress depend on the cluster's CNI.
+  # See the Managed Tunnel runbook for the control-plane boundary.
+  policyTypes: [Ingress, Egress]
+  ingress: []
   egress:
     - to:
         - podSelector:

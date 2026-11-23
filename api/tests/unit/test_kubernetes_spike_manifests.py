@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ipaddress import ip_network
 from pathlib import Path
 import subprocess
 from typing import Any
@@ -184,3 +185,43 @@ def test_local_readme_documents_supported_entrypoints_and_worker_jobs() -> None:
     assert "./test.sh kubernetes up" in readme
     assert "app.kubernetes.io/name=bifrost-pool-worker" in readme
     assert "keda" not in readme.lower()
+
+
+
+def test_managed_tunnel_connector_policy_isolates_ingress_and_limits_egress() -> None:
+    component = REPO_ROOT / "k8s" / "cloudflare-tunnel"
+    policy_doc = yaml.safe_load((component / "network-policy.yaml").read_text())
+    policy = policy_doc["spec"]
+    assert "network-policy.yaml" in yaml.safe_load((component / "kustomization.yaml").read_text())["resources"]
+    deployment = next(doc for doc in yaml.safe_load_all((component / "connector.yaml").read_text())
+                      if doc["kind"] == "Deployment")
+    assert policy_doc["metadata"]["namespace"] == deployment["metadata"]["namespace"]
+    pod = deployment["spec"]["template"]
+    connector = {"app.kubernetes.io/name": "bifrost-cloudflare-connector"}
+    assert policy["podSelector"] == {"matchLabels": connector}
+    assert pod["metadata"]["labels"].items() >= connector.items()
+    assert pod["spec"]["automountServiceAccountToken"] is False
+    assert not pod["spec"].get("hostNetwork")
+    container, = pod["spec"]["containers"]
+    assert not {"livenessProbe", "readinessProbe", "startupProbe"} & container.keys()
+    assert policy["policyTypes"] == ["Ingress", "Egress"]
+    assert policy["ingress"] == []
+    worker_ingress_egress, dns, edge = policy["egress"]
+    assert worker_ingress_egress == {
+        "to": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "bifrost-api"}}}],
+        "ports": [{"protocol": "TCP", "port": 8001}],
+    }
+    assert dns == {
+        "to": [{
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+            "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+        }],
+        "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}],
+    }
+    assert edge["ports"] == [{"protocol": "UDP", "port": 7844}, {"protocol": "TCP", "port": 7844}]
+    assert edge["to"]
+    for destination in edge["to"]:
+        assert set(destination) == {"ipBlock"}
+        assert set(destination["ipBlock"]) == {"cidr"}
+        network = ip_network(destination["ipBlock"]["cidr"])
+        assert network.num_addresses == 1 and network.is_global

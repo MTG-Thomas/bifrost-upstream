@@ -33,6 +33,9 @@ from src.worker.remote.protocol import (
 class ManagedWorkerOccupancy:
     live: frozenset[UUID]
     cloudflare: frozenset[UUID]
+    shared_cap: int | None
+    cleanup: frozenset[UUID]
+    draining: frozenset[UUID]
 
     @property
     def primary_count(self) -> int:
@@ -44,18 +47,38 @@ class ManagedWorkerOccupancy:
 
 
 async def read_managed_worker_occupancy(
-    db: AsyncSession, live_workers: Sequence[ExecutionWorker], *, include_pending_deletions: bool,
+    db: AsyncSession, live_workers: Sequence[ExecutionWorker], *, admitting_installation_id: UUID | None = None,
 ) -> ManagedWorkerOccupancy:
     """Count each live managed worker once and keep pins until deletion is confirmed."""
     live = frozenset(worker.id for worker in live_workers if worker.form in MANAGED_WORKER_FORMS)
     pin = CloudflareWorkerReservation
-    relevant = pin.worker_id.in_(live)
-    if include_pending_deletions:
-        relevant = relevant | ExecutionWorker.capacity_resource_deleted_at.is_(None)
-    cloudflare = frozenset(await db.scalars(select(pin.worker_id).join(
+    live_pin = pin.worker_id.in_(live)
+    occupied = live_pin | ExecutionWorker.capacity_resource_deleted_at.is_(None)
+    unsettled = select(pin.worker_id).join(ExecutionWorker).where(
+        pin.installation_id == CloudflareInstallation.id, occupied,
+    ).exists()
+    cap = await db.scalar(select(
+        func.min(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
+    ).where(
+        (CloudflareInstallation.retired_at.is_(None) & CloudflareInstallation.admitted_revision.is_not(None))
+        | unsettled
+        | (CloudflareInstallation.id == admitting_installation_id),
+    ))
+    rows = (await db.execute(select(
+        pin.worker_id, pin.scope, ExecutionWorker.state, ExecutionWorker.end_reason,
+    ).join(
         ExecutionWorker, ExecutionWorker.id == pin.worker_id,
-    ).where(relevant)))
-    return ManagedWorkerOccupancy(live, cloudflare)
+    ).where(occupied if cap is not None else live_pin))).all()
+    return ManagedWorkerOccupancy(
+        live=live,
+        cloudflare=frozenset(worker_id for worker_id, _, _, _ in rows),
+        shared_cap=cap,
+        cleanup=frozenset(worker_id for worker_id, _, _, _ in rows if worker_id not in live),
+        draining=frozenset(
+            worker_id for worker_id, scope, state, cause in rows
+            if scope == "workers" and worker_id in live and state == "draining" and cause == "cloudflare_admission_closed"
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
