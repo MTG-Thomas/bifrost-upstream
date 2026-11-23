@@ -6,7 +6,8 @@ import {readFileSync, writeFileSync} from 'node:fs';
 import {createServer, request} from 'node:http';
 import {createServer as tlsServer} from 'node:https';
 import {createRequire} from 'node:module';
-import {BlockList, isIPv4} from 'node:net';
+import {BlockList, createConnection, isIPv4} from 'node:net';
+import {dirname, join} from 'node:path';
 import {buffer} from 'node:stream/consumers';
 import {relayHeaders} from './relay-http.mjs';
 
@@ -57,6 +58,13 @@ let lagNamespace;
 
 function event(kind, details = {}) {
   observations.push({kind, ...details});
+}
+
+async function fenceRawTcp(worker) {
+  assert.match(worker, /^[0-9a-f-]{36}$/);
+  const connection = createConnection(join(dirname(config.ready), 'raw-tcp.sock'));
+  connection.end(worker + '\n');
+  assert.equal((await buffer(connection)).toString(), 'ready\n');
 }
 
 function controlFrame(message) {
@@ -251,10 +259,22 @@ function upgrade(req, socket, head) {
     const connection = ++connectionSequence;
     const terminate = new Map();
     const challenges = new Set();
-    worker.on('message', (message) => {
+    worker.on('message', async (message) => {
       const frame = controlFrame(message);
       if (frame.event === 'hello' && frame.hello?.incarnation_id) {
         identity = frame.hello.incarnation_id;
+        if (config.containers && frame.hello.container_release) {
+          worker.pause();
+          try {
+            await fenceRawTcp(identity);
+          } catch (error) {
+            console.error(`Local Container TCP fixture failed: ${error.name}`);
+            close(1011);
+            return;
+          } finally {
+            worker.resume();
+          }
+        }
         if (identity) sockets.set(identity, worker);
         event('hello', {worker: identity, connection});
       } else if (frame.payload?.event === 'result') {

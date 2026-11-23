@@ -5,9 +5,12 @@ import ipaddress
 import json
 import os
 import re
+import socketserver
 import subprocess
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -812,30 +815,52 @@ async def {name}(case: str, hold: int):
 
 
 class ContainerRehearsal(Rehearsal):
-    def isolate_probe_peer(self):
-        """Supply the local scheduler's raw socket denial in a disposable namespace."""
-        peer_id = subprocess.check_output(self.compose + ["ps", "-q", "container-probe-peer"], text=True).strip()
-        peer, api = json.loads(subprocess.check_output(["docker", "inspect", peer_id, self.api_container]))
-        network = self.cfg["network"]
-        assert self.cfg["project"].startswith("bifrost-test-containers-")
-        assert peer["Config"]["Labels"]["com.docker.compose.project"] == self.cfg["project"]
-        assert peer["Config"]["Labels"]["com.docker.compose.service"] == "container-probe-peer"
-        assert set(peer["NetworkSettings"]["Networks"]) == {network}
-        assert not peer["HostConfig"]["PortBindings"] and peer["State"]["Running"]
-        address = str(ipaddress.IPv4Address(api["NetworkSettings"]["Networks"][network]["IPAddress"]))
-        with open(f"/proc/{peer['State']['Pid']}/ns/net", "rb") as namespace:
+    def deny_raw_guest_tcp(self, incarnation):
+        image = self.cfg["containers"]["imageId"]
+        identities = subprocess.check_output(["docker", "ps", "-q", "--filter", f"ancestor={image}"], text=True).split()
+        guests = json.loads(subprocess.check_output(["docker", "inspect", *identities]))
+        guest, = [item for item in guests if item["Image"] == image and item["State"]["Running"]
+                  and f"BIFROST_WORKER_INCARNATION_ID={incarnation}" in item["Config"]["Env"]]
+        assert guest["HostConfig"]["NetworkMode"] != "host"
+        with open(f"/proc/{guest['State']['Pid']}/ns/net", "rb") as namespace:
             fd = namespace.fileno()
             assert os.fstat(fd).st_ino != os.stat("/proc/self/ns/net").st_ino
             subprocess.run([
-                "nsenter", f"--net=/proc/self/fd/{fd}", "--", "iptables", "-I", "INPUT",
-                "-p", "tcp", "--dport", "8443", "!", "-i", "lo", "!", "-s", address,
-                "-j", "REJECT", "--reject-with", "tcp-reset",
+                "nsenter", f"--net=/proc/self/fd/{fd}", "--", "iptables", "-I", "OUTPUT",
+                "-p", "tcp", "--dport", "8443", "-j", "REJECT", "--reject-with", "tcp-reset",
             ], check=True, pass_fds=(fd,))
-        evidence("container-raw-tcp-peer", {"local_provider_boundary": True})
+        evidence("container-raw-tcp-boundary", {"worker": str(incarnation)})
+
+    @contextmanager
+    def raw_tcp_boundary(self):
+        assert self.cfg["project"].startswith("bifrost-test-containers-")
+        path = Path(".rehearsal/raw-tcp.sock")
+        assert not path.exists()
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(handler):
+                incarnation = UUID(handler.rfile.readline(38).decode("ascii").strip())
+                self.deny_raw_guest_tcp(incarnation)
+                handler.wfile.write(b"ready\n")
+
+        try:
+            with socketserver.UnixStreamServer(str(path), Handler) as server:
+                thread = threading.Thread(target=server.serve_forever)
+                thread.start()
+                try:
+                    yield
+                finally:
+                    server.shutdown()
+                    thread.join()
+        finally:
+            path.unlink(missing_ok=True)
 
     def run(self):
+        with self.raw_tcp_boundary():
+            self._run()
+
+    def _run(self):
         assert "containers" in self.cfg and "managementToken" not in self.cfg
-        self.isolate_probe_peer()
         apps_path = "/client/v4/accounts/" + self.account + "/containers/applications"
         images_path = "/local/containers-registry"
         assert not self.scripts() and self.provider(apps_path) == [] and self.provider(images_path) == []
