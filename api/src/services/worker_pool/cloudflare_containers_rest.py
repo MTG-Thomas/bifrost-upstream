@@ -38,6 +38,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 
 REGISTRY = "registry.cloudflare.com"
 _HEX32 = re.compile(r"[a-f0-9]{32}")
+_ACTOR_ID = re.compile(r"[a-f0-9]{64}")
 _APP_ID = re.compile(r"[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
 
 
@@ -238,19 +239,16 @@ class ContainersRest(WorkersRestCleanup):
         image: str, not_before: datetime,
     ) -> InstanceStop:
         """Read the exact application and actor without waking the Durable Object."""
-        placements = await self._instance_inventory(token, application, instance_id)
-        if not placements:
+        placement = await self._instance_inventory(token, application, instance_id)
+        if placement is None:
             raise ObservationPending("Missing instance readback does not witness a stopped placement")
-        if len(placements) != 1:
-            raise OwnershipConflict("Container readback has multiple placements for its start fence")
-        row = placements[0]
-        if row.get("id") != instance_id or row.get("application_id") != application.provider_id or row.get("image") != image:
+        if placement.get("image") != image:
             raise OwnershipConflict("Container placement differs from its journal")
         try:
-            status = row["status"]
+            status = placement["status"]
             if status["state"] not in ("stopped", "inactive"):
                 raise ValueError
-            started_at = datetime.fromisoformat(row["started_at"])
+            started_at = datetime.fromisoformat(placement["started_at"])
             stopped_at = datetime.fromisoformat(status["updated_at"])
             if not not_before <= started_at <= stopped_at <= datetime.now(UTC):
                 raise ValueError
@@ -259,17 +257,17 @@ class ContainersRest(WorkersRestCleanup):
         return InstanceStop(started_at.astimezone(UTC), stopped_at.astimezone(UTC))
 
     async def observe_no_placement(self, token: SecretStr, application: ResourceObservation, instance_id: str) -> None:
-        if await self._instance_inventory(token, application, instance_id):
+        if await self._instance_inventory(token, application, instance_id) is not None:
             raise ObservationPending("A void Container still has a provider placement")
 
     async def _instance_inventory(
         self, token: SecretStr, application: ResourceObservation, instance_id: str,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         name = _name(application.intent, "container_application")
         account = application.intent.target.account_id
         if (
             not _APP_ID.fullmatch(application.provider_id) or not _HEX32.fullmatch(application.provider_version)
-            or not re.fullmatch(r"[a-f0-9]{64}", instance_id)
+            or not _ACTOR_ID.fullmatch(instance_id)
         ):
             raise OwnershipConflict("Invalid Container instance observation target")
         path = f"containers/applications/{application.provider_id}"
@@ -277,7 +275,13 @@ class ContainersRest(WorkersRestCleanup):
         assert app is not None
         if self._application(app["result"], account, name, application.provider_version) != application.provider_id:
             raise OwnershipConflict("Container application ID changed")
-        return await self._inventory(token, account, f"{path}/instances-v2", name_prefix=instance_id)
+        # The provider filters names before actor IDs. A named placement
+        # would disappear from a prefix search by its actor ID.
+        rows = await self._inventory(token, account, f"{path}/instances-v2")
+        if any(row.get("application_id") != application.provider_id or not _ACTOR_ID.fullmatch(row["id"]) for row in rows):
+            raise OwnershipConflict("Container placement inventory differs from the journal",
+                                    OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
+        return next((row for row in rows if row["id"] == instance_id), None)
 
 
 class ContainerRegistry:

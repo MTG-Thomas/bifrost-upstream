@@ -509,11 +509,13 @@ using those bytes for settlement, charge the scoped HTTP paths to the same
 budget and verify that the scope has fenced all relays. The closure must
 explicitly attest complete metering before settlement can reduce the fixed
 hold. Pair the closure with a singleton management inventory result for
-the fenced actor and exact placement start. The assumed
-`instances-v2` endpoint, `name_prefix` filter and placement fields
-(`id`, `application_id`, `image`, `started_at`, `status.state`,
-`status.updated_at`) are unverified pending hosted qualification.
-Missing or ambiguous evidence keeps the seat unresolved. The controller
+the fenced actor and exact placement start. Read complete
+[`instances-v2` inventory](https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/list/)
+and match the exact actor ID locally. The provider prefix filter can hide a
+named placement from an actor-ID search. Application health counts can veto
+deletion when the provider reports activity or an incomplete sweep. Verify
+inventory behavior during hosted qualification. Missing or ambiguous evidence
+keeps the seat unresolved. The controller
 acknowledges the exact closed fence after the stop transaction commits.
 Only that acknowledgement retires the provider seat.
 For an expired reservation without a start fence, the registry first

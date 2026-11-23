@@ -3250,15 +3250,17 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
     stopped_at = started_at + timedelta(seconds=2)
     phase = "provisioning"
     placement_ids = [actor]
+    placement_app_id = app_id
     management_available = True
 
     def management(request: httpx.Request) -> httpx.Response:
         assert management_available, "Settlement replay must not contact management"
         assert request.method == "GET"
         if request.url.path.endswith("/instances-v2"):
-            assert request.url.params["name_prefix"] == actor
+            assert "name_prefix" not in request.url.params
             result = [{
-                "id": placement, "application_id": app_id, "image": image, "started_at": started_at.isoformat(),
+                "id": placement, "application_id": placement_app_id, "image": image, "name": f"placement-{placement[:8]}",
+                "started_at": started_at.isoformat(),
                 "status": {"state": phase, "updated_at": stopped_at.isoformat()},
             } for placement in placement_ids]
         else:
@@ -3278,13 +3280,18 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
         with pytest.raises(ObservationPending):
             await settle_container_stop(db_session, adapter, token=token, closure=closure)
         phase = "inactive"
-        placement_ids = [actor, "e" * 64]
-        with pytest.raises(OwnershipConflict, match="multiple placements"):
+        placement_ids = [actor, actor]
+        with pytest.raises(ObservationPending, match="Container inventory is incomplete"):
             await settle_container_stop(db_session, adapter, token=token, closure=closure)
         placement_ids = ["e" * 64]
-        with pytest.raises(OwnershipConflict, match="differs"):
+        with pytest.raises(ObservationPending, match="Missing instance readback"):
             await settle_container_stop(db_session, adapter, token=token, closure=closure)
         placement_ids = [actor]
+        placement_app_id = "f" * 32
+        with pytest.raises(OwnershipConflict, match="inventory differs"):
+            await settle_container_stop(db_session, adapter, token=token, closure=closure)
+        placement_app_id = app_id
+        placement_ids = [actor, "e" * 64]
         installation.desired_state = "disconnected"
         await db_session.flush()
         await settle_container_stop(db_session, adapter, token=token, closure=closure)
@@ -3566,13 +3573,13 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
             allocation_refused=refused,
         )
     )
-    placements = [{"id": actor}]
+    placements = [{"id": actor, "application_id": app.provider_id, "name": "named-placement"}]
     available = True
 
     def management(request):
         assert available
         if request.url.path.endswith("/instances-v2"):
-            assert request.url.params["name_prefix"] == actor
+            assert "name_prefix" not in request.url.params
             result = placements
         else:
             result = {
@@ -3590,7 +3597,7 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
                 await settle_container_stop(db_session, rest, token=token, closure=early)
         with pytest.raises(ObservationPending, match="still has a provider placement"):
             await settle_container_stop(db_session, rest, token=token, closure=receipt)
-        placements.clear()
+        placements[:] = [{"id": "f" * 64, "application_id": app.provider_id, "name": "another-placement"}]
         await settle_container_stop(db_session, rest, token=token, closure=receipt)
         available = False
         await settle_container_stop(db_session, rest, token=token, closure=receipt)
