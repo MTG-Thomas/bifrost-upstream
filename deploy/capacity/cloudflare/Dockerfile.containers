@@ -11,6 +11,7 @@ RUN --network=none python -m pip install --no-index --no-deps --require-hashes -
     --find-links=/opt/bifrost-wheels -r /opt/bifrost-wheels/requirements.txt \
     && python -m pip uninstall -y pip \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/python3.15/ensurepip \
+        /app/artifacts/cloudflare \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx
 RUN chown -R root:root /app /usr/local/lib/python3.15/site-packages \
     && chmod -R go-w /app /usr/local/lib/python3.15/site-packages \

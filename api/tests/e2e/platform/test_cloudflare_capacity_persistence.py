@@ -8,6 +8,9 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from email import policy as email_policy
+from email.parser import BytesParser
+from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
@@ -183,6 +186,7 @@ from tests.helpers.cloudflare_containers import (
     verified_egress,
 )
 from tests.helpers.cloudflare_containers import policy as container_policy
+from tests.helpers.cloudflare_containers import json_bytes
 from tests.helpers.isolation import isolated_test_database
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
@@ -1050,6 +1054,7 @@ async def test_container_application_effect_survives_provisioning_failures(
     monkeypatch.setattr(enable_job, "_locked_current", locked_current)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     monkeypatch.setattr(enable_job, "load_containers_release", AsyncMock(return_value=release))
+    monkeypatch.setattr(enable_job, "_deploy_container_launcher", AsyncMock(return_value=True))
     monkeypatch.setattr(enable_job, "WorkersRestCleanup", lambda _: SimpleNamespace(verify_workers_paid=AsyncMock()))
     monkeypatch.setattr(enable_job, "_drain_previous_revision", AsyncMock(return_value=True))
     workers_release = SimpleNamespace(
@@ -1237,6 +1242,163 @@ async def test_container_application_effect_survives_provisioning_failures(
 
 
 @pytest.mark.asyncio
+async def test_cold_enable_prepares_image_and_deploys_container_application(
+    db_session, installation, monkeypatch, tmp_path,
+) -> None:
+    from src.services.worker_pool import cloudflare_containers_release, cloudflare_containers_rest
+
+    container, image, config = make_release()
+    manifest = container.manifest
+    workers = SimpleNamespace(digest=manifest.workers_release_digest, manifest=SimpleNamespace(
+        release_version="1.0.0", release_sequence=1, source_revision=container.manifest.source_revision,
+    ))
+    installation.policy = {**installation.policy, "bounds_release": workers.digest}
+    installation.desired_state = "enabled"
+    installation.containers_policy = {"enabled": True}
+    await db_session.flush()
+    connection = await db_session.connection()
+    signer = tmp_path / "linux-release-signer"
+    signer.write_text("https://github.com/example/bifrost/.github/workflows/ci.yml@refs/tags/v1.0.0\n", encoding="ascii")
+    assets = {
+        "manifest.json": json_bytes(manifest.model_dump(mode="json")),
+        "manifest.sigstore.json": b"{}",
+        "container-registry.mjs": container.launcher_module,
+    }
+    digest = sha256(assets["manifest.json"]).hexdigest()
+    name = f"bifrost-{installation.id.hex}-r1"
+    namespace = "a" * 32
+    version = str(uuid4())
+    deployment = str(uuid4())
+    full_image = f"registry.cloudflare.com/{installation.account_id}/{name}@{manifest.image_digest}"
+    events = []
+    bindings = []
+    application = None
+    copied = False
+    endpoint = {"enabled": False, "previews_enabled": False}
+
+    @asynccontextmanager
+    async def transaction():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    async def locked_current(session, _context, payload):
+        return await session.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+
+    async def tool(executable, *args, **_kwargs):
+        nonlocal copied
+        match (executable.name, args):
+            case ("cosign", ("version",)):
+                return b"GitVersion: v2.4.1\n"
+            case ("cosign", ("initialize",)):
+                return b""
+            case ("cosign", ("verify-blob", *_)):
+                return b""
+            case ("crane", ("version",)):
+                return b"v0.20.6"
+            case ("crane", ("manifest", _)):
+                return image
+            case ("crane", ("config", _)):
+                return config
+            case ("crane", ("copy", source, target)):
+                assert source == manifest.image and target == full_image.split("@")[0] + ":release" and not copied
+                copied = True
+                events.append("copy")
+                return b""
+            case ("cf", ("--version",)):
+                return b"1.0.0-beta.31"
+            case ("cf", ("accounts", "get", "-q")):
+                return json_bytes({"id": installation.account_id})
+            case ("cf", ("containers", "images", "list", "--filter", _)):
+                return json_bytes([{"name": name, "tags": ["release"]}] if copied else [])
+            case _:
+                pytest.fail(f"Unexpected OCI tool call {executable.name}, {args}")
+
+    def provider(request):
+        nonlocal bindings, application
+        path = request.url.path
+        if request.url.host == "github.com":
+            return httpx.Response(200, content=assets[path.split("cloudflare-containers-")[1]])
+        assert request.url.host == "api.cloudflare.com"
+        assert request.headers["Authorization"] == "Bearer synthetic-cloudflare-management-token"
+        if path.endswith("/entitlements"):
+            result = [
+                {"id": feature, "deleted_date": "", "allocation": {"type": "bool", "value": True}}
+                for feature in ("workers.enabled", "containers.enabled")
+            ]
+        elif path.endswith(f"/accounts/{installation.account_id}"):
+            result = {"id": installation.account_id}
+        elif path.endswith("/credentials"):
+            result = {"account_id": installation.account_id, "registry_host": "registry.cloudflare.com",
+                      "username": "fixture", "password": "fixture"}
+        elif path.endswith("/image-preparations"):
+            assert copied and json.loads(request.content) == {"image": full_image}
+            events.append("prepare")
+            result = {"image": full_image, "status": "ready"}
+        elif path.endswith(f"/workers/scripts/{name}-containers") and request.method == "PUT":
+            parts = BytesParser(policy=email_policy.default).parsebytes(
+                f"Content-Type: {request.headers['Content-Type']}\r\n\r\n".encode() + request.content,
+            )
+            content = {part.get_param("name", header="content-disposition"): part.get_payload(decode=True)
+                       for part in parts.iter_parts()}
+            metadata = json.loads(content["metadata"])
+            assert content["container-registry.mjs"] == container.launcher_module
+            assert metadata["containers"] == [{
+                "name": "linux", "class_name": "ContainerLauncher", "images": {"bifrost-linux": full_image},
+            }]
+            assert metadata["exports"]["ContainerLauncher"]["container"] == "linux"
+            bindings = metadata["bindings"]
+            assert len(bindings) == 1 and bindings[0]["name"] == OWNER_BINDING
+            assert bindings[0]["text"].endswith(f":1:{digest}")
+            events.append("launcher")
+            result = {"id": f"{name}-containers"}
+        elif path.endswith(f"/{name}-containers/settings"):
+            if not bindings:
+                return httpx.Response(404)
+            result = {"bindings": bindings}
+        elif path.endswith(f"/{name}-containers/deployments"):
+            result = {"deployments": [{"id": deployment, "versions": [{"version_id": version, "percentage": 100}]}]}
+        elif path.endswith(f"/{name}-containers/subdomain"):
+            result = endpoint
+        elif path.endswith("/workers/durable_objects/namespaces"):
+            result = [{"id": namespace, "class": "ContainerLauncher", "script": f"{name}-containers"}]
+        elif path.endswith("/containers/applications"):
+            if request.method == "POST":
+                assert application is None and json.loads(request.content)["durable_objects"] == {"namespace_id": namespace}
+                application = {**json.loads(request.content), "id": "c" * 32, "account_id": installation.account_id}
+                events.append("application")
+                result = application
+            else:
+                result = [application] if application else []
+        else:
+            assert application is not None and path.endswith(f"/containers/applications/{application['id']}")
+            result = application
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    monkeypatch.setattr(enable_job, "get_db_context", transaction)
+    monkeypatch.setattr(enable_job, "_locked_current", locked_current)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    monkeypatch.setattr(cloudflare_containers_release, "_SIGNER_FILE", signer)
+    for module in (cloudflare_containers_release, cloudflare_containers_rest):
+        monkeypatch.setattr(module, "run_oci_tool", tool)
+    payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1)
+    context = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        for _ in range(2):  # A repeated Enable must read back the same resources.
+            with pytest.raises(PlatformJobRequiresAction) as held:
+                await enable_job._settle_enable(context, payload, http, workers)
+            assert held.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
+    assert events == ["copy", "prepare", "launcher", "application"]
+    journals = (await db_session.scalars(select(CloudflareOwnedResource).where(
+        CloudflareOwnedResource.installation_id == installation.id,
+    ))).all()
+    assert {row.kind for row in journals} == {"container_image", "container_application", "worker_script"}
+    assert all(row.state == "present" and row.artifact_digest == digest and row.scope == "containers" for row in journals)
+    await db_session.refresh(installation)
+    assert installation.admitted_revision is None and installation.containers_ready_revision is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", [
     "fetch", "unpublished", "signature", "wrong_digest", "missing_readiness", "ready", "readiness_lost",
 ])
@@ -1338,6 +1500,7 @@ async def test_opted_in_enable_admits_only_the_verified_revision(
     monkeypatch.setattr(enable_job, "_locked_current", locked_current)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     monkeypatch.setattr(enable_job, "load_containers_release", loader)
+    monkeypatch.setattr(enable_job, "_deploy_container_launcher", AsyncMock(return_value=True))
     paid = AsyncMock()
     monkeypatch.setattr(enable_job, "WorkersRestCleanup", lambda _: SimpleNamespace(verify_workers_paid=paid))
     monkeypatch.setattr(enable_job, "_drain_previous_revision", AsyncMock(return_value=True))

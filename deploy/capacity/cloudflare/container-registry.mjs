@@ -298,6 +298,13 @@ export class ScopeRegistry {
     }
 }
 
+// The deployment binds this namespace to the separately provisioned application.
+export class ContainerLauncher {}
+
+export default {
+    fetch() { return new Response(null, { status: 404 }); },
+};
+
 // The per-incarnation Durable Object calls this before it exposes a control
 // endpoint. The registry may be a remote DO stub. A running bit or the
 // return from start/destroy never substitutes for independent inventory.

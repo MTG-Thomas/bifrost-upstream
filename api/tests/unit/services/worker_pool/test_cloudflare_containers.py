@@ -310,6 +310,53 @@ async def test_registry_replays_only_into_an_empty_repository(
             assert copies == [("copy", release.manifest.image, result.provider_id)]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_digest", [False, True])
+async def test_registry_removes_only_the_exact_tag(tmp_path, monkeypatch, same_digest) -> None:
+    installation = uuid4()
+    name = f"bifrost-{installation.hex}-r1"
+    intent = ResourceIntent(ResourceTarget(installation, ACCOUNT, "containers", "container_image", name), uuid4(), 1, "6" * 64)
+    digest = "sha256:" + "a" * 64
+    tags = ["release"]
+    deletions = []
+
+    async def tool(_executable, *args, **_kwargs):
+        match args:
+            case ("--version",):
+                return b"1.0.0-beta.31"
+            case ("accounts", "get", "-q"):
+                return json_bytes({"id": ACCOUNT})
+            case ("containers", "images", "list", "--filter", _):
+                return json_bytes([{"name": name, "tags": tags}])
+            case ("digest", tag):
+                assert tag == f"registry.cloudflare.com/{ACCOUNT}/{name}:release"
+                return digest.encode() if same_digest else ("sha256:" + "b" * 64).encode()
+            case ("containers", "images", "delete", tag, "--force"):
+                deletions.append(tag)
+                tags.clear()
+                return b""
+            case _:
+                pytest.fail(f"Unexpected OCI tool call {args[0]}")
+
+    def provider(request):
+        assert json.loads(request.content) == {"expiration_minutes": 15, "permissions": ["pull"]}
+        return httpx.Response(200, json={"success": True, "result": {
+            "account_id": ACCOUNT, "registry_host": "registry.cloudflare.com",
+            "username": "synthetic", "password": "synthetic",
+        }})
+
+    monkeypatch.setattr(cloudflare_containers_rest, "run_oci_tool", tool)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        registry = ContainerRegistry(ContainersRest(http), crane=tmp_path / "crane", cf=tmp_path / "cf")
+        if same_digest:
+            assert await registry.delete(TOKEN, intent, digest)
+            assert not await registry.delete(TOKEN, intent, digest)
+        else:
+            with pytest.raises(OwnershipConflict, match="different digest"):
+                await registry.delete(TOKEN, intent, digest)
+    assert deletions == ([f"{name}:release"] if same_digest else [])
+
+
 def test_linux_review_digest_distinguishes_replacement_and_reacceptance() -> None:
     workflow = uuid4()
     declaration = {"path": "workflow.py", "previous_revision": None, "inactive_history_count": 0}

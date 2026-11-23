@@ -501,7 +501,102 @@ class ConfiguredWorkersScript:
     namespaces: dict[str, str]
 
 
-class WorkersRestProvisioner(WorkersRestCleanup):
+class ScriptRestProvisioner(WorkersRestCleanup):
+    async def _upload_script(
+        self, api_token: SecretStr, intent: ResourceIntent, files: dict[str, tuple[str, str | bytes, str]],
+    ) -> None:
+        path = _script_path(intent.target)
+        # Check immediately before the upload. REST has no conditional create,
+        # so the caller must retain its effect receipt if confirmation is lost.
+        if await observe_owned(self, api_token=api_token, intent=intent, recorded=None) is not None:
+            raise OwnershipConflict(
+                "Cloudflare Worker already exists at the intended target",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.TARGET_OCCUPIED,
+            )
+        try:
+            async with asyncio.timeout(30):
+                payload = await self._request(api_token, intent.target.account_id, "PUT", path, files=files)
+        except TimeoutError:
+            raise CloudflareRestUnavailable("Cloudflare upload deadline elapsed") from None
+        worker = payload["result"] if payload is not None else None
+        if not isinstance(worker, dict) or worker.get("id") != intent.target.name:
+            raise ObservationPending(
+                "Cloudflare upload returned an unconfirmed script identity",
+                OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_UPLOAD_RESULT,
+            )
+
+    async def _configure_script_endpoint(
+        self, api_token: SecretStr, expected: ResourceObservation, *, exports: set[str], public_endpoint: bool,
+    ) -> ConfiguredWorkersScript:
+        intent = expected.intent
+        path = _script_path(intent.target)
+        async def require_script() -> None:
+            if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
+                raise ObservationSettling(
+                    "Cloudflare uploaded Worker has disappeared during readback",
+                    OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_CHANGED_DURING_READBACK,
+                )
+
+        await require_script()
+        namespaces: dict[str, str] = {}
+        for row in await self._script_namespaces(api_token, intent.target):
+            if row.get("preview") is True:
+                continue
+            class_name = row.get("class")
+            if not isinstance(class_name, str):
+                raise OwnershipConflict(
+                    "Cloudflare Worker namespace has no class",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.NAMESPACE_CLASS,
+                )
+            if class_name in namespaces:
+                raise OwnershipConflict(
+                    "Cloudflare Worker has ambiguous namespace bindings",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.NAMESPACE_BINDINGS,
+                )
+            namespaces[class_name] = row["id"]
+        if namespaces.keys() - exports:
+            raise ObservationPending(
+                "Cloudflare namespace inventory includes unexpected exports",
+                OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_EXPORTS_UNEXPECTED,
+            )
+        if exports - namespaces.keys():
+            raise ObservationSettling(
+                "Cloudflare has not listed all packaged namespace exports",
+                OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_EXPORTS_PENDING,
+            )
+        settings = {"enabled": public_endpoint, "previews_enabled": False}
+        response = await self._request(api_token, intent.target.account_id, "GET", f"{path}/subdomain", allow_missing=True)
+        readback = response["result"] if response is not None else None
+        if not isinstance(readback, dict) or any(readback.get(key) is not value for key, value in settings.items()):
+            await require_script()
+            # The update returns both authoritative settings. A separate GET
+            # can still reflect the previous endpoint while it propagates.
+            response = await self._request(
+                api_token, intent.target.account_id, "POST", f"{path}/subdomain", json_body=settings,
+            )
+            confirmed = response["result"] if response is not None else None
+            if not isinstance(confirmed, dict) or any(confirmed.get(key) is not value for key, value in settings.items()):
+                raise ObservationPending(
+                    "Cloudflare Worker endpoint update did not confirm the requested settings",
+                    OwnershipResource.WORKERS_ENDPOINT, ObservationCheck.ENDPOINT_UPDATE,
+                )
+        await require_script()
+        if not public_endpoint:
+            return ConfiguredWorkersScript(None, namespaces)
+        response = await self._request(
+            api_token, intent.target.account_id, "GET", "workers/subdomain",
+        )
+        account = response["result"] if response is not None else None
+        subdomain = account.get("subdomain") if isinstance(account, dict) else None
+        if not isinstance(subdomain, str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", subdomain):
+            raise ObservationPending(
+                "Cloudflare account's Workers subdomain could not be verified",
+                OwnershipResource.WORKERS_ENDPOINT, ObservationCheck.ACCOUNT_SUBDOMAIN,
+            )
+        return ConfiguredWorkersScript(f"https://{intent.target.name}.{subdomain}.workers.dev", namespaces)
+
+
+class WorkersRestProvisioner(ScriptRestProvisioner):
     def __init__(self, http: httpx.AsyncClient, deployment: WorkersDeployment) -> None:
         super().__init__(http)
         self._deployment = deployment
@@ -603,97 +698,16 @@ class WorkersRestProvisioner(WorkersRestCleanup):
     async def create(
         self, *, api_token: SecretStr, intent: ResourceIntent, scope_bearer: SecretStr | None,
     ) -> None:
-        path = _script_path(intent.target)
         role = self._worker_role(intent)
         files = self._render_upload(role, intent, scope_bearer)
-        # Check immediately before the upload. REST has no conditional create,
-        # so the caller must retain its effect receipt if confirmation is lost.
-        if await observe_owned(self, api_token=api_token, intent=intent, recorded=None) is not None:
-            raise OwnershipConflict(
-                "Cloudflare Worker already exists at the intended target",
-                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.TARGET_OCCUPIED,
-            )
-        try:
-            async with asyncio.timeout(30):
-                payload = await self._request(api_token, intent.target.account_id, "PUT", path, files=files)
-        except TimeoutError:
-            raise CloudflareRestUnavailable("Cloudflare upload deadline elapsed") from None
-        worker = payload["result"] if payload is not None else None
-        if not isinstance(worker, dict) or worker.get("id") != intent.target.name:
-            raise ObservationPending(
-                "Cloudflare upload returned an unconfirmed script identity",
-                OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_UPLOAD_RESULT,
-            )
+        await self._upload_script(api_token, intent, files)
 
     async def configure_endpoint(
         self, *, api_token: SecretStr, expected: ResourceObservation,
     ) -> ConfiguredWorkersScript:
         """Verify the exported classes and finish an uploaded deployment."""
-        intent = expected.intent
-        role = self._worker_role(intent)
-        path = _script_path(intent.target)
-        async def require_script() -> None:
-            if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
-                raise ObservationSettling(
-                    "Cloudflare uploaded Worker has disappeared during readback",
-                    OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_CHANGED_DURING_READBACK,
-                )
-
-        await require_script()
-        namespaces: dict[str, str] = {}
-        for row in await self._script_namespaces(api_token, intent.target):
-            if row.get("preview") is True:
-                continue
-            class_name = row.get("class")
-            if not isinstance(class_name, str):
-                raise OwnershipConflict(
-                    "Cloudflare Worker namespace has no class",
-                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.NAMESPACE_CLASS,
-                )
-            if class_name in namespaces:
-                raise OwnershipConflict(
-                    "Cloudflare Worker has ambiguous namespace bindings",
-                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.NAMESPACE_BINDINGS,
-                )
-            namespaces[class_name] = row["id"]
-        exports = self._deployment.release.manifest.workers[role].exports.keys()
-        if namespaces.keys() - exports:
-            raise ObservationPending(
-                "Cloudflare namespace inventory includes unexpected exports",
-                OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_EXPORTS_UNEXPECTED,
-            )
-        if exports - namespaces.keys():
-            raise ObservationSettling(
-                "Cloudflare has not listed all packaged namespace exports",
-                OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_EXPORTS_PENDING,
-            )
-        settings = {"enabled": role == "capacity", "previews_enabled": False}
-        response = await self._request(api_token, intent.target.account_id, "GET", f"{path}/subdomain", allow_missing=True)
-        readback = response["result"] if response is not None else None
-        if not isinstance(readback, dict) or any(readback.get(key) is not value for key, value in settings.items()):
-            await require_script()
-            # The update returns both authoritative settings. A separate GET
-            # can still reflect the previous endpoint while it propagates.
-            response = await self._request(
-                api_token, intent.target.account_id, "POST", f"{path}/subdomain", json_body=settings,
-            )
-            confirmed = response["result"] if response is not None else None
-            if not isinstance(confirmed, dict) or any(confirmed.get(key) is not value for key, value in settings.items()):
-                raise ObservationPending(
-                    "Cloudflare Worker endpoint update did not confirm the requested settings",
-                    OwnershipResource.WORKERS_ENDPOINT, ObservationCheck.ENDPOINT_UPDATE,
-                )
-        await require_script()
-        if role != "capacity":
-            return ConfiguredWorkersScript(None, namespaces)
-        response = await self._request(
-            api_token, intent.target.account_id, "GET", "workers/subdomain",
+        role = self._worker_role(expected.intent)
+        return await self._configure_script_endpoint(
+            api_token, expected, exports=set(self._deployment.release.manifest.workers[role].exports),
+            public_endpoint=role == "capacity",
         )
-        account = response["result"] if response is not None else None
-        subdomain = account.get("subdomain") if isinstance(account, dict) else None
-        if not isinstance(subdomain, str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", subdomain):
-            raise ObservationPending(
-                "Cloudflare account's Workers subdomain could not be verified",
-                OwnershipResource.WORKERS_ENDPOINT, ObservationCheck.ACCOUNT_SUBDOMAIN,
-            )
-        return ConfiguredWorkersScript(f"https://{intent.target.name}.{subdomain}.workers.dev", namespaces)

@@ -45,7 +45,8 @@ from src.services.work_dispatch import (
     wake_pool_workers_after_commit,
 )
 from src.services.worker_pool import cloudflare_tunnel
-from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+from src.services.worker_pool.cloudflare_containers_release import ContainersReleaseUnavailable
+from src.services.worker_pool.cloudflare_containers_rest import ContainerRegistry, ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     consume_staged_token,
@@ -200,7 +201,7 @@ async def _cleanup_one(
     # retiring launcher and runtime dependencies. Workers scripts implicitly
     # own their namespaces. The adapter checks for those before recording absence.
     containers = (CloudflareOwnedResource.scope == "containers") & (
-        CloudflareOwnedResource.kind.in_(("container_application", "worker_script"))
+        CloudflareOwnedResource.kind.in_(("container_application", "worker_script", "container_image"))
     )
     query = select(CloudflareOwnedResource).where(
         CloudflareOwnedResource.installation_id == row.id,
@@ -220,6 +221,7 @@ async def _cleanup_one(
             (CloudflareOwnedResource.kind == "container_application", 0),
             (CloudflareOwnedResource.target_name.endswith("-capacity"), 1),
             (CloudflareOwnedResource.target_name.endswith("-launcher"), 2),
+            (CloudflareOwnedResource.kind == "container_image", 4),
             else_=3,
         ),
         CloudflareOwnedResource.target_name,
@@ -233,6 +235,11 @@ async def _cleanup_one(
             raise ObservationPending("Container cleanup requires the Container inventory adapter",
                                      OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
         return await _cleanup_container_application(container_adapter, token, resource, intent)
+    if resource.kind == "container_image":
+        if container_adapter is None:
+            raise ObservationPending("Container cleanup requires the registry adapter",
+                                     OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_INVENTORY)
+        return await _cleanup_container_image(ContainerRegistry(container_adapter), token, resource, intent)
     if resource.state == "creating":
         recorded = (
             ResourceObservation(intent, resource.provider_id, resource.provider_version)
@@ -320,6 +327,31 @@ async def _cleanup_container_application(
             resource.state = "deleting"
             return "progressed"
         await adapter.delete_application(token, observed)
+    resource.state = "absent"
+    resource.observed_at = now
+    return "progressed"
+
+
+async def _cleanup_container_image(
+    registry: ContainerRegistry, token: SecretStr, resource: CloudflareOwnedResource, intent: ResourceIntent,
+) -> Literal["progressed", "settling"]:
+    now = datetime.now(UTC)
+    if _container_create_may_exist(resource):
+        digest = resource.provider_details.get("image_digest")
+        if not isinstance(digest, str) or resource.provider_version not in (None, digest):
+            raise OwnershipConflict("Container image journal lacks its exact digest",
+                                    OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.RECEIPT_MISSING)
+        try:
+            if await registry.delete(token, intent, digest):
+                resource.provider_details = {
+                    key: value for key, value in resource.provider_details.items() if key != "creation_empty_observed"
+                }
+                return "settling"
+        except ContainersReleaseUnavailable:
+            raise ObservationPending("The Container registry cleanup could not be confirmed",
+                                     OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_INVENTORY) from None
+        if not _container_create_absence_settled(resource, now):
+            return "settling"
     resource.state = "absent"
     resource.observed_at = now
     return "progressed"

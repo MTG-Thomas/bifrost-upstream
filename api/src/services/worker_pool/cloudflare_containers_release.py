@@ -81,7 +81,10 @@ async def run_oci_tool(
     executable: Path, *args: str, cwd: Path, env: dict[str, str] | None = None, timeout: int = 30,
 ) -> bytes:
     """Execute a pinned tool under a private home with a bounded lifetime."""
-    environment = {"HOME": str(cwd), "PATH": os.defpath, "DOCKER_CONFIG": str(cwd), "NO_COLOR": "1"}
+    environment = {
+        "HOME": str(cwd), "PATH": f"/usr/local/bin{os.pathsep}{os.defpath}",
+        "DOCKER_CONFIG": str(cwd), "NO_COLOR": "1",
+    }
     if env:
         environment.update(env)
     try:
@@ -108,6 +111,7 @@ async def run_oci_tool(
 class VerifiedContainerRelease:
     manifest: ContainersManifest
     digest: str
+    launcher_module: bytes
 
     def verify_image(self, manifest_bytes: bytes, config_bytes: bytes) -> None:
         """Require the exact child manifest and the config referenced by it."""
@@ -152,9 +156,9 @@ async def verify_containers_release(
         manifest = ContainersManifest.model_validate_json(content)
         if manifest.source_revision != workers.manifest.source_revision or manifest.workers_release_digest != workers.digest:
             raise ValueError
-        for name, digest in manifest.provider_modules.items():
-            if sha256((path / name).read_bytes()).hexdigest() != digest:
-                raise ValueError
+        launcher_module = (path / "container-registry.mjs").read_bytes()
+        if sha256(launcher_module).hexdigest() != manifest.provider_modules["container-registry.mjs"]:
+            raise ValueError
         (workspace / "manifest.json").write_bytes(content)
         (workspace / "manifest.sigstore.json").write_bytes(bundle)
         # Populate a private, trust-checked TUF cache first. A failed fetch
@@ -170,7 +174,7 @@ async def verify_containers_release(
         )
     except (OSError, ValueError, ValidationError):
         raise ContainersReleaseUnavailable("Container release descriptor or source pin is invalid") from None
-    return VerifiedContainerRelease(manifest, sha256(content).hexdigest())
+    return VerifiedContainerRelease(manifest, sha256(content).hexdigest(), launcher_module)
 
 
 async def _download_release_asset(

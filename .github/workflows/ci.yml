@@ -932,12 +932,14 @@ jobs:
         with:
           cosign-release: v2.4.1
 
-      - name: Package the Linux release verifier
+      - name: Package the Linux release verifier and OCI tool
         if: steps.workers-release.outputs.required == '1' && vars.CONTAINERS_RELEASE_RATES != ''
         run: |
           set -euo pipefail
           [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/ci.yml@$GITHUB_REF" ]]
           install -Dm0755 "$(command -v cosign)" deploy/capacity/cloudflare/image-artifacts/bin/cosign
+          GOBIN="$PWD/deploy/capacity/cloudflare/image-artifacts/bin" GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go install github.com/google/go-containerregistry/cmd/crane@v0.20.6
           printf '%s\n' "https://github.com/$GITHUB_WORKFLOW_REF" > deploy/capacity/cloudflare/image-artifacts/linux-release-signer
           chmod 0444 deploy/capacity/cloudflare/image-artifacts/linux-release-signer
 

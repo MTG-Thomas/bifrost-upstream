@@ -61,7 +61,7 @@ from src.services.worker_pool.cloudflare_containers_release import (
     VerifiedContainerRelease,
     load_containers_release,
 )
-from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+from src.services.worker_pool.cloudflare_containers_rest import ContainerLauncherRest, ContainerRegistry, ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     open_credential,
@@ -222,13 +222,12 @@ async def _settle_enable(
             CloudflareInstallation.id == row.id,
         ))
         containers_enabled = row.containers_policy.get("enabled") is True
-        if joint_ready is not True:
+        if joint_ready is not True and row.admitted_revision is not None:
             launcher = await _container_launcher_namespace(db, row) if containers_enabled else None
-            if row.admitted_revision is not None:
-                row.admitted_revision = None
-                wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
-                # Commit the closure before returning the operator action.
-                await db.commit()
+            row.admitted_revision = None
+            wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+            # Commit the closure before returning the operator action.
+            await db.commit()
             if launcher is None:
                 raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
                     "code": "CF_CONTAINERS_UNVERIFIED",
@@ -324,6 +323,9 @@ async def _settle_enable(
         return {"outcome": "superseded"}
 
     if container_release is not None:
+        await context.report("Deploying Cloudflare Container Launcher")
+        if not await _deploy_container_launcher(context, payload, http, container_adapter, container_release):
+            return {"outcome": "superseded"}
         await context.report("Provisioning Cloudflare Container Application")
         if not await _provision_container_application(context, payload, container_adapter, container_release):
             return {"outcome": "superseded"}
@@ -525,6 +527,109 @@ async def _container_launcher_namespace(
     return namespace, ResourceObservation(_resource_intent(launcher), launcher.provider_id, launcher.provider_version)
 
 
+async def _container_resource(
+    db: AsyncSession, row: CloudflareInstallation, release: VerifiedContainerRelease,
+    *, kind: str, name: str,
+) -> CloudflareOwnedResource:
+    resource = await db.scalar(select(CloudflareOwnedResource).where(
+        CloudflareOwnedResource.installation_id == row.id,
+        CloudflareOwnedResource.account_id == row.account_id,
+        CloudflareOwnedResource.scope == "containers",
+        CloudflareOwnedResource.kind == kind,
+        CloudflareOwnedResource.target_name == name,
+    ).with_for_update())
+    if resource is None:
+        resource = CloudflareOwnedResource(
+            id=uuid4(), installation_id=row.id, account_id=row.account_id, scope="containers", kind=kind,
+            target_name=name, desired_revision=row.desired_revision, artifact_digest=release.digest,
+            effect_id=uuid4(), state="creating", provider_details={},
+        )
+        db.add(resource)
+    elif (
+        resource.state not in ("creating", "present") or resource.desired_revision != row.desired_revision
+        or resource.artifact_digest != release.digest
+    ):
+        raise OwnershipConflict("Container resource differs from its release intent",
+                                OwnershipResource(kind), OwnershipCheck.RELEASE_INTENT)
+    return resource
+
+
+async def _deploy_container_launcher(
+    context: PlatformJobContext, payload: CloudflareEnablePayload, http: httpx.AsyncClient,
+    adapter: ContainersRest, release: VerifiedContainerRelease,
+) -> bool:
+    registry = ContainerRegistry(adapter)
+    name = f"bifrost-{payload.installation_id.hex}-r{payload.revision}"
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return False
+        image = await _container_resource(db, row, release, kind="container_image", name=name)
+        intent = _resource_intent(image)
+        previously_sent = image.provider_details.get("creation_sent") is True
+        if not previously_sent:
+            await registry.require_empty(await _management_token(db, row), intent)
+            image.provider_details = {"creation_sent": True, "image_digest": release.manifest.image_digest}
+        image_id = image.id
+
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return False
+        image = await db.get(CloudflareOwnedResource, image_id, with_for_update=True)
+        if (
+            image is None or _resource_intent(image) != intent or image.state not in ("creating", "present")
+            or image.provider_details.get("image_digest") != release.manifest.image_digest
+        ):
+            raise OwnershipConflict("Container image creation fence changed",
+                                    OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.JOURNAL_STATE)
+        token = await _management_token(db, row)
+        if image.state == "creating":
+            prepared = await registry.copy(token, intent, release, previously_sent=previously_sent)
+            image.provider_id = prepared.provider_id
+            image.provider_version = prepared.provider_version
+            image.state = "present"
+            image.observed_at = datetime.now(UTC)
+        else:
+            assert image.provider_id is not None and image.provider_version is not None
+            prepared = ResourceObservation(intent, image.provider_id, image.provider_version)
+        launcher = await _container_resource(db, row, release, kind="worker_script", name=f"{name}-containers")
+        launcher_id = launcher.id
+
+    provisioner = ContainerLauncherRest(http, release, prepared)
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return False
+        launcher = await db.get(CloudflareOwnedResource, launcher_id, with_for_update=True)
+        if launcher is None:
+            raise OwnershipConflict("Container launcher intent disappeared",
+                                    OwnershipResource.WORKER_SCRIPT, OwnershipCheck.JOURNAL_INTENT)
+        if launcher.state == "creating" and launcher.provider_details.get("upload_acknowledged") is not True:
+            await request_creation(
+                provisioner, api_token=await _management_token(db, row), scope_bearer=None,
+                committed_intent=_resource_intent(launcher),
+            )
+            launcher.provider_details = {"upload_acknowledged": True}
+
+    pending_readback = None
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return False
+        launcher = await db.get(CloudflareOwnedResource, launcher_id, with_for_update=True)
+        if launcher is None:
+            raise OwnershipConflict("Container launcher intent disappeared",
+                                    OwnershipResource.WORKER_SCRIPT, OwnershipCheck.JOURNAL_INTENT)
+        try:
+            await _install_script(provisioner, launcher, token=await _management_token(db, row))
+        except ObservationSettling as exc:
+            pending_readback = exc
+    if pending_readback is not None:
+        raise pending_readback
+    return True
+
+
 async def _provision_container_application(
     context: PlatformJobContext, payload: CloudflareEnablePayload,
     adapter: ContainersRest, release: VerifiedContainerRelease,
@@ -721,6 +826,10 @@ async def _enable(
             return await _settle_enable(context, payload, http, release, repair_tunnel_ingress=repair_tunnel_ingress)
     except WorkersReleaseUnavailable:
         raise PlatformJobRequiresAction("Install a Qualified Workers Release", {"code": "CF_RELEASE_UNAVAILABLE"}) from None
+    except ContainersReleaseUnavailable:
+        raise PlatformJobRequiresAction("Install the Matched Cloudflare Linux Release", {
+            "code": "CF_CONTAINERS_RELEASE_UNAVAILABLE",
+        }) from None
     except WorkersPaidUnverified as exc:
         raise PlatformJobRequiresAction(str(exc), {"code": "CF_WORKERS_PAID_UNVERIFIED"}) from None
     except ValueError as exc:

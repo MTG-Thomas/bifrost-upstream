@@ -34,8 +34,12 @@ from src.services.worker_pool.cloudflare_provisioning import (
     observe_owned,
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
+    OWNER_BINDING,
     CloudflareRestObservation,
+    ConfiguredWorkersScript,
+    ScriptRestProvisioner,
     WorkersRestCleanup,
+    worker_owner_value,
 )
 
 REGISTRY = "registry.cloudflare.com"
@@ -345,10 +349,75 @@ class ContainersRest(WorkersRestCleanup):
         return next((row for row in rows if row["id"] == instance_id), None)
 
 
+class ContainerLauncherRest(ScriptRestProvisioner):
+    """Provision the launcher for one verified release and prepared digest."""
+
+    def __init__(
+        self, http: httpx.AsyncClient, release: VerifiedContainerRelease, image: ResourceObservation,
+    ) -> None:
+        super().__init__(http)
+        self.release = release
+        self.image = image
+
+    def _require_target(self, intent: ResourceIntent) -> str:
+        name = _name(self.image.intent, "container_image")
+        target = intent.target
+        image_target = self.image.intent.target
+        if (
+            target.scope != "containers" or target.kind != "worker_script" or target.name != f"{name}-containers"
+            or target.account_id != image_target.account_id or target.installation_id != image_target.installation_id
+            or intent.desired_revision != self.image.intent.desired_revision
+            or intent.artifact_digest != self.release.digest or intent.artifact_digest != self.image.intent.artifact_digest
+            or self.image.provider_id != f"{REGISTRY}/{target.account_id}/{name}:release"
+            or self.image.provider_version != self.release.manifest.image_digest
+        ):
+            raise OwnershipConflict("Container launcher differs from its prepared release",
+                                    OwnershipResource.WORKER_SCRIPT, OwnershipCheck.RELEASE_INTENT)
+        return f"{self.image.provider_id.removesuffix(':release')}@{self.image.provider_version}"
+
+    async def create(
+        self, *, api_token: SecretStr, intent: ResourceIntent, scope_bearer: SecretStr | None,
+    ) -> None:
+        image = self._require_target(intent)
+        if scope_bearer is not None:
+            raise OwnershipConflict("Container launcher upload does not take a bearer",
+                                    OwnershipResource.WORKER_SCRIPT, OwnershipCheck.SCOPE_BEARER)
+        module = "container-registry.mjs"
+        metadata = {
+            "main_module": module,
+            "compatibility_date": "2026-10-30",
+            "exports": {"ContainerLauncher": {"type": "durable-object", "storage": "sqlite", "container": "linux"}},
+            # See the Worker upload schema and the digest-pinned images map
+            # in Cloudflare's Containers image management guide.
+            # https://developers.cloudflare.com/containers/guides/image-management/
+            "containers": [{"name": "linux", "class_name": "ContainerLauncher", "images": {"bifrost-linux": image}}],
+            "bindings": [{"name": OWNER_BINDING, "type": "plain_text", "text": worker_owner_value(intent)}],
+            "keep_bindings": [],
+            "observability": {"enabled": False},
+            "logpush": False,
+        }
+        await self._upload_script(api_token, intent, {
+            "metadata": ("metadata.json", json.dumps(metadata), "application/json"),
+            module: (module, self.release.launcher_module, "application/javascript+module"),
+        })
+
+    async def configure_endpoint(
+        self, *, api_token: SecretStr, expected: ResourceObservation,
+    ) -> ConfiguredWorkersScript:
+        self._require_target(expected.intent)
+        return await self._configure_script_endpoint(
+            api_token, expected, exports={"ContainerLauncher"}, public_endpoint=False,
+        )
+
+
 class ContainerRegistry:
     """Use the qualified crane and cf paths with isolated credential files."""
 
-    def __init__(self, rest: ContainersRest, *, crane: Path, cf: Path) -> None:
+    def __init__(
+        self, rest: ContainersRest, *,
+        crane: Path = Path("/app/artifacts/cloudflare/bin/crane"),
+        cf: Path = Path("/app/artifacts/cloudflare/node_modules/cf/bin/cf"),
+    ) -> None:
         self.rest = rest
         self.crane = crane
         self.cf = cf
@@ -378,6 +447,33 @@ class ContainerRegistry:
             raise ObservationPending("Registry tag inventory is unconfirmed")
         return frozenset(rows[0]["tags"]) if rows else frozenset()
 
+    async def require_empty(self, token: SecretStr, intent: ResourceIntent) -> None:
+        name = _name(intent, "container_image")
+        with TemporaryDirectory(prefix="bifrost-oci-") as temp:
+            tags = await self._tags(token, intent.target.account_id, name, Path(temp))
+        if tags:
+            raise OwnershipConflict("Container registry repository is occupied",
+                                    OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED)
+
+    async def _authenticate(
+        self, token: SecretStr, account: str, cwd: Path, *, push: bool,
+    ) -> None:
+        credentials = await self.rest._request(
+            token, account, "POST", f"containers/registries/{REGISTRY}/credentials",
+            json_body={"expiration_minutes": 15, "permissions": ["pull", "push"] if push else ["pull"]},
+        )
+        assert credentials is not None
+        row = credentials["result"]
+        if (
+            not isinstance(row, dict) or row.get("account_id") != account or row.get("registry_host") != REGISTRY
+            or any(not isinstance(row.get(key), str) or not row[key] for key in ("username", "password"))
+        ):
+            raise OwnershipConflict("Registry credentials have a different account or host",
+                                    OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.RECEIPT_MISMATCH)
+        encoded = base64.b64encode(f"{row['username']}:{row['password']}".encode()).decode()
+        with os.fdopen(os.open(cwd / "config.json", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as config:
+            json.dump({"auths": {REGISTRY: {"auth": encoded}}}, config)
+
     async def copy(
         self, token: SecretStr, intent: ResourceIntent, release: VerifiedContainerRelease, *, previously_sent: bool,
     ) -> ResourceObservation:
@@ -395,21 +491,9 @@ class ContainerRegistry:
             tags = await self._tags(token, account, name, cwd)
             visible = "release" in tags
             if tags and (not previously_sent or tags != {"release"}):
-                raise OwnershipConflict("Container registry repository is occupied")
-            credentials = await self.rest._request(
-                token, account, "POST", f"containers/registries/{REGISTRY}/credentials",
-                json_body={"expiration_minutes": 15, "permissions": ["pull"] if visible else ["pull", "push"]},
-            )
-            assert credentials is not None
-            row = credentials["result"]
-            if (
-                not isinstance(row, dict) or row.get("account_id") != account or row.get("registry_host") != REGISTRY
-                or any(not isinstance(row.get(key), str) or not row[key] for key in ("username", "password"))
-            ):
-                raise OwnershipConflict("Registry credentials have a different account or host")
-            encoded = base64.b64encode(f"{row['username']}:{row['password']}".encode()).decode()
-            with os.fdopen(os.open(cwd / "config.json", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as config:
-                json.dump({"auths": {REGISTRY: {"auth": encoded}}}, config)
+                raise OwnershipConflict("Container registry repository is occupied",
+                                        OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED)
+            await self._authenticate(token, account, cwd, push=not visible)
             if not visible:
                 await run_oci_tool(self.crane, "copy", release.manifest.image, destination, cwd=cwd, timeout=90)
             await self._verify_image(destination, release, cwd)
@@ -448,6 +532,33 @@ class ContainerRegistry:
                 OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
             )
         return ResourceObservation(intent, destination, digest)
+
+    async def delete(self, token: SecretStr, intent: ResourceIntent, digest: str) -> bool:
+        """Return False for an empty read; never delete an unowned tag."""
+        name = _name(intent, "container_image")
+        account = intent.target.account_id
+        if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+            raise OwnershipConflict("Container image journal lacks a digest",
+                                    OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.RECEIPT_MISSING)
+        with TemporaryDirectory(prefix="bifrost-oci-") as temp:
+            cwd = Path(temp)
+            tags = await self._tags(token, account, name, cwd)
+            if not tags:
+                return False
+            if tags != {"release"}:
+                raise OwnershipConflict("Container registry repository is occupied",
+                                        OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED)
+            await self._authenticate(token, account, cwd, push=False)
+            tag = f"{REGISTRY}/{account}/{name}:release"
+            observed_digest = await run_oci_tool(self.crane, "digest", tag, cwd=cwd)
+            if observed_digest.strip() != digest.encode():
+                raise OwnershipConflict("Container registry tag has a different digest",
+                                        OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.RECEIPT_MISMATCH)
+            await run_oci_tool(
+                self.cf, "containers", "images", "delete", f"{name}:release", "--force", cwd=cwd,
+                env={"CLOUDFLARE_ACCOUNT_ID": account, "CLOUDFLARE_API_TOKEN": token.get_secret_value()},
+            )
+            return True
 
     async def _verify_image(self, image: str, release: VerifiedContainerRelease, cwd: Path) -> None:
         manifest = await run_oci_tool(self.crane, "manifest", image, cwd=cwd)

@@ -434,6 +434,15 @@ startup code and health checks unchanged. Compare hypervisor backup activity
 and host I/O pressure when diagnosing a startup deadline on an otherwise
 idle test host.
 
+Opted-in Enable and Upgrade prepare the signed Linux image under the
+revision's owned registry tag, upload the verified launcher module, and
+read back the exact application and namespace before checking readiness.
+The Worker upload maps `bifrost-linux` to the prepared, digest-pinned
+Cloudflare registry reference. Application inventory confirms provisioning
+only. Joint admission still requires a signed runtime canary. Disconnect
+removes the application and launcher before removing the digest-checked tag.
+[Cloudflare image management](https://developers.cloudflare.com/containers/guides/image-management/)
+
 Hosted qualification needs explicit approval of the disposable account lane,
 installation, grants, time window and spend bounds, with an independent
 readback operator. Use the exact signed release, a held primary, synthetic
