@@ -1935,6 +1935,10 @@ class RemoteControlHost:
 
             generation = session.lease.session_generation
             worker_id = session.lease.worker_id
+            if session.bridge.containers:
+                await session.bridge.reconciliation_ready.wait()
+                if session.lease.session_generation != generation:
+                    return
             proof = await cloudflare_sdk_canary_proof(worker_id, generation)
             if proof is None:
                 await record_canary_failure(worker_id, generation, CanaryFailure("proof", "unavailable"))
@@ -2045,6 +2049,7 @@ class RemoteControlHost:
                     if pin is None:
                         raise AuthenticationError("Managed Container lacks its live incarnation and release binding")
                     control_key = await load_managed_control_key(db, pin, signed.resource_uid)
+                    capacity_canary = pin.canary_job_id is not None
                 containers = True
             else:
                 control_key = settings.secret_key

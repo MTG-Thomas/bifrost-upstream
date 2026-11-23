@@ -646,7 +646,11 @@ export async function forwardContainerHttp(registry, uid, instance, request, ori
         return covered === bytes || charge("outbound", bytes - covered);
     };
     const received = (bytes) => charge("ingress", bytes);
-    const headers = outboundHeaders(request.headers, ["accept", "authorization", "content-type"]);
+    const canaryPrefix = "/api/sdk/capacity-canary/";
+    const canary = url.pathname.startsWith(canaryPrefix) && UUID.test(url.pathname.slice(canaryPrefix.length));
+    const headers = outboundHeaders(request.headers, [
+        "accept", "authorization", "content-type", ...(canary ? ["x-bifrost-canary-generation"] : []),
+    ]);
     if (remaining <= 0) return local(429);
     const signal = AbortSignal.timeout(remaining);
     try {
@@ -662,7 +666,9 @@ export async function forwardContainerHttp(registry, uid, instance, request, ori
             await response.body?.cancel();
             return local(403);
         }
-        const reply = outboundHeaders(response.headers, ["content-type", "content-disposition", "retry-after"]);
+        const reply = outboundHeaders(response.headers, [
+            "content-type", "content-disposition", "retry-after", ...(canary ? ["x-bifrost-worker-ingress"] : []),
+        ]);
         return new Response(meterBody(response.body, received, signal), { status: response.status, headers: reply });
     } catch {
         return local(502);

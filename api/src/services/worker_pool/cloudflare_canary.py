@@ -46,6 +46,7 @@ from src.services.worker_pool.external_client import (
 )
 from src.worker.remote.protocol import (
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    LINUX_RUNTIME_PROFILE,
     WORKERS_DEADLINE_DRAIN_SECONDS,
     cloudflare_slots,
 )
@@ -91,7 +92,7 @@ async def cloudflare_sdk_canary_proof(
             CloudflareInstallation.desired_state == "enabled",
             CloudflareInstallation.desired_revision == pin.deployment_revision,
             ExecutionWorker.state == "ready",
-            ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            ExecutionWorker.runtime_profile.in_((CLOUDFLARE_PYTHON_RUNTIME_PROFILE, LINUX_RUNTIME_PROFILE)),
             ExecutionWorker.remote_session_generation == generation,
             ExecutionWorker.remote_hello_sequence > 0,
             ExecutionWorker.remote_owner_lease_expires_at > func.now(),

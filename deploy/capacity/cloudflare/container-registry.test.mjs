@@ -584,6 +584,31 @@ test("HTTP interception forwards only the exact ingress and shares the bidirecti
     assert.equal(scope.chargeRelay(slot.uid, instance, "ingress", 1, Date.now()), false);
 });
 
+test("ingress canary headers are preserved only for the exact worker canary route", async (t) => {
+    const { db, registry, pin } = fixture(1, 4096);
+    t.after(() => db.close());
+    const reservedAt = Date.now();
+    const slot = { ...pin(), reservedAt, startDeadline: reservedAt + 1000, deadline: reservedAt + 123_000 };
+    const instance = "b".repeat(64);
+    const origin = "https://ingress.example.test";
+    const scope = registry();
+    reserve(scope, slot);
+    scope.authorizeStart(slot.uid, instance, reservedAt, slot.deadline);
+    for (const [path, generation] of [
+        ["/api/sdk/capacity-canary/" + slot.worker, "3"],
+        ["/api/organizations", null],
+    ]) {
+        const response = await forwardContainerHttp(scope, slot.uid, instance, new Request(origin + path, {
+            headers: { host: "ingress.example.test", "x-bifrost-canary-generation": "3" },
+        }), origin, policy, async (_url, options) => {
+            assert.equal(options.headers.get("x-bifrost-canary-generation"), generation);
+            return new Response(null, { status: 204, headers: { "x-bifrost-worker-ingress": "v1; allowed" } });
+        });
+        assert.equal(response.status, 204);
+        assert.equal(response.headers.get("x-bifrost-worker-ingress"), generation ? "v1; allowed" : null);
+    }
+});
+
 test("HTTP interception refuses redirects and stops streaming an oversized response", async (t) => {
     const { db, registry, pin } = fixture(1, 4096);
     t.after(() => db.close());

@@ -1410,6 +1410,8 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     ))).all()
     assert {row.kind for row in journals} == {"container_image", "container_application", "worker_script"}
     assert all(row.state == "present" and row.artifact_digest == digest and row.scope == "containers" for row in journals)
+    scope = await db_session.get(CloudflareCapacityScope, (installation.id, "containers", 1))
+    assert scope is not None and scope.endpoint == f"https://{name}-containers.local-fixture.workers.dev"
     await db_session.refresh(installation)
     assert installation.admitted_revision is None and installation.containers_ready_revision is None
 

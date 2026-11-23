@@ -657,6 +657,17 @@ async def _deploy_container_launcher(
                 raise OwnershipConflict("Container launcher endpoint differs from its receipt",
                                         OwnershipResource.WORKERS_ENDPOINT, OwnershipCheck.RECEIPT_MISMATCH)
             launcher.provider_details = {**launcher.provider_details, "endpoint": result.endpoint}
+            # Qualification owns this route before joint readiness opens
+            # the revision to the scheduler.
+            scope = await db.get(CloudflareCapacityScope, (row.id, "containers", payload.revision))
+            if scope is None:
+                db.add(CloudflareCapacityScope(
+                    installation_id=row.id, scope="containers", deployment_revision=payload.revision,
+                    bearer_version=ref.version, endpoint=result.endpoint, gateway_required=True,
+                ))
+            elif scope.endpoint != result.endpoint or scope.bearer_version != ref.version:
+                raise OwnershipConflict("Container scope differs from its launcher receipt",
+                                        OwnershipResource.WORKERS_SCOPE, OwnershipCheck.RECEIPT_MISMATCH)
         except ObservationSettling as exc:
             pending_readback = exc
     if pending_readback is not None:
