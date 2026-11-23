@@ -1212,6 +1212,10 @@ jobs:
               gh api --method POST "$endpoint" --input - --jq '.id')
           else
             [[ "$id" =~ ^[0-9]+$ ]]
+            if [[ "$(gh api "$endpoint/$id" --jq '.draft')" != true ]]; then
+              echo "Refusing to change an already-published release" >&2
+              exit 1
+            fi
             gh api --method PATCH "$endpoint/$id" --input - <<< "$body" >/dev/null
           fi
           [[ "$id" =~ ^[0-9]+$ ]]
