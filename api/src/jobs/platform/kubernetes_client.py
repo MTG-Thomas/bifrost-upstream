@@ -255,20 +255,14 @@ class KubernetesJobClient:
 
     async def allows(self, verb: str, resource: str, group: str = "", *, name: str | None = None) -> bool:
         """Whether this service account may act on the resource in its namespace."""
+        attributes = {"namespace": self.namespace, "verb": verb, "group": group, "resource": resource}
+        if name is not None:
+            attributes["name"] = name
         review = {
             "apiVersion": "authorization.k8s.io/v1",
             "kind": "SelfSubjectAccessReview",
-            "spec": {
-                "resourceAttributes": {
-                    "namespace": self.namespace,
-                    "verb": verb,
-                    "group": group,
-                    "resource": resource,
-                }
-            },
+            "spec": {"resourceAttributes": attributes},
         }
-        if name is not None:
-            review["spec"]["resourceAttributes"]["name"] = name
         response = await self._request(
             "POST",
             "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",

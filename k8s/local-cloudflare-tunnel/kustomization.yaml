@@ -17,3 +17,10 @@ patches:
       - op: add
         path: /data/BIFROST_CLOUDFLARE_TUNNEL_CHANNEL
         value: kustomize
+  - target:
+      kind: RoleBinding
+      name: bifrost-cloudflare-connector
+    patch: |-
+      - op: replace
+        path: /subjects/0/namespace
+        value: bifrost-local

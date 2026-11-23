@@ -2174,6 +2174,12 @@ async def test_supervisor_reserves_and_retires_without_restarting(supervisor_dat
             }
         await db_session.flush()
         if primary == "job":
+            policy_service = KubernetesExecutionService(db_session)
+            await policy_service.update_policy({"max_workers": 2}, updated_by="test")
+            await db_session.flush()
+            await sweep()
+            assert not writes
+            await policy_service.update_policy({"max_workers": 1}, updated_by="test")
             static_executor = ExecutionWorker(
                 form="static", state="ready", heartbeat_at=datetime.now(UTC),
                 supported_handlers=["workflow.execute"], memory_budget_bytes=128 * 2**20,
