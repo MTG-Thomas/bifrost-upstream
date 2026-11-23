@@ -134,6 +134,10 @@ def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | Non
         "CF_CLEANUP_SETTLING": PLACEMENT["cleanup_pending"][1],
         "CF_PRIOR_WORKERS_LIVE": PLACEMENT["cleanup_pending"][1],
         "CF_PROVIDER_UNAVAILABLE": PLACEMENT["cloudflare_capacity_unavailable"][1],
+        "CF_TUNNEL_VERIFICATION_CHANGED": (
+            "Check that the current connector credential is projected and the connector is attached. "
+            "Once rotation and projection have settled, run Reconcile again."
+        ),
     }
     if not isinstance(code, str) or code not in remedies:
         return None

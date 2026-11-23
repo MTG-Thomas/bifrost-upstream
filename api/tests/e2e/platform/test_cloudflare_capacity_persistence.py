@@ -1522,6 +1522,8 @@ def _running_tunnel_job(
 @pytest.mark.parametrize(("race", "code"), [
     ("disconnected", "CF_CONNECTOR_UNAVAILABLE"),
     ("projection_completed", None),
+    ("projection_completed_final", "CF_TUNNEL_VERIFICATION_CHANGED"),
+    ("disconnected_final", "CF_TUNNEL_VERIFICATION_CHANGED"),
     ("credential_denied", "CF_MANAGEMENT_CREDENTIAL"),
     ("credential_replaced", None),
     ("ownership", "CF_OWNERSHIP_CONFLICT"),
@@ -1538,7 +1540,7 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
     sessions, token_file, installation_id, provider = managed_tunnel_for_projection
     payload = lifecycle_job.CloudflareReconcilePayload(installation_id=installation_id, revision=1)
     healthy_read = race in ("admission_superseded", "healthy_projection_changed")
-    if healthy_read or race in ("repair", "disconnected", "credential_denied"):
+    if healthy_read or race in ("repair", "disconnected", "disconnected_final", "credential_denied", "credential_replaced"):
         assert await cloudflare_connector_channel.project_connector(None) == (installation_id, 1, 1)
     if healthy_read:
         provider.connectors = [str(uuid4())]
@@ -1553,19 +1555,27 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
         row.admitted_revision = row.deployed_revision = 1
         row.deployment_evidence = {"connector_session": "disconnected"}
         running = _running_tunnel_job(db, installation_id, lifecycle_job.RECONCILE_JOB, payload.model_dump(mode="json"))
+        await db.flush()
+        job = await db.get(PlatformJob, running.job_id)
+        assert job is not None
+        job.max_attempts = 3
+        job.attempt = job.max_attempts if race.endswith("_final") else 1
 
-    reads = writes = transactions = 0
+    reads = writes = 0
+    superseded_after_closure = False
 
     @asynccontextmanager
     async def supersede_after_closure():
-        nonlocal transactions
-        transactions += 1
+        nonlocal superseded_after_closure
         async with sessions.begin() as db:
-            if transactions == 3:
-                row = await db.get(CloudflareInstallation, installation_id)
-                assert row is not None and row.admitted_revision is None
-                row.desired_revision = 2
             yield db
+        if not superseded_after_closure:
+            async with sessions.begin() as db:
+                row = await db.get(CloudflareInstallation, installation_id)
+                assert row is not None
+                if row.admitted_revision is None:
+                    row.desired_revision = 2
+                    superseded_after_closure = True
 
     if race == "repair_superseded_before_reads":
         monkeypatch.setattr(lifecycle_job, "get_db_context", supersede_after_closure)
@@ -1601,7 +1611,7 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
                     item.provider_version = "replacement-receipt"
                 if race.endswith("admission_superseded"):
                     row.admitted_revision = None
-                if race == "healthy_projection_changed":
+                if race in ("healthy_projection_changed", "disconnected_final"):
                     row.tunnel_token_projected_version = 0
             if race in ("credential_denied", "credential_replaced"):
                 return httpx.Response(403)
@@ -1614,11 +1624,13 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
                 await reconcile
             assert issue.value.result == {"code": code}
         elif race in ("healthy_projection_changed", "projection_completed"):
-            with pytest.raises(CloudflareRestUnavailable, match="changed during verification"):
+            with pytest.raises(PlatformJobFailure) as failure:
                 await reconcile
+            assert failure.value.code == "CF_TUNNEL_VERIFICATION_CHANGED" and failure.value.retryable
         else:
             assert await reconcile == {"outcome": "superseded"}
 
+    assert superseded_after_closure == (race == "repair_superseded_before_reads")
     assert reads == {
         "repair": 3, "repair_superseded": 2, "repair_superseded_after_readback": 3,
     }.get(race, 1)
@@ -1630,7 +1642,8 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
         row = await db.get(CloudflareInstallation, installation_id)
         assert row is not None
         still_admitted = race in (
-            "target_replaced", "healthy_projection_changed", "projection_completed", "credential_replaced",
+            "target_replaced", "healthy_projection_changed", "projection_completed", "projection_completed_final",
+            "credential_replaced",
         )
         assert row.admitted_revision == (1 if still_admitted else None)
         if race == "disconnected":

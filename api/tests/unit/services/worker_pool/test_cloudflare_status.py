@@ -70,6 +70,13 @@ def test_recovery_does_not_return_provider_values():
     assert recovery.remedy
 
 
+def test_tunnel_verification_changed_remedy():
+    job = PlatformJob(status="requires_action", result={"code": "CF_TUNNEL_VERIFICATION_CHANGED"})
+    recovery = recovery_for_job(job)
+    assert recovery is not None
+    assert "projected" in recovery.remedy and "run Reconcile again" in recovery.remedy
+
+
 @pytest.mark.parametrize("status", ["queued", "running"])
 def test_recovery_hides_previous_attempt_during_retry(status):
     assert recovery_for_job(PlatformJob(status=status, error_code="CF_BUDGET_REACHED")) is None

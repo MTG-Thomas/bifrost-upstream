@@ -289,18 +289,24 @@ path. This is intentional. Reconcile can admit a new deployment, so it must
 verify the same projected token and attached session. A connector that
 remains unready after the 180-second wait ends that job with non-retryable
 `CF_CONNECTOR_UNAVAILABLE`. A later explicit replay can reuse the
-journaled connector credential. Enable commits the credential before
-entering its connector wait. The wait releases the installation lock
-before every provider call and sleep, so projection can deliver the
-first token within that wait. The ingress watcher retries a timed-out
-projection on its next pass.
+journaled connector credential. The existing `provision_dns` path seals
+the initial connector credential only when `tunnel_token_version` is
+unset and commits it before Enable enters the connector wait. The wait
+releases the installation lock before every provider call and sleep.
+The existing ingress watcher reconciles the desired projection on each
+pass, so a timeout leaves it eligible to try again.
 
 Reconcile verification and rotation readiness checks also release the
 transaction before provider reads. Reconcile rechecks the job lease,
 installation revision, tunnel and DNS receipts, and credential versions.
-A confirmed ingress or ownership problem closes admission for the same
-target. Readiness results require the same projection state. If projection
-advances across a session read, Reconcile retries before acting on it.
+A confirmed ingress or ownership problem, missing tunnel or DNS record,
+or unavailable connector closes admission for the same target. Readiness
+results require the same projection state. Reconcile retries if projection
+moves across the read. If the attempt budget is exhausted, the job reports
+`CF_TUNNEL_VERIFICATION_CHANGED`. It closes admission if the last read
+confirmed a problem, such as an unavailable connector observed after
+projection. Once the current credential has projected and the connector
+has attached, run Reconcile again.
 Repair runs after admission closure commits and rechecks the job before
 its PUT and after readback. The `cloudflare-installation:{id}` job lock
 serializes lifecycle writers for an installation, including ingress

@@ -108,6 +108,7 @@ ROTATE_JOB = "capacity.cloudflare_rotate_account_token"
 ROTATE_WORKER_JOB = "capacity.cloudflare_rotate_worker_credential"
 RECONCILE_INTERVAL_SECONDS = 5 * 60
 RECONCILE_MAX_BACKOFF_SECONDS = 60 * 60
+TUNNEL_VERIFICATION_CHANGED = "CF_TUNNEL_VERIFICATION_CHANGED"
 SELF_HEALING_RECONCILE_CODES = frozenset({
     "CF_DRAIN_TIMEOUT", "CF_CLEANUP_PENDING", "CF_RELEASE_MISMATCH",
     "CF_PROVIDER_UNAVAILABLE", "CF_SPEND_UNVERIFIED", "CF_CONNECTOR_UNAVAILABLE",
@@ -831,6 +832,7 @@ async def _settle_reconcile(
             issue = ("Reconnect Cloudflare", "CF_MANAGEMENT_CREDENTIAL")
 
     estimated_usage = None
+    verification_changed = False
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
         installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
@@ -855,20 +857,38 @@ async def _settle_reconcile(
             item, record = tunnel_resources
             current_connector = cloudflare_tunnel.connector_fence(installation, item) == tunnel_snapshot.connector.fence
             if not current_connector and not tunnel_problem:
-                raise CloudflareRestUnavailable("Managed Tunnel changed during verification")
+                job = await db.get(PlatformJob, context.job_id)
+                if job is None:
+                    raise PlatformJobCancelled
+                if job.attempt < job.max_attempts:
+                    raise PlatformJobFailure(
+                        TUNNEL_VERIFICATION_CHANGED, "Managed Tunnel Changed During Verification", retryable=True,
+                    )
+                verification_changed = True
+                # An unprojected credential gives no evidence about the connector
+                # that may have attached since the read. A negative read after
+                # projection, or denial of the still-current API token, is actionable.
+                if (tunnel_snapshot.connector.projected and connectors is not None and issue is not None) or (
+                    issue is not None and issue[1] == "CF_MANAGEMENT_CREDENTIAL"
+                ):
+                    installation.admitted_revision = None
             if current_connector and connectors is not None:
                 record.observed_at = datetime.now(UTC)
                 cloudflare_tunnel.record_connector_readiness(installation, item, tunnel_snapshot.connector, connectors)
-        if issue is not None:
+        if not verification_changed and issue is not None:
             # Fail closed on a confirmed problem with this tunnel, even if projection
             # advanced while the provider call was in flight.
             installation.admitted_revision = None
-        else:
+        elif not verification_changed:
             installation.usage_advisory = advisory
             estimated_usage = await db.scalar(
                 select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id),
             )
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+    if verification_changed:
+        raise PlatformJobRequiresAction(
+            "Managed Tunnel Kept Changing During Verification", {"code": TUNNEL_VERIFICATION_CHANGED},
+        )
     if repair_tunnel_ingress and tunnel_snapshot is not None and tunnel_client is not None:
         snapshot = tunnel_snapshot
 
