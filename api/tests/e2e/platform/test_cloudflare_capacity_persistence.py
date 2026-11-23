@@ -426,6 +426,22 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             key = await cloudflare_connector_channel.project_connector(None)
             first = delivered()
             assert first == (await client.connector_token(provider.tunnel_id)).get_secret_value()
+            credential_key = (installation_id, "connector_token", "", 1)
+            async with context() as db:
+                current = await db.get(CloudflareCredential, credential_key)
+                assert current is not None and current.ciphertext is not None
+                original_ciphertext = current.ciphertext
+                row = await db.get(CloudflareInstallation, installation_id)
+                await cloudflare_tunnel.prepare(db, row, actor=actor)
+            await change(cloudflare_tunnel.provision_tunnel, client)
+            await change(cloudflare_tunnel.provision_dns, client, actor=actor)
+            async with context() as db:
+                current = await db.get(CloudflareCredential, credential_key)
+                row = await db.get(CloudflareInstallation, installation_id)
+                assert current is not None and current.ciphertext == original_ciphertext
+                assert row is not None and row.tunnel_token_version == 1
+            assert await cloudflare_connector_channel.project_connector(key) == key
+            assert delivered() == first and provider.tunnel_creates == 1 and provider.dns_creates == 2
             old, new = str(uuid4()), str(uuid4())
             provider.connectors = [old]
             assert provider.config
@@ -516,9 +532,18 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                 patch.setattr(cloudflare_tunnel, "adapter", lambda *_: client)
                 provider.config["warp-routing"] = {"enabled": True}
                 provider.connectors = []
+                elapsed = 0.0
+
+                async def advance(seconds: float) -> None:
+                    nonlocal elapsed
+                    elapsed += seconds
+
+                patch.setattr(lifecycle_job, "monotonic", lambda: elapsed)
+                patch.setattr(lifecycle_job, "sleep", advance)
                 with pytest.raises(PlatformJobFailure) as unavailable:
                     await lifecycle_job._reconcile(running, reconcile)
                 assert unavailable.value.code == "CF_CONNECTOR_UNAVAILABLE"
+                assert not unavailable.value.retryable and elapsed == 180
                 await db_session.refresh(installation)
                 assert installation.admitted_revision is None
                 assert provider.config["warp-routing"] == {"enabled": False}
@@ -1075,16 +1100,22 @@ async def test_enable_keeps_admission_closed_on_unverified_readback(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("aborted_rotation", [0, 2, 3])
+@pytest.mark.parametrize(("aborted_rotation", "connector_delay"), [
+    (0, None), (2, None), (3, None),
+    (0, 140), (0, -1),
+], ids=["existing", "rotation-intent", "rotation-eviction", "slow-projection", "no-connector"])
 async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
-    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, aborted_rotation,
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, aborted_rotation, connector_delay,
 ) -> None:
     installation.policy = {**installation.policy, "bounds_release": "d" * 64}
-    if aborted_rotation:
+    connector = str(uuid4())
+    connectors: set[str] = set()
+    if aborted_rotation or connector_delay is not None:
         installation.reachability_mode = "managed_tunnel"
         installation.zone_id = _TunnelAPI.zone
-        active_version = aborted_rotation - 1
-        installation.tunnel_token_version = installation.tunnel_token_projected_version = active_version
+        active_version = aborted_rotation - 1 if aborted_rotation else 1
+        installation.tunnel_token_version = active_version
+        installation.tunnel_token_projected_version = active_version if connector_delay is None else 0
         receipt = CloudflareOwnedResource(
             id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
             scope="reachability", kind=cloudflare_tunnel.TUNNEL, target_name="fixture-tunnel", desired_revision=1,
@@ -1093,8 +1124,8 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         )
         db_session.add(receipt)
         await db_session.flush()
-        connector = str(uuid4())
-        connectors = {connector}
+        if connector_delay is None:
+            connectors.add(connector)
         previous = str(uuid4())
         if active_version == 2:
             receipt.provider_details = {"rotation_version": 2, "rotation_previous_connectors": [previous]}
@@ -1104,8 +1135,9 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             connectors=AsyncMock(side_effect=lambda _: frozenset(connectors)),
             evict_connectors=AsyncMock(side_effect=lambda _, excluded: connectors.difference_update(excluded)),
         )
-        await cloudflare_tunnel.record_rotation_intent(db_session, installation, tunnel, version=aborted_rotation)
-        assert set(receipt.provider_details["rotation_candidates"]) == connectors
+        if aborted_rotation:
+            await cloudflare_tunnel.record_rotation_intent(db_session, installation, tunnel, version=aborted_rotation)
+            assert set(receipt.provider_details["rotation_candidates"]) == connectors
         # The replacement failed before activation, so the incumbent connector must remain eligible.
         monkeypatch.setattr(cloudflare_tunnel, "adapter", lambda *_: tunnel)
         for step in ("prepare", "provision_tunnel", "provision_dns"):
@@ -1127,11 +1159,26 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             await session.commit()
 
     monkeypatch.setattr(enable_job, "get_db_context", context)
+    monkeypatch.setattr(lifecycle_job, "get_db_context", context)
     monkeypatch.setattr(cloudflare_spend, "get_db_context", context)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     observed = {}
     writes = []
-    provider_seconds = 0
+    provider_seconds = 0.0
+
+    async def advance(seconds: float) -> None:
+        nonlocal provider_seconds
+        provider_seconds += seconds
+        if connector_delay is not None and 0 <= connector_delay <= provider_seconds and not connectors:
+            async with context() as db:
+                row = await db.get(CloudflareInstallation, installation.id)
+                assert row is not None
+                row.tunnel_token_projected_version = row.tunnel_token_version
+            connectors.add(connector)
+
+    if connector_delay is not None:
+        monkeypatch.setattr(lifecycle_job, "sleep", advance)
+        monkeypatch.setattr(lifecycle_job, "monotonic", lambda: provider_seconds)
     capacity_namespaces_visible_at = None
 
     class Provider:
@@ -1144,7 +1191,7 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             assert (scope_bearer is not None) == intent.target.name.endswith("-capacity")
             writes.append(intent.target.name)
             observed[intent.target.name] = ResourceObservation(intent, str(uuid4()), str(uuid4()))
-            if scope_bearer is not None and not aborted_rotation:
+            if scope_bearer is not None and not aborted_rotation and connector_delay is None:
                 capacity_namespaces_visible_at = provider_seconds + 10
 
         async def configure_endpoint(self, *, api_token, expected):
@@ -1217,6 +1264,23 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         ),
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider_read)) as http:
+        if connector_delay is not None:
+            if connector_delay < 0:
+                with pytest.raises(PlatformJobFailure) as unavailable:
+                    await enable_job._settle_enable(running, payload, http, release)
+                assert unavailable.value.code == "CF_CONNECTOR_UNAVAILABLE"
+                assert not unavailable.value.retryable and provider_seconds == 180
+                assert not writes
+            else:
+                probe_results = iter((reachable,))
+                canary.side_effect = None
+                canary.return_value = ingress_probes.RuntimeCanary(True, True)
+                result = await enable_job._settle_enable(running, payload, http, release)
+                assert result["outcome"] == "enabled" and provider_seconds == 140
+            await db_session.refresh(installation)
+            assert installation.admitted_revision == (None if connector_delay < 0 else payload.revision)
+            return
+
         with monkeypatch.context() as patch:
             patch.setattr(enable_job, "cloudflare_workers_remain", AsyncMock(return_value=True))
             recovering = AsyncMock(return_value="settling")

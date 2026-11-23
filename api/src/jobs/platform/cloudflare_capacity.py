@@ -2,8 +2,11 @@
 
 import asyncio
 import secrets
+from asyncio import sleep
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Any, Literal
 from uuid import UUID
 
@@ -187,6 +190,32 @@ async def _management_token(db: AsyncSession, installation: CloudflareInstallati
         return await load_account_token(db, installation)
     except ValueError:
         raise CloudflareManagementDenied from None
+
+
+async def _wait_for_connector(
+    load_current: Callable[[AsyncSession], Awaitable[CloudflareInstallation | None]],
+    http: httpx.AsyncClient,
+) -> bool:
+    """Wait for token projection and attachment while the job owns this revision."""
+    deadline = None
+    while True:
+        async with get_db_context() as db:
+            row = await load_current(db)
+            if row is None:
+                return False
+            tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
+            if await cloudflare_tunnel.connector_ready(db, row, tunnel):
+                return True
+        now = monotonic()
+        if deadline is None:
+            # One minute to sync, one for cache propagation, and one to attach.
+            deadline = now + 180
+        remaining = deadline - now
+        if remaining <= 0:
+            raise PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Managed Tunnel Connector Did Not Become Ready")
+        # Commit the observation and release the lease and installation locks
+        # between checks so the API can publish the Secret.
+        await sleep(min(5, remaining))
 
 
 async def _cleanup_one(
@@ -1116,14 +1145,8 @@ async def _rotate_connector(
                 actor_override=ActorContext(None, None, source="scheduler"),
             )
     await context.report("Verifying Managed Tunnel Connector Rollout")
-    async with get_db_context() as db:
-        row = await current(db)
-        if row is None:
-            return {"outcome": "superseded"}
-        tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
-        ready = await cloudflare_tunnel.connector_ready(db, row, tunnel)
-    if not ready:
-        raise PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Waiting for Managed Tunnel Connector Rollout", retryable=True)
+    if not await _wait_for_connector(current, http):
+        return {"outcome": "superseded"}
     return {"outcome": "rotated", "credential_version": payload.replacement_version}
 
 

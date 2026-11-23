@@ -179,7 +179,7 @@ async def run_claimed_platform_job(
             )
         return await retry_platform_job_failure(
             job_id, lease_token, exc,
-            enabled=definition.policy.retry_on_failure, retry_delay=definition.policy.failure_retry_schedule(exc.code),
+            enabled=definition.policy.retry_on_failure, retry_delay=definition.policy.retry_delay,
         )
     except PlatformJobRequiresAction as exc:
         return await finish(

@@ -93,8 +93,12 @@ async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, 
     (2, 45, "capacity.cloudflare_enable", "CF_DEPLOYMENT_UNVERIFIED"),
     (3, None, "capacity.cloudflare_enable", "CF_DEPLOYMENT_UNVERIFIED"),
     (1, 0, None, "CF_DEPLOYMENT_UNVERIFIED"),
+    (1, 15, "capacity.cloudflare_enable", "CF_PROVIDER_UNAVAILABLE"),
+    (2, 45, "capacity.cloudflare_enable", "CF_PROVIDER_UNAVAILABLE"),
+    (1, 15, "capacity.cloudflare_rotate_worker_credential", "CF_PROVIDER_UNAVAILABLE"),
     (2, 45, "capacity.cloudflare_rotate_worker_credential", "CF_PROVIDER_UNAVAILABLE"),
-    (2, 165, "capacity.cloudflare_rotate_worker_credential", "CF_CONNECTOR_UNAVAILABLE"),
+    (1, 15, "capacity.cloudflare_reconcile", "CF_PROVIDER_UNAVAILABLE"),
+    (2, 45, "capacity.cloudflare_reconcile", "CF_PROVIDER_UNAVAILABLE"),
 ])
 async def test_runner_schedules_handler_failure_retries_and_fails_at_the_limit(
     monkeypatch, attempt, delay_seconds, job_type, failure_code,

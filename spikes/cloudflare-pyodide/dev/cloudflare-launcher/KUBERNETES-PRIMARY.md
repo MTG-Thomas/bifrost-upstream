@@ -61,14 +61,19 @@ and derived incarnation keys. Bifrost platform secrets stay on Bifrost.
   to patch that exact Secret. The authorization review has no persistent
   write. Projection uses the API pod namespace even when Jobs run in another
   namespace.
-- On a connector-readiness failure, worker credential rotation schedules
-  its second and third attempts after delays of 15 and 165 seconds. Provider
-  failures use the 15- and 45-second delays. The connector schedule gives
-  the final check at least 180 seconds from the first failed check. The window covers a
-  one-minute kubelet sync, a one-minute TTL cache where configured, and a
-  minute of margin for the child restart and session attachment. Clusters
-  configured with longer sync or cache intervals can exceed the window.
-  [Kubernetes Secret projection](https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod) · [Retry timing test](../../../../api/tests/unit/jobs/test_platform_job_catalog.py#L84)
+- Activate, Enable, Upgrade, and connector rotation share a readiness
+  wait. It begins after the first not-ready observation and checks again
+  every five seconds for up to 180 seconds, with a final observation at
+  the deadline. A probe uses the job lease and current revision, and
+  commits before sleeping so Secret projection can take the installation
+  lock. The budget allows 60 seconds for the default kubelet sync,
+  60 seconds for caching when the TTL strategy uses its default TTL, and
+  60 seconds for the connector child to start and attach, including
+  polling margin. A cluster with longer sync or cache intervals can
+  exceed the window. The job returns `CF_CONNECTOR_UNAVAILABLE` when
+  readiness is still missing at the deadline. Provider-error retries
+  retain the 15- and 45-second delays.
+  [Secret projection](https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod) · [Kubelet defaults](https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/#kubeletconfiguration) · [Secret cache TTL](https://github.com/kubernetes/kubernetes/blob/v1.31.0/pkg/kubelet/secret/secret_manager.go)
 - The primary keeps its own ceiling while pinned Workers launchers or
   Containers instances are present. An explicit shared ceiling counts
   each live resource once and retains pending provider deletions while
@@ -171,9 +176,8 @@ creation. The connector started 81.3 seconds after the last successful
 Secret patch and 15.8 seconds after the job failed. Status showed
 `connector_unavailable` and `setup_required`. After the local connector
 session attached, Enable on the same installation succeeded in 4.6
-seconds and recorded `remote_launcher`. Initial Managed Tunnel Enable
-still needs a readiness window that covers kubelet projection. The
-longer window already applied to rotation handled the same boundary.
+seconds and recorded `remote_launcher`. This run established the initial
+Enable timing failure that the shared connector-readiness wait addresses.
 
 | Check | Observed result |
 | --- | --- |

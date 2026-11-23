@@ -33,6 +33,7 @@ from src.jobs.platform.cloudflare_capacity import (
     _remove_verified_scopes,
     _require_legacy_cleanup,
     _resource_intent,
+    _wait_for_connector,
 )
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
@@ -260,13 +261,12 @@ async def _settle_enable(
             tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
             await cloudflare_tunnel.provision_dns(db, row, tunnel, actor=context.requested_by_user_id)
         await context.report("Checking Managed Tunnel Connector")
-        async with get_db_context() as db:
-            row = await _locked_current(db, context, payload)
-            if row is None:
-                return {"outcome": "superseded"}
-            tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
-            if not await cloudflare_tunnel.connector_ready(db, row, tunnel):
-                raise PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Waiting for Managed Tunnel Connector", retryable=True)
+
+        async def current_connector_revision(db: AsyncSession) -> CloudflareInstallation | None:
+            return await _locked_current(db, context, payload)
+
+        if not await _wait_for_connector(current_connector_revision, http):
+            return {"outcome": "superseded"}
 
     if upgrading:
         await context.report("Draining Cloudflare Capacity")
