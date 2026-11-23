@@ -2371,7 +2371,7 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     assert installation.api_token_version == 1
     assert installation.admitted_revision is None
     assert installation.deployed_revision == 1 and installation.containers_ready_revision is None
-    assert installation.containers_release_digest == release.digest
+    assert installation.containers_release_digest is None
     for resource in (application, launcher):
         await db_session.refresh(resource)
         assert resource.state == "present"
