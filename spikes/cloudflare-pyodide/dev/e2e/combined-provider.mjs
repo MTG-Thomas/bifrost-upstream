@@ -10,10 +10,14 @@ import {BlockList, isIPv4} from 'node:net';
 import {buffer} from 'node:stream/consumers';
 import {relayHeaders} from './relay-http.mjs';
 
-const require = createRequire(new URL('../tenant-workers/package.json', import.meta.url));
-const {Miniflare} = createRequire(require.resolve('wrangler'))('miniflare');
-const {WebSocket, WebSocketServer} = require('ws');
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const dependencies = config.containers
+  ? '../../../../deploy/capacity/cloudflare/registry-toolchain/package.json'
+  : '../tenant-workers/package.json';
+const require = createRequire(new URL(dependencies, import.meta.url));
+const runtimeRequire = config.containers ? require : createRequire(require.resolve('wrangler'));
+const {Miniflare} = runtimeRequire('miniflare');
+const {WebSocket, WebSocketServer} = require('ws');
 const relayOnly = process.argv[3] === '--hosted-ingress-relay';
 if (relayOnly) {
   assert.match(config.relayToken ?? '', /^[0-9a-f]{64}$/);
@@ -146,9 +150,7 @@ function containerRuntime(item) {
         return new ContainerInstanceLifecycle(ctx, registry, {
   `);
   worker.manifest.modules = {[item.meta.main_module]: module(local)};
-  const nativeRequire = createRequire(new URL('../../../../deploy/capacity/cloudflare/registry-toolchain/package.json', import.meta.url));
-  const {Miniflare: ContainerMiniflare} = nativeRequire('miniflare');
-  return new ContainerMiniflare({cf: false, workers: [
+  return new Miniflare({cf: false, workers: [
     {dev, config: worker}, outboundRelay(worker.env.CONTAINERS_ORIGIN.value),
   ], containerEngine: {localDocker: {
     socketPath: 'unix:///run/docker.sock', containerEgressInterceptorImage: config.containers.proxy,
