@@ -375,7 +375,15 @@ the same pinned joint revision. Scope-local status remains visible in
 steady state. The first release has no independent per-lane repair.
 
 Scale In drains both lanes to zero compute and retains provisioned resources,
-meter history and ingress. Require verified stop before reporting completion.
+readiness evidence, meter history and ingress. Require verified stop before
+reporting completion. Each Container registry keeps at most 1,024 reservation
+rows and 1,024 corresponding start fences. On the next reservation or void
+request it prunes settled receipts and unstarted pins whose absolute deadline
+has passed. Unsettled start fences retain their seats until settlement. At
+the record limit, the registry refuses a new pin without issuing an allocation
+refusal receipt. An expired unstarted pin can settle without another stored
+record. No expired pin can issue a new start.
+
 Disconnect extends the same drain to delete all owned resources. Disable
 start triggers and remove public bindings after drain. Verify zero live or
 pending instances, delete the exact app, remove dependent bindings and

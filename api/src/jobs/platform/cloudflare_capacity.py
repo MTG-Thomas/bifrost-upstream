@@ -193,7 +193,7 @@ async def _management_token(db: AsyncSession, installation: CloudflareInstallati
 async def _cleanup_one(
     db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup, *, before_revision: int | None = None,
     stranded_scope: tuple[str, int] | None = None,
-    scope_only: Literal["workers", "containers"] | None = None,
+    workers_only: bool = False,
     container_adapter: ContainersRest | None = None,
 ) -> Literal["complete", "progressed", "settling"]:
     # Newer generations first, then withdraw the capacity entry point before
@@ -207,8 +207,8 @@ async def _cleanup_one(
         CloudflareOwnedResource.state != "absent",
         (CloudflareOwnedResource.scope == "workers") | containers,
     )
-    if scope_only is not None:
-        query = query.where(CloudflareOwnedResource.scope == scope_only)
+    if workers_only:
+        query = query.where(CloudflareOwnedResource.scope == "workers")
     if before_revision is not None:
         query = query.where(CloudflareOwnedResource.desired_revision < before_revision)
     if stranded_scope is not None:
@@ -492,17 +492,16 @@ async def _settle_disable(
                         continue
                     waiting_for_deletion = recovery == "settling"
             if not workers_remain:
+                cleanup = "complete"
                 try:
-                    cleanup = await _cleanup_one(
-                        db, row, adapter, scope_only="containers" if payload.action == "scale_in" else None,
-                        container_adapter=container_adapter,
-                    )
-                    if cleanup == "complete" and payload.action == "disconnect" and row.reachability_mode == "managed_tunnel":
-                        if tunnel_http is None:
-                            raise RuntimeError("Managed Tunnel requires the Cloudflare REST client")
-                        tunnel = cloudflare_tunnel.adapter(tunnel_http, row, await _management_token(db, row))
-                        if not await cloudflare_tunnel.cleanup(db, row, tunnel):
-                            cleanup = "progressed"
+                    if payload.action == "disconnect":
+                        cleanup = await _cleanup_one(db, row, adapter, container_adapter=container_adapter)
+                        if cleanup == "complete" and row.reachability_mode == "managed_tunnel":
+                            if tunnel_http is None:
+                                raise RuntimeError("Managed Tunnel requires the Cloudflare REST client")
+                            tunnel = cloudflare_tunnel.adapter(tunnel_http, row, await _management_token(db, row))
+                            if not await cloudflare_tunnel.cleanup(db, row, tunnel):
+                                cleanup = "progressed"
                 except DeletionSettling:
                     # The journaled deletion intent survives the wait and any
                     # runner loss. The next pass verifies ownership again.
@@ -514,10 +513,6 @@ async def _settle_disable(
                 if cleanup == "complete":
                     if payload.action == "disconnect":
                         await _retire(db, row, payload)
-                    else:
-                        await _remove_verified_scopes(db, row, scope="containers")
-                        row.containers_ready_revision = None
-                        row.containers_release_digest = None
                     await emit_audit(
                         db, "capacity.cloudflare_retired" if payload.action == "disconnect" else "capacity.cloudflare_scaled_in",
                         resource_type="cloudflare_installation", resource_id=row.id,
@@ -1118,7 +1113,7 @@ async def _rotate_worker_credential(context: PlatformJobContext, parsed: BaseMod
                     if scope:
                         # Keep the revision fence through the exact delete
                         # and absence receipt, even if the job lease expires.
-                        progress = await _cleanup_one(db, row, adapter, scope_only="workers")
+                        progress = await _cleanup_one(db, row, adapter, workers_only=True)
                         if progress == "progressed":
                             continue
                         if progress == "settling":

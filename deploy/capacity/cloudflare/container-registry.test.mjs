@@ -47,19 +47,23 @@ function fixture(cap = 2, byteCap = 100) {
     };
 }
 
+function reserve(scope, pin, now = pin.reservedAt) {
+    return scope.reserve(pin, now);
+}
+
 test("a lost reply replays its original reservation across registry reset", () => {
     const { db, registry, pin } = fixture();
     const request = pin();
-    assert.deepEqual(registry().reserve(request), { status: "reserved" });
-    assert.deepEqual(registry().reserve(request), { status: "reserved" });
-    assert.deepEqual(registry().reserve({ ...request, uid: pin().uid }), { status: "conflict" });
-    assert.deepEqual(registry().reserve({ ...request, uid: randomUUID() }), { status: "invalid" });
-    assert.deepEqual(registry().reserve({ ...request, credentialVersion: 2 }), { status: "conflict" });
-    assert.deepEqual(registry().reserve({ ...request, worker: randomUUID() }), { status: "conflict" });
-    assert.deepEqual(registry().reserve({ ...request, revision: 3 }), { status: "invalid" });
-    assert.deepEqual(registry().reserve({ ...request, ingressBytes: 101 }), { status: "invalid" });
-    assert.deepEqual(registry().reserve({ ...request, outboundBytes: 101 }), { status: "invalid" });
-    assert.deepEqual(registry().reserve({ ...request, deadline: request.deadline + 1000 }), { status: "invalid" });
+    assert.deepEqual(reserve(registry(), request), { status: "reserved" });
+    assert.deepEqual(reserve(registry(), request), { status: "reserved" });
+    assert.deepEqual(reserve(registry(), { ...request, uid: pin().uid }), { status: "conflict" });
+    assert.deepEqual(reserve(registry(), { ...request, uid: randomUUID() }), { status: "invalid" });
+    assert.deepEqual(reserve(registry(), { ...request, credentialVersion: 2 }), { status: "conflict" });
+    assert.deepEqual(reserve(registry(), { ...request, worker: randomUUID() }), { status: "conflict" });
+    assert.deepEqual(reserve(registry(), { ...request, revision: 3 }), { status: "invalid" });
+    assert.deepEqual(reserve(registry(), { ...request, ingressBytes: 101 }), { status: "invalid" });
+    assert.deepEqual(reserve(registry(), { ...request, outboundBytes: 101 }), { status: "invalid" });
+    assert.deepEqual(reserve(registry(), { ...request, deadline: request.deadline + 1000 }), { status: "invalid" });
     db.close();
 });
 
@@ -71,7 +75,7 @@ test("a prepared reservation tolerates a bounded lag in the actor clock", (t) =>
     const tooEarly = 6999;
     const withinSkew = 7000;
     const scope = registry();
-    assert.equal(scope.reserve(request).status, "reserved");
+    assert.equal(reserve(scope, request).status, "reserved");
     assert.equal(scope.reserveForStart(request, instance, tooEarly).status, "closed");
     assert.equal(scope.authorizeStart(request.uid, instance, tooEarly, request.deadline).status, "conflict");
     assert.equal(scope.reserveForStart(request, instance, withinSkew).status, "reserved");
@@ -92,11 +96,11 @@ test("a prepared reservation tolerates a bounded lag in the actor clock", (t) =>
 
 test("unconfirmed instances retain the tenant seat and the last fleet seat is exclusive", async () => {
     const { db, registry, pin } = fixture();
-    assert.equal(registry().reserve(pin()).status, "reserved");
+    assert.equal(reserve(registry(), pin()).status, "reserved");
     db.exec("UPDATE reservations SET state = 'unconfirmed'");
-    assert.equal(registry().reserve(pin()).status, "full");
+    assert.equal(reserve(registry(), pin()).status, "full");
     const independent = [pin(randomUUID()), pin(randomUUID())];
-    const results = await Promise.all(independent.map((request) => Promise.resolve().then(() => registry().reserve(request))));
+    const results = await Promise.all(independent.map((request) => Promise.resolve().then(() => reserve(registry(), request))));
     assert.deepEqual(results.map(({ status }) => status).sort(), ["full", "reserved"]);
     db.close();
 });
@@ -106,7 +110,7 @@ test("a reset with a pending start cannot issue another start or close its fence
     const request = pin();
     const instance = "b".repeat(64);
     const other = "c".repeat(64);
-    assert.equal(registry().reserve(request).status, "reserved");
+    assert.equal(reserve(registry(), request).status, "reserved");
     assert.equal(registry().authorizeStart(request.uid, instance, 100, request.deadline).status, "authorized");
     assert.equal(registry().authorizeStart(request.uid, instance, 101, request.deadline).status, "pending");
     assert.equal(registry().authorizeStart(request.uid, other, 101, request.deadline).status, "conflict");
@@ -122,7 +126,7 @@ test("a reset with a pending start cannot issue another start or close its fence
     assert.deepEqual(registry().closeStart(request.uid, instance, 106), closed);
     assert.deepEqual(registry().closeStart(request.uid, instance, 180), closed);
     assert.equal(registry().authorizeStart(request.uid, instance, 180, request.deadline).status, "closed");
-    assert.equal(registry().reserve(pin(randomUUID())).status, "full");
+    assert.equal(reserve(registry(), pin(randomUUID())).status, "full");
     db.close();
 });
 
@@ -132,17 +136,17 @@ test("only acknowledgement of the exact settled fence releases the one-seat regi
     const first = pin();
     const second = pin();
     const instance = "b".repeat(64);
-    assert.equal(registry().reserve(first).status, "reserved");
+    assert.equal(reserve(registry(), first).status, "reserved");
     assert.equal(registry().authorizeStart(first.uid, instance, 100, first.deadline).status, "authorized");
     assert.equal(registry().retire(first.uid, instance, 104).status, "pending");
     assert.equal(registry().observeStart(first.uid, instance, 103).status, "observed");
     const receipt = registry().closeStart(first.uid, instance, 104);
-    assert.equal(registry().reserve(second).status, "full");
+    assert.equal(reserve(registry(), second).status, "full");
     assert.equal(registry().retire(first.uid, instance, receipt.closedAt + 1).status, "conflict");
     assert.equal(registry().retire(first.uid, instance, receipt.closedAt).status, "retired");
     assert.equal(registry().retire(first.uid, instance, receipt.closedAt).status, "retired");
-    assert.equal(registry().reserve(first).status, "retired");
-    assert.equal(registry().reserve(second).status, "reserved");
+    assert.equal(reserve(registry(), first).status, "retired");
+    assert.equal(reserve(registry(), second).status, "reserved");
     assert.equal(registry().authorizeStart(second.uid, "c".repeat(64), 100, second.deadline).status, "authorized");
 });
 
@@ -161,19 +165,19 @@ test("an expired unstarted seat is voided after a reset and can never start", (t
     const next = pin();
     const missing = pin();
     const instance = "b".repeat(64);
-    assert.equal(registry().reserve(first).status, "reserved");
-    assert.equal(registry().reserve(next).status, "full");
+    assert.equal(reserve(registry(), first).status, "reserved");
+    assert.equal(reserve(registry(), next).status, "full");
     assert.equal(registry().voidUnstarted(first, instance, first.startDeadline - 1).status, "pending");
     const receipt = { status: "void", uid: first.uid, instance, startDeadline: first.startDeadline, voidedAt: first.startDeadline };
     assert.deepEqual(registry().voidUnstarted(first, instance, first.startDeadline), receipt);
     assert.deepEqual(registry().voidUnstarted(first, instance, first.startDeadline + 1), receipt);
     assert.equal(registry().voidUnstarted(first, "f".repeat(64), first.startDeadline + 1).status, "conflict");
     assert.equal(registry().authorizeStart(first.uid, instance, first.reservedAt, first.deadline).status, "closed");
-    assert.equal(registry().reserve(next).status, "reserved");
+    assert.equal(reserve(registry(), next).status, "reserved");
     assert.equal(registry().authorizeStart(next.uid, instance, next.reservedAt, next.deadline).status, "authorized");
     assert.equal(registry().voidUnstarted(next, instance, next.startDeadline).status, "conflict");
     assert.equal(registry().voidUnstarted(missing, "d".repeat(64), missing.startDeadline).status, "void");
-    assert.equal(registry().reserve(missing).status, "retired");
+    assert.equal(reserve(registry(), missing).status, "retired");
 });
 
 test("an allocation refusal is durable and cannot cross the start fence", async (t) => {
@@ -182,16 +186,85 @@ test("an allocation refusal is durable and cannot cross the start fence", async 
     const first = pin();
     const rejected = pin();
     const instance = "b".repeat(64);
-    assert.equal(registry().reserve(first).status, "reserved");
+    assert.equal(reserve(registry(), first).status, "reserved");
     const receipt = registry().reserveForStart(rejected, instance, rejected.reservedAt);
     assert.deepEqual(receipt, {
         status: "allocation-refused", uid: rejected.uid, instance,
         startDeadline: rejected.startDeadline, voidedAt: rejected.reservedAt,
     });
     assert.equal(registry().voidUnstarted(first, "d".repeat(64), first.startDeadline).status, "void");
-    assert.deepEqual(registry().reserve(rejected), receipt);
+    assert.deepEqual(reserve(registry(), rejected), receipt);
     assert.equal(registry().authorizeStart(rejected.uid, instance, rejected.reservedAt, rejected.deadline).status, "closed");
-    assert.equal(registry().reserve(pin()).status, "reserved");
+    assert.equal(reserve(registry(), pin()).status, "reserved");
+});
+
+test("registry prunes expired receipts across idle cycles and keeps unresolved start fences", (t) => {
+    const { db, registry, pin } = fixture();
+    t.after(() => db.close());
+
+    const actor = "b".repeat(64);
+    const unresolved = pin("platform");
+    const initial = registry();
+    assert.equal(reserve(initial, unresolved).status, "reserved");
+    assert.equal(initial.authorizeStart(unresolved.uid, actor, unresolved.reservedAt, unresolved.deadline).status, "authorized");
+    const at = (now, tenant) => ({
+        ...pin(tenant), reservedAt: now, startDeadline: now + 1000, deadline: now + 123_000,
+    });
+    const count = (table) => db.prepare("SELECT count(*) AS count FROM " + table).get().count;
+    const month = 31 * 24 * 60 * 60 * 1000;
+    for (let cycle = 1; cycle <= 12; cycle++) {
+        const scope = registry();
+        const now = unresolved.deadline + cycle * month;
+        const expiredUnstarted = at(now, "qualification-canary");
+        const settled = at(expiredUnstarted.deadline, "qualification-canary");
+        const denied = at(settled.reservedAt, "qualification-canary");
+        assert.equal(reserve(scope, expiredUnstarted).status, "reserved");
+        assert.equal(reserve(scope, settled).status, "reserved");
+        assert.equal(scope.authorizeStart(settled.uid, actor, settled.reservedAt, settled.deadline).status, "authorized");
+        assert.equal(scope.reserveForStart(denied, actor, denied.reservedAt).status, "allocation-refused");
+        const start = settled.reservedAt + 1;
+        assert.equal(scope.observeStart(settled.uid, actor, start).status, "observed");
+        const receipt = scope.closeStart(settled.uid, actor, start + 1);
+        assert.equal(scope.retire(settled.uid, actor, receipt.closedAt).status, "retired");
+        assert.equal(reserve(scope, settled, settled.deadline - 1).status, "retired");
+        assert.equal(reserve(scope, settled, settled.deadline).status, "closed");
+        assert.equal(scope.reserveForStart(denied, actor, settled.deadline).status, "closed");
+        assert.equal(scope.authorizeStart(settled.uid, actor, settled.deadline, settled.deadline).status, "closed");
+        const recovered = {
+            status: "void", uid: expiredUnstarted.uid, instance: actor,
+            startDeadline: expiredUnstarted.startDeadline, voidedAt: expiredUnstarted.deadline,
+        };
+        assert.deepEqual(scope.voidUnstarted(expiredUnstarted, actor, settled.deadline), recovered);
+        assert.deepEqual(scope.voidUnstarted(expiredUnstarted, actor, settled.deadline + 1000), recovered);
+        assert.equal(scope.voidUnstarted(unresolved, actor, settled.deadline).status, "conflict");
+        assert.equal(count("reservations"), 1);
+        assert.equal(count("start_fences"), 1);
+    }
+});
+
+test("the registry limits recent receipts without dropping a live fence", (t) => {
+    const { db, registry, pin } = fixture(1);
+    t.after(() => db.close());
+    const scope = registry();
+    const actor = "b".repeat(64);
+    const first = pin();
+    assert.equal(reserve(scope, first).status, "reserved");
+    assert.equal(scope.authorizeStart(first.uid, actor, first.reservedAt, first.deadline).status, "authorized");
+    const rejected = pin();
+    const receipt = scope.reserveForStart(rejected, actor, rejected.reservedAt);
+    assert.equal(receipt.status, "allocation-refused");
+    for (let index = 2; index < 1024; index++) {
+        const pending = pin();
+        assert.equal(scope.reserveForStart(pending, actor, pending.reservedAt).status, "allocation-refused");
+    }
+    const overflow = pin();
+    assert.equal(scope.reserveForStart(overflow, actor, overflow.reservedAt).status, "full");
+    assert.deepEqual(reserve(scope, rejected), receipt);
+    assert.equal(scope.voidUnstarted(overflow, actor, overflow.startDeadline).status, "pending");
+    assert.equal(db.prepare("SELECT count(*) AS count FROM reservations").get().count, 1024);
+    assert.equal(scope.voidUnstarted(overflow, actor, overflow.deadline).status, "void");
+    assert.equal(db.prepare("SELECT count(*) AS count FROM reservations").get().count, 1);
+    assert.equal(db.prepare("SELECT count(*) AS count FROM start_fences").get().count, 1);
 });
 
 test("the instance lifecycle pins the intercept and launch options, then stops at the durable deadline", async (t) => {
@@ -317,9 +390,9 @@ test("a registry authorization survives a local deadline advance; a throwing sta
         startDeadline: slot.startDeadline, closedAt: Date.now(),
     });
     assert.equal(scope.observeStart(slot.uid, actor, 101).status, "conflict");
-    assert.equal(scope.reserve(pin()).status, "full");
+    assert.equal(reserve(scope, pin()).status, "full");
     assert.equal(scope.retire(slot.uid, actor, receipt.closedAt).status, "retired");
-    assert.equal(scope.reserve(pin()).status, "reserved");
+    assert.equal(reserve(scope, pin()).status, "reserved");
 });
 
 test("interceptors refuse asynchronous registry proofs", async () => {
@@ -345,7 +418,7 @@ test("the control relay preserves fragments and fences both directions across re
     const fragments = ['{"fragment":0,"data":"é"}', '{"fragment":1,"data":"β"}'];
     const fragmentBytes = new TextEncoder().encode(fragments.join("")).byteLength;
     const uid = { ...pin(), ingressBytes: 3, outboundBytes: fragmentBytes };
-    assert.equal(registry().reserve(uid).status, "reserved");
+    assert.equal(reserve(registry(), uid).status, "reserved");
     assert.equal(registry().authorizeStart(uid.uid, instance, Date.now(), uid.deadline).status, "authorized");
     t.mock.timers.tick(1);
     let guest = new Socket();
@@ -378,7 +451,7 @@ test("a silent relay closes at the pinned deadline", (t) => {
     t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100 });
     const request = pin();
     const instance = "b".repeat(64);
-    registry().reserve(request);
+    reserve(registry(), request);
     registry().authorizeStart(request.uid, instance, Date.now(), request.deadline);
     const guest = new Socket();
     const ingress = new Socket();
@@ -399,7 +472,7 @@ test("HTTP interception forwards only the exact ingress and shares the bidirecti
     const origin = "https://ingress.example.test";
     const path = "/api/sdk/config/get";
     const scope = registry();
-    assert.equal(scope.reserve(slot).status, "reserved");
+    assert.equal(reserve(scope, slot).status, "reserved");
     assert.equal(scope.authorizeStart(slot.uid, instance, reservedAt, slot.deadline).status, "authorized");
     const calls = [];
     const upstream = async (url, options) => {
@@ -443,7 +516,7 @@ test("HTTP interception refuses redirects and stops streaming an oversized respo
     const instance = "b".repeat(64);
     const origin = "https://ingress.example.test";
     const scope = registry();
-    scope.reserve(slot);
+    reserve(scope, slot);
     scope.authorizeStart(slot.uid, instance, reservedAt, slot.deadline);
     const visit = (upstream) => forwardContainerHttp(scope, slot.uid, instance, new Request(
         origin + "/api/organizations", { headers: { host: "ingress.example.test" } },

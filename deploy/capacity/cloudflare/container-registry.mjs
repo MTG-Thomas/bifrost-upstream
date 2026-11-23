@@ -16,6 +16,7 @@ const LAUNCHER_DRAIN_GRACE_MS = 300_000;
 // Permit a small difference between the API's database clock and the DO's
 // clock at reservation. The pinned start and expiry deadlines stay absolute.
 const RESERVATION_CLOCK_SKEW_MS = 3000;
+const MAX_RESERVATION_RECORDS = 1024;
 
 export class ScopeRegistry {
     constructor(ctx, env) {
@@ -55,17 +56,14 @@ export class ScopeRegistry {
         )`);
     }
 
-    reserve(pin) {
-        return this.#storeReservation(pin);
+    reserve(pin, now = Date.now()) {
+        return this.#storeReservation(pin, now);
     }
 
     reserveForStart(pin, instance, now) {
         if (!/^[a-f0-9]{64}$/.test(instance) || !Number.isSafeInteger(now)) return { status: "invalid" };
-        if (now < pin.reservedAt - RESERVATION_CLOCK_SKEW_MS) return { status: "closed" };
-        if (now >= pin.startDeadline) return this.reserve(pin);
-        return this.#storeReservation(pin, {
-            instance, now: Math.max(now, pin.reservedAt), onlyWhenFull: true,
-        });
+        if (now >= pin.startDeadline) return this.reserve(pin, now);
+        return this.#storeReservation(pin, now, { instance, onlyWhenFull: true });
     }
 
     // Accept the immutable API pin even if the controller crashed before prepare.
@@ -73,17 +71,17 @@ export class ScopeRegistry {
     voidUnstarted(pin, instance, now) {
         if (!/^[a-f0-9]{64}$/.test(instance)) return { status: "invalid" };
         if (!Number.isSafeInteger(now) || now < pin.startDeadline) return { status: "pending" };
-        return this.#storeReservation(pin, { instance, now });
+        return this.#storeReservation(pin, now, { instance, onlyWhenFull: false });
     }
 
-    #storeReservation(pin, observation = null) {
+    #storeReservation(pin, now, observation = null) {
         const { reservedAt, startDeadline, deadline, seconds, ingressBytes, outboundBytes } = pin;
         if (pin.installation !== this.installation || pin.revision !== this.revision
             || pin.image !== this.image || pin.instance !== "standard-1"
             || !UUID.test(pin.worker) || !UID.test(pin.uid)
             || (!["platform", "qualification-canary"].includes(pin.tenant) && !UUID.test(pin.tenant))
             || !Number.isSafeInteger(pin.credentialVersion) || pin.credentialVersion < 1
-            || ![reservedAt, startDeadline, deadline, seconds, ingressBytes, outboundBytes].every(Number.isSafeInteger)
+            || ![now, reservedAt, startDeadline, deadline, seconds, ingressBytes, outboundBytes].every(Number.isSafeInteger)
             || reservedAt < 0 || startDeadline <= reservedAt || startDeadline - reservedAt > 3_600_000
             || seconds < 123 || seconds > 93_600 || deadline !== reservedAt + seconds * 1000
             || deadline <= startDeadline || deadline - startDeadline > 90_000_000
@@ -91,12 +89,25 @@ export class ScopeRegistry {
             || outboundBytes <= 0 || outboundBytes > this.outboundCap) {
             return { status: "invalid" };
         }
+        if (now < reservedAt - RESERVATION_CLOCK_SKEW_MS) return { status: "closed" };
+        const closingUnstarted = observation !== null && !observation.onlyWhenFull;
         const binding = JSON.stringify([
             pin.installation, pin.revision, pin.worker, pin.uid, pin.tenant,
             pin.image, pin.instance, pin.credentialVersion,
             reservedAt, startDeadline, deadline, seconds, ingressBytes, outboundBytes,
         ]);
         return this.storage.transactionSync(() => {
+            // An acknowledged fence and an expired pin that never crossed its
+            // start fence can no longer authorize a placement. Unacknowledged
+            // fences must survive expiry until the API settles them.
+            this.sql.exec(
+                "DELETE FROM start_fences WHERE uid IN ("
+                + "SELECT uid FROM reservations WHERE deadline <= ? AND state = 'retired')", now,
+            );
+            this.sql.exec(
+                "DELETE FROM reservations WHERE deadline <= ? AND NOT EXISTS ("
+                + "SELECT 1 FROM start_fences WHERE start_fences.uid = reservations.uid)", now,
+            );
             const matching = this.sql.exec(
                 "SELECT binding, state, voided_at, void_instance FROM reservations WHERE worker = ? OR uid = ?",
                 pin.worker, pin.uid,
@@ -121,32 +132,40 @@ export class ScopeRegistry {
                 if (recorded.voided_at === null) {
                     this.sql.exec(
                         "UPDATE reservations SET state = 'retired', voided_at = ?, void_instance = ? WHERE uid = ?",
-                        observation.now, observation.instance, pin.uid,
+                        now, observation.instance, pin.uid,
                     );
                 }
                 return {
                     status: "void", uid: pin.uid, instance: observation.instance, startDeadline,
-                    voidedAt: recorded.voided_at ?? observation.now,
+                    voidedAt: recorded.voided_at ?? now,
                 };
             }
-            const { total, tenant } = this.sql.exec(
-                "SELECT count(*) AS total, count(CASE WHEN tenant = ? THEN 1 END) AS tenant "
-                + "FROM reservations WHERE state <> 'retired'", pin.tenant,
+            if (closingUnstarted && now >= deadline) {
+                // Even a controller that never prepared this pin can settle it
+                // after expiry. No expired request can create a new fence.
+                return { status: "void", uid: pin.uid, instance: observation.instance, startDeadline, voidedAt: deadline };
+            }
+            if (!closingUnstarted && now >= startDeadline) return { status: "closed" };
+            const { tracked, total, tenant } = this.sql.exec(
+                "SELECT count(*) AS tracked, count(CASE WHEN state <> 'retired' THEN 1 END) AS total, "
+                + "count(CASE WHEN state <> 'retired' AND tenant = ? THEN 1 END) AS tenant FROM reservations", pin.tenant,
             ).one();
             const full = total >= this.cap || tenant >= 1;
+            if (tracked >= MAX_RESERVATION_RECORDS) return { status: closingUnstarted ? "pending" : "full" };
             if (observation === null && full) return { status: "full" };
-            const tombstone = observation && (!observation.onlyWhenFull || full) ? observation : null;
+            const tombstone = observation && (closingUnstarted || full) ? observation : null;
+            const voidedAt = Math.max(now, reservedAt);
             this.sql.exec(
                 "INSERT INTO reservations (worker, uid, tenant, binding, state, "
                 + "reserved_at, start_deadline, deadline, ingress_limit, outbound_limit, voided_at, void_instance) "
                 + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 pin.worker, pin.uid, pin.tenant, binding, tombstone === null ? "reserved" : "retired",
                 reservedAt, startDeadline, deadline, ingressBytes, outboundBytes,
-                tombstone?.now ?? null, tombstone?.instance ?? null,
+                tombstone === null ? null : voidedAt, tombstone?.instance ?? null,
             );
             return tombstone === null ? { status: "reserved" } : {
                 status: tombstone.onlyWhenFull ? "allocation-refused" : "void",
-                uid: pin.uid, instance: tombstone.instance, startDeadline, voidedAt: tombstone.now,
+                uid: pin.uid, instance: tombstone.instance, startDeadline, voidedAt,
             };
         });
     }

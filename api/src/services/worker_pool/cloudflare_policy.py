@@ -497,6 +497,8 @@ async def retire_cloudflare_installation(
     row.api_token_version = None
     row.control_root_version = None
     row.deployed_revision = None
+    row.containers_ready_revision = None
+    row.containers_release_digest = None
     row.retired_at = datetime.now(UTC)
     await db.execute(update(CloudflareCredential).where(
         CloudflareCredential.installation_id == installation_id,

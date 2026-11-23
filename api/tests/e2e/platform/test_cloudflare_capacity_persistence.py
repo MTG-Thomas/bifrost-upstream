@@ -1182,7 +1182,7 @@ async def test_container_application_effect_survives_provisioning_failures(
                 row = await session.get(CloudflareInstallation, installation.id)
                 assert row is not None
                 return await lifecycle_job._cleanup_one(
-                    session, row, adapter, scope_only="containers", container_adapter=adapter,
+                    session, row, adapter, container_adapter=adapter,
                 )
 
         assert await cleanup() == "progressed"
@@ -2094,8 +2094,31 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     assert installation.desired_revision == 1
 
     admin = _platform_operator()
+    release, _, _ = make_release()
+    now = datetime.now(UTC)
     installation.desired_state = "enabled"
-    installation.admitted_revision = 1
+    installation.admitted_revision = installation.deployed_revision = 1
+    installation.containers_ready_revision = 1
+    installation.containers_release_digest = release.digest
+    installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
+    application = app_journal(installation, release.digest, now)
+    launcher = CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="containers", kind="worker_script", target_name=f"bifrost-{installation.id.hex}-r1-containers",
+        desired_revision=1, artifact_digest=release.digest, effect_id=uuid4(),
+        state="present", provider_id=str(uuid4()), provider_version=str(uuid4()),
+        namespace_ids=application.namespace_ids, observed_at=now,
+    )
+    db_session.add_all([application, launcher, seal_credential(
+        CredentialRef(installation.id, installation.account_id, "scope_bearer", "containers", 1),
+        SecretStr("synthetic-container-scope-bearer-key"), actor=str(OPERATOR_ID), now=now,
+    )])
+    await db_session.flush()
+    db_session.add(CloudflareCapacityScope(
+        installation_id=installation.id, scope="containers", endpoint="https://containers.example.test",
+        deployment_revision=1, bearer_version=1,
+    ))
+    await db_session.flush()
     job, reused = await lifecycle_job.enqueue_cloudflare_disable(
         db_session, admin, installation_id=installation.id, expected_revision=1, action="scale_in",
     )
@@ -2119,10 +2142,21 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
 
     monkeypatch.setattr(lifecycle_job, "get_db_context", context)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    cleanup = AsyncMock(side_effect=AssertionError("Scale In must retain owned provider resources"))
+    monkeypatch.setattr(lifecycle_job, "_cleanup_one", cleanup)
     payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
     running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
     assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "scaled_in"}
+    cleanup.assert_not_awaited()
+    await db_session.refresh(installation)
     assert installation.api_token_version == 1
+    assert installation.admitted_revision is None
+    assert installation.deployed_revision == installation.containers_ready_revision == 1
+    assert installation.containers_release_digest == release.digest
+    for resource in (application, launcher):
+        await db_session.refresh(resource)
+        assert resource.state == "present"
+    assert await db_session.get(CloudflareCapacityScope, (installation.id, "containers", 1)) is not None
     actions = set(await db_session.scalars(select(AuditLog.action).where(AuditLog.resource_id == installation.id)))
     assert {"capacity.cloudflare_scale_in", "capacity.cloudflare_scaled_in"} <= actions
 
@@ -2247,7 +2281,8 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
     installation.desired_revision = 2
     installation.desired_state = "disconnected" if operation == "disconnect" else "enabled"
     installation.upgrade_release = "d" * 64 if operation == "upgrade" else None
-    installation.deployed_revision = 1
+    installation.deployed_revision = installation.containers_ready_revision = 1
+    installation.containers_release_digest = app.artifact_digest
     await db_session.flush()
     connection = await db_session.connection()
 
@@ -2304,6 +2339,8 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
     async def wait_for_readback(_delay):
         nonlocal by_id
         assert by_id and written == ["application"]
+        await db_session.refresh(installation)
+        assert installation.containers_ready_revision == 1
         by_id = False
 
     monkeypatch.setattr(lifecycle_job, "get_db_context", transaction)
@@ -2329,7 +2366,11 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
         await db_session.refresh(resource)
         assert resource.state == "absent" and resource.observed_at is not None
     await db_session.refresh(installation)
-    assert (installation.retired_at is not None) if operation == "disconnect" else (installation.upgrade_drained_at is not None)
+    if operation == "disconnect":
+        assert installation.retired_at is not None
+        assert installation.containers_ready_revision is None and installation.containers_release_digest is None
+    else:
+        assert installation.upgrade_drained_at is not None
 
 
 @pytest.mark.asyncio

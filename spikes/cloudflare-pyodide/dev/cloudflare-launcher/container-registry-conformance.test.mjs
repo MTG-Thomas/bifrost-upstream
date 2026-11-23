@@ -64,17 +64,23 @@ test("Miniflare SQLite preserves an unobserved start fence and its retirement", 
     };
     const first = pin();
     const other = pin();
-    const seats = await Promise.all([call("reserve", first), call("reserve", first), call("reserve", other)]);
+    const seats = await Promise.all([call("reserve", first, now), call("reserve", first, now), call("reserve", other, now)]);
     assert.equal(seats[0].status, seats[1].status);
     const [winner, loser] = seats[0].status === "reserved" ? [first, other] : [other, first];
-    assert.equal(await call("reserve", loser).then(value => value.status), "full");
+    assert.equal(await call("reserve", loser, now).then(value => value.status), "full");
     assert.equal((await call("authorizeStart", winner.uid, instance, now, winner.deadline)).status, "authorized");
     // The injected scheduler never creates a placement after the first effect.
     assert.equal((await call("authorizeStart", winner.uid, instance, now, winner.deadline)).status, "pending");
     const observedAt = winner.startDeadline + 60_000;
     const closed = await call("closeAbsent", winner.uid, instance, observedAt, observedAt);
     assert.equal(closed.status, "absent");
-    assert.equal((await call("reserve", loser)).status, "full");
+    assert.equal((await call("reserve", loser, now)).status, "full");
     assert.equal((await call("retire", winner.uid, instance, closed.closedAt)).status, "retired");
-    assert.equal((await call("reserve", loser)).status, "reserved");
+    assert.equal((await call("reserve", loser, observedAt)).status, "closed");
+    const later = {
+        ...pin(), reservedAt: observedAt, startDeadline: observedAt + 1000, deadline: observedAt + 123_000,
+    };
+    assert.equal((await call("reserve", later, observedAt)).status, "reserved");
+    assert.equal((await call("reserve", winner, winner.deadline)).status, "closed");
+    assert.equal((await call("authorizeStart", winner.uid, instance, winner.deadline, winner.deadline)).status, "closed");
 });
