@@ -161,9 +161,18 @@ async def test_kubernetes_preflight_checks_the_exact_mutable_secret(monkeypatch,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("layout", ["compose", "kustomize"])
-async def test_supervisor_restarts_and_stops_child_on_token_projection(monkeypatch, tmp_path, layout):
+@pytest.mark.parametrize("present_at_startup", [False, True])
+async def test_supervisor_restarts_and_stops_child_on_token_projection(monkeypatch, tmp_path, layout, present_at_startup):
     token = tmp_path / "token"
     launches: asyncio.Queue[asyncio.subprocess.Process] = asyncio.Queue()
+    armed = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    add_reader = loop.add_reader
+
+    def register_projection_reader(fd, callback, *args):
+        add_reader(fd, callback, *args)
+        if getattr(callback, "__module__", None) == cloudflare_connector.__name__:
+            armed.set()
 
     async def launch(path):
         assert path == token
@@ -185,13 +194,17 @@ async def test_supervisor_restarts_and_stops_child_on_token_projection(monkeypat
 
     if layout == "kustomize":
         token.symlink_to("..data/token")
+    if present_at_startup:
+        project(1, "Zmlyc3Q=")
     monkeypatch.setattr(cloudflare_connector, "launch", launch)
+    monkeypatch.setattr(loop, "add_reader", register_projection_reader)
     supervisor = asyncio.create_task(cloudflare_connector.supervise(token))
     try:
         async with asyncio.timeout(5):
-            await asyncio.sleep(0)  # Start the dormant watcher before publishing.
-            assert launches.empty()
-            project(1, "Zmlyc3Q=")
+            await armed.wait()
+            if not present_at_startup:
+                assert launches.empty()
+                project(1, "Zmlyc3Q=")
             first = await launches.get()
             project(2, "c2Vjb25k")
             second = await launches.get()

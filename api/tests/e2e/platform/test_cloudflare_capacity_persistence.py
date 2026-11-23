@@ -79,7 +79,7 @@ from src.services.authorization.context import (
 from src.services.authorization.enforce import Caller
 from src.services.execution import cloudflare_approval
 from src.services.execution.workflow_dispatch import release_workflow_run
-from src.services.kubernetes_execution import KubernetesExecutionService
+from src.services.kubernetes_execution import KubernetesExecutionService, KubernetesPolicy
 from src.services.work_dispatch import WAKE_WORKFLOW, stage_dispatch
 from src.services.worker_pool import claims as claim_service
 from src.services.worker_pool import (
@@ -2047,7 +2047,7 @@ async def test_reconcile_dedupes_schedule_and_closes_admission_on_missing_deploy
 
 
 @pytest.fixture
-async def supervisor_database(isolated_capacity_session_factory):
+async def isolated_capacity_installation(isolated_capacity_session_factory):
     # The supervisor plans the whole queue. Give it only this test's demand
     # and keep real test-stack executors from consuming the fixture.
     async with isolated_capacity_session_factory() as db:
@@ -2059,8 +2059,10 @@ async def supervisor_database(isolated_capacity_session_factory):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("primary", ["static", "job", "external"])
-async def test_supervisor_reserves_and_retires_without_restarting(supervisor_database, primary: str, monkeypatch) -> None:
-    db_session, installation = supervisor_database
+async def test_supervisor_reserves_and_retires_without_restarting(
+    isolated_capacity_installation, primary: str, monkeypatch,
+) -> None:
+    db_session, installation = isolated_capacity_installation
     connection = await db_session.connection()
 
     @asynccontextmanager
@@ -2181,22 +2183,27 @@ async def test_supervisor_reserves_and_retires_without_restarting(supervisor_dat
             await sweep()
             assert not writes
             await policy_service.update_policy({"max_workers": 1}, updated_by="test")
+        if primary in ("job", "external"):
             static_executor = ExecutionWorker(
                 form="static", state="ready", heartbeat_at=datetime.now(UTC),
                 supported_handlers=["workflow.execute"], memory_budget_bytes=128 * 2**20,
             )
             db_session.add(static_executor)
             await db_session.flush()
-            await sweep()
-            assert not writes
-            lanes = await cloudflare_status.overflow_status(
-                db_session, caller, installation,
-                CloudflareCapacityPolicy.model_validate(installation.policy["limits"]),
-                now=datetime.now(UTC), approvals=1, blockers=[],
-            )
-            assert lanes[0].primary_saturated is True
-            assert lanes[0].primary_fit == 1
-            assert [reason.code for reason in lanes[0].reasons] == ["primary_has_capacity"]
+            for heartbeat_age in (timedelta(0), timedelta(minutes=5)):
+                as_of = datetime.now(UTC)
+                static_executor.heartbeat_at = as_of - heartbeat_age
+                await db_session.flush()
+                await sweep()
+                assert not writes
+                lanes = await cloudflare_status.overflow_status(
+                    db_session, caller, installation,
+                    CloudflareCapacityPolicy.model_validate(installation.policy["limits"]),
+                    now=as_of, approvals=1, blockers=[],
+                )
+                assert lanes[0].primary_saturated is True
+                assert lanes[0].primary_fit == 1
+                assert [reason.code for reason in lanes[0].reasons] == ["primary_has_capacity"]
             static_executor.memory_reserved_bytes = 128 * 2**20
         elif primary == "static":
             await sweep()
@@ -2292,6 +2299,56 @@ async def test_supervisor_reserves_and_retires_without_restarting(supervisor_dat
         assert await db_session.scalar(select(CloudflareWorkflowSlot.fence).where(
             CloudflareWorkflowSlot.worker_id == worker_id,
         )) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("shared_cap", "expected_jobs"), [(10, 1), (3, 0), (None, 1)])
+async def test_container_pins_only_consume_an_explicit_shared_ceiling(
+    isolated_capacity_installation, monkeypatch, shared_cap, expected_jobs,
+) -> None:
+    db_session, installation = isolated_capacity_installation
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as db:
+            yield db
+
+    monkeypatch.setattr(controller, "get_db_context", context)
+    monkeypatch.setattr(controller, "_publish_launchable", AsyncMock())
+    installation.desired_state = "enabled"
+    installation.admitted_revision = 1
+    installation.policy = {
+        **installation.policy,
+        "limits": {**installation.policy["limits"], "shared_managed_worker_cap": shared_cap},
+    }
+    now = datetime.now(UTC)
+    for _ in range(3):
+        worker_id = uuid4()
+        db_session.add(ExecutionWorker(
+            id=worker_id, form="external", state="ready", capacity_scope="containers",
+            heartbeat_at=now, memory_budget_bytes=128 * 2**20,
+        ))
+        await db_session.flush()
+        db_session.add(CloudflareWorkerReservation(
+            worker_id=worker_id, installation_id=installation.id, scope="containers", deployment_revision=1,
+            control_root_version=installation.control_root_version,
+            container_tenant=str(uuid4()), container_release="c" * 64,
+            container_envelope={}, container_reserved_at=now,
+        ))
+    await db_session.flush()
+
+    settings = Settings(_env_file=None)
+    spec = WorkerJobSpec(namespace="test", image="api:test", env_from=(), service_account="default")
+    async with httpx.AsyncClient(base_url="https://kube.example.test", transport=httpx.MockTransport(Mock())) as http:
+        primary = controller.WorkerPoolController(
+            KubernetesJobClient(settings, http_client=http, namespace="test"), settings, spec,
+        )
+        launched = await primary.launch_for_demand(KubernetesPolicy(max_workers=3, warm_workers=1))
+    assert len(launched) == expected_jobs
+    for worker_id in launched:
+        worker = await db_session.get(ExecutionWorker, worker_id)
+        assert worker is not None and worker.form == "job" and worker.state == "reserved"
 
 
 @pytest.mark.asyncio
@@ -5753,8 +5810,9 @@ async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
     "connector_unavailable", "eligible_for_overflow",
 ])
 async def test_status_explains_placement_over_rest(
-    db_session, installation, monkeypatch, code,
+    isolated_capacity_installation, monkeypatch, code,
 ):
+    db_session, installation = isolated_capacity_installation
     role = RoleGrant(uuid4(), frozenset({"platform.read", "executions.read.all"}), (Boundary(BoundaryKind.PLATFORM),))
     caller = Caller(
         UserPrincipal(OPERATOR_ID, "operator@example.test", None),

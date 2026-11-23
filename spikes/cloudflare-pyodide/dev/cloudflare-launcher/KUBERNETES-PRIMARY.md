@@ -7,7 +7,7 @@
 | Preflight and activation | Preflight identifies the Job primary by service-account access review. Activation rechecks the signed preflight choices and commits one installation and Enable job. On Kubernetes, Managed Tunnel preflight only reads the connector Secret. A read-only Role or an immutable Secret passes this check and fails during token projection, after provisioning has begun. [Preflight](../../../../api/src/services/worker_pool/cloudflare_activation.py#L158) · [Activation](../../../../api/src/services/worker_pool/cloudflare_activation.py#L287) · [Projection readiness](../../../../api/src/services/worker_pool/cloudflare_connector_channel.py#L27) |
 | Enable and leadership | Enable uses the existing local PlatformJob runner. Each API competes for the scheduler lease and can run the Job controllers. Job reservations serialize through a PostgreSQL advisory transaction lock. The elected API runs the DB-backed Workers supervisor. The base scheduler Deployment is a physical launcher with no service-account token. A token-bearing scheduler, including the isolated-build overlay, can run the legacy Job helper without competing for the trigger lease. An elected API with no Job access holds new Workers starts as unverified. [API host](../../../../api/src/scheduler/api_host.py#L99) · [Legacy helper](../../../../api/src/scheduler/kubernetes_host.py#L32) · [Leader services](../../../../api/src/scheduler/control.py#L307) · [Supervisor](../../../../api/src/services/worker_pool/cloudflare_supervisor.py#L98) |
 | Placement | Workers demand is launchable after 2 seconds once the healthy Job cohort reaches its ceiling and no eligible Linux budget fits. The base also supplies static Linux executors, which the controller can pack. The primary erroneously deducts pinned Workers launchers from its own Max Workers when an installation has no shared cap. If the Job retires while a Workers launcher is live, the primary can lose the slot needed to recover. [Packing and ceiling](../../../../api/src/services/worker_pool/controller.py#L402) |
-| Placement reasons | The status read packs only the Job cohort when a Job primary is selected. A ready static executor can suppress an actual Workers launch while the read reports `eligible_for_overflow` or `waiting_for_launch_gate`. The installation slot limit uses the shared DB slot calculation and applies regardless of the primary form. [Status](../../../../api/src/services/worker_pool/cloudflare_status.py#L325) |
+| Placement reasons | The status read packs only the Job cohort when a Job primary is selected. A ready static executor can suppress an actual Workers launch while the read reports `eligible_for_overflow` or `waiting_for_launch_gate`. The installation slot limit uses the shared DB slot calculation and applies regardless of the primary form. [Status](../../../../api/src/services/worker_pool/cloudflare_status.py#L292) |
 | Tunnel delivery and rotation | The production component projects the one resource-version-fenced Secret read-only. The connector watches kubelet's atomic symlink swap and stops its old child before starting a new one. Rotation snapshots old connector sessions, evicts them by ID after Secret projection, and verifies a replacement session. Immediate retry eligibility can exhaust rotation attempts before kubelet refreshes the mount or a replacement session attaches. The local harness lacks the dedicated ingress Service and a component overlay. [Component](../../../../k8s/cloudflare-tunnel/connector.yaml) · [Supervisor](../../../../api/scripts/cloudflare_connector.py#L53) · [Rotation](../../../../api/src/services/worker_pool/cloudflare_tunnel.py#L265) |
 | Scale In, Disconnect and Upgrade | These operations use durable installation and release revisions. Scale In removes admission before drain. Disconnect withdraws the token, verifies owned resource absence, and then retires the installation. Upgrade drains the old revision before replacement Enable, with action dispatch remaining on the local Linux execution lane. [Capacity jobs](../../../../api/src/jobs/platform/cloudflare_capacity.py) |
 
@@ -39,7 +39,7 @@ provider charges can exceed it, for example during delayed cleanup.
 
 The persistence suite covers retirement at the pinned deadline and refusing
 work that does not fit the remaining claim window.
-[Retirement test](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py#L2299) · [Claim-window test](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py#L5246)
+[Retirement test](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py#L2356) · [Claim-window test](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py#L5303)
 
 Record the Enable runner class in the Kubernetes rehearsal. A physical Linux
 launcher reports `remote_launcher`, including a launcher hosted in a reusable
@@ -61,13 +61,19 @@ and derived incarnation keys. Bifrost platform secrets stay on Bifrost.
   to patch that exact Secret. The authorization review has no persistent
   write. Projection uses the API pod namespace even when Jobs run in another
   namespace.
-- Worker credential rotation uses the existing Cloudflare retry schedule to
-  give asynchronous Secret projection and session replacement time to settle.
-  The attempt limit and per-attempt timeout are unchanged.
-- The primary keeps its Job ceiling while Workers launchers are present.
-  An explicit shared ceiling still includes the launchers and unsettled
-  reservations. Job-primary status accounts for fit on static Linux
-  executors in the same installation.
+- Worker credential rotation schedules its existing second and third
+  attempts after delays of 15 and 165 seconds. That gives the final check
+  at least 180 seconds from the first failed check. The window covers a
+  one-minute kubelet sync, a one-minute TTL cache where configured, and a
+  minute of margin for the child restart and session attachment. Clusters
+  configured with longer sync or cache intervals can exceed the window.
+  [Kubernetes Secret projection](https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod) · [Retry timing test](../../../../api/tests/unit/jobs/test_platform_job_catalog.py#L84)
+- The primary keeps its own ceiling while pinned Workers launchers or
+  Containers instances are present. An explicit shared ceiling counts
+  each live resource once and retains pending provider deletions. Job and
+  VM-provider status pack the same Linux executor budgets as the controller,
+  including static executors. Cohort health still uses heartbeat freshness.
+  [Containers ceiling regression](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py#L2306)
 - The [local tunnel overlay](../../../../k8s/local-cloudflare-tunnel/kustomization.yaml)
   adds the existing connector component to the local manifests. It binds
   the Role to the local API ServiceAccount and uses the same image as the
@@ -127,7 +133,7 @@ The rotated value stopped the old child and started its replacement with
 zero container restarts. Clearing the Secret stopped the replacement.
 Sampling put the lower bounds from successful patch to child start at
 about 66 seconds for initial projection and 78 seconds for rotation.
-These observations exceed the 60 seconds of scheduled retry delays. The
+These observations exceeded the former 60 seconds of scheduled retry delays. The
 full rotation job, including provider session eviction and retry behavior,
 still needs qualification on a cluster with room for the Bifrost image.
 The connector namespace, disposable nodes, fixture containers, and
