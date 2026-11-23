@@ -1250,15 +1250,17 @@ async def test_container_application_effect_survives_provisioning_failures(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("canary_ready", [False, True])
+@pytest.mark.parametrize("canary_result", ["missing", "failed", "ready"])
 async def test_cold_enable_prepares_image_and_deploys_container_application(
-    db_session, installation, monkeypatch, tmp_path, canary_ready,
+    db_session, installation, monkeypatch, tmp_path, canary_result,
 ) -> None:
     from src.models.orm.platform_jobs import PlatformJob
     from src.services.worker_pool import cloudflare_containers_control, cloudflare_containers_release, cloudflare_containers_rest
     from src.worker.remote.container_egress import CONTAINER_EGRESS_DENIALS
     from src.worker.remote.protocol import nonce_digest
 
+    canary_started = canary_result != "missing"
+    canary_ready = canary_result == "ready"
     container, image, config = make_release()
     manifest = container.manifest
     workers = SimpleNamespace(digest=manifest.workers_release_digest, manifest=SimpleNamespace(
@@ -1293,7 +1295,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     started = stopped = None
     actor = "f" * 64
     context = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
-    if canary_ready:
+    if canary_started:
         db_session.add(PlatformJob(
             id=context.job_id, job_type="capacity.cloudflare_enable", title="Container qualification",
             payload={"revision": 1}, status="running", lease_token=context.lease_token,
@@ -1349,7 +1351,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
         if request.url.host == "github.com":
             return httpx.Response(200, content=assets[path.split("cloudflare-containers-")[1]])
         if request.url.host == f"{name}-containers.local-fixture.workers.dev":
-            assert canary_ready and application is not None
+            assert canary_started and application is not None
             assert request.headers.get("authorization") is None
             assert len(request.headers["x-bifrost-request-signature"]) == 128
             body = json.loads(request.content)
@@ -1369,11 +1371,21 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 row.remote_auth_nonce_digest = nonce_digest(body["nonce"])
                 row.remote_session_generation = 1
                 row.remote_owner_lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
-                pin.canary_ack_at = pin.canary_sdk_at = datetime.now(UTC)
+                pin.canary_sdk_at = datetime.now(UTC)
                 pin.canary_sdk_generation = 1
-                pin.container_envelope = {
-                    **pin.container_envelope, "denial_generation": 1, "egress_denials": sorted(CONTAINER_EGRESS_DENIALS),
-                }
+                if canary_ready:
+                    pin.canary_ack_at = pin.canary_sdk_at
+                    pin.container_envelope = {
+                        **pin.container_envelope, "denial_generation": 1,
+                        "egress_denials": sorted(CONTAINER_EGRESS_DENIALS),
+                    }
+                else:
+                    job = await db_session.get(PlatformJob, context.job_id)
+                    assert job is not None
+                    job.result = {"canary_failure": {
+                        "worker_id": str(canary_id), "generation": 1,
+                        "reason": {"stage": "ack", "error_class": "invalid_reply"},
+                    }}
                 await db_session.flush()
                 events.append("canary")
                 return httpx.Response(200, json={
@@ -1498,14 +1510,16 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     )))
     payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
-        for _ in range(2):
+        for _ in range(1 if canary_result == "failed" else 2):
             if canary_ready:
                 assert (await enable_job._settle_enable(context, payload, http, workers))["outcome"] == "enabled"
             else:
                 with pytest.raises(PlatformJobRequiresAction) as held:
                     await enable_job._settle_enable(context, payload, http, workers)
                 assert held.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
-    assert events == ["copy", "prepare", "launcher", "application"] + (["canary", "stop", "retire"] if canary_ready else [])
+                if canary_result == "failed":
+                    assert held.value.result["canary_failure"] == {"stage": "ack", "error_class": "invalid_reply"}
+    assert events == ["copy", "prepare", "launcher", "application"] + (["canary", "stop", "retire"] if canary_started else [])
     assert provisioner.create.await_count == (3 if canary_ready else 0)
     journals = (await db_session.scalars(select(CloudflareOwnedResource).where(
         CloudflareOwnedResource.installation_id == installation.id,
