@@ -375,7 +375,7 @@ def test_release_remains_draft_until_assets_and_images_are_verified() -> None:
     jobs = _load_workflow(CI_WORKFLOW)["jobs"]
     stage = jobs["create-release"]
     create, verify = stage["steps"][-2:]
-    assert create["id"] == "release" and create["with"]["draft"] is True
+    assert create["id"] == "release" and create["with"]["draft"] == "true"
     assert verify["env"]["RELEASE_ID"] == "${{ steps.release.outputs.id }}"
     promotion = jobs["promote-release-images"]
     assert "needs.create-release.result == 'success'" in _normalized(promotion["if"])
