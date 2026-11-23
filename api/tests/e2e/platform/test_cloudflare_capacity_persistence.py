@@ -3403,6 +3403,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
 
     from src.services.worker_pool.cloudflare_containers_policy import container_envelope
     from src.services.worker_pool.sizing import LIVE_STATES
+    from src.worker.remote.protocol import LINUX_RUNTIME_PROFILE
 
     db = db_session
     release, _, _ = make_release()
@@ -3577,7 +3578,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         requests = []
         refuse = reason == "scheduler-refusal"
 
-        def provider(request):
+        def placement_provider(request):
             if request.url.host == "capacity.example.test":
                 assert len(request.headers["x-bifrost-incarnation-certificate"]) == 128
                 payload = json.loads(request.content)
@@ -3604,7 +3605,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
             }})
 
         binding = ManagedCloudflareScope(installation.id, "containers", 1)
-        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(placement_provider)) as http:
             await cloudflare_supervisor._reconcile_containers(
                 binding, get_settings(), http, uuid4(), {binding: release}, kubernetes=False,
             )
