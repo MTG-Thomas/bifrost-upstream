@@ -413,6 +413,27 @@ closed effects complete teardown.
 | Miniflare with Docker | Use the pinned Worker toolchain, real Linux release recipe and conformance harness. Prove protocol-2 prepare, same-UID duplicates and cap under concurrent distinct creates, reset during a pending start, signed bootstrap/refresh, correct bytes/fragmentation, scoped source, baked-wheel resolution and blocked package downloads, successful native import and subprocess, denial of supervisor and prohibited network access, cancel with descendants, ACK replay, clean idle exit and stop timeout. Inject scheduler and inactivity transitions at the provider boundary for deterministic coverage. Local Docker lifecycle does not establish hosted scheduling, network or provider expiry behavior. [Cloudflare local development](https://developers.cloudflare.com/containers/guides/local-dev/) |
 | API e2e with stubs | Use isolated repository Docker tests and the real PostgreSQL installation/effect, queue, approval and meter paths. Hold a healthy primary and overlap supported Workers and Linux jobs through scoped fixtures. Check eligible and excluded findings, parallel claims/preparations, one Container per tenant and two per installation, exhausted shared budget, injected allocation refusal and uncertain send, runner loss, both ingress modes, joint drain and failed canary. Prove that neither upload happens while either lane lacks retirement witnesses. Exercise credential denial/replacement, late effects and disconnect absence. Verify UI shared job notifications and regenerated REST/CLI/MCP parity, OpenAPI, DTO flags, CLI contract and operation catalog. |
 
+The CT128 e2e and unit attempts at `43d4f9da2` on 2026-11-23 failed before
+pytest under shared-disk contention. The e2e scheduler fixture exceeded its
+two-second probe deadline at 07:14 UTC and became healthy before teardown.
+The unit API probes received connection refusals while the server process
+waited on I/O. The server started at 07:24:34 UTC and connected to PostgreSQL
+and Redis during teardown. The test host's 60-second full I/O pressure was
+34.14% during the e2e startup and 30.57% during the unit startup.
+
+The hypervisor backup log (`/var/log/vzdump/qemu-101.log`, UTC−05:00) records a
+288 GiB VM backup from 07:01:07 to 07:24:54 UTC. The VM disk and test host
+root disk share an LVM thin pool on the same physical device. The Kubernetes
+rehearsal's image build also used the test host from 07:21:17 to 07:23:10 UTC,
+during unit startup. Its Kind cluster began creating at 07:25:27 UTC after
+both stacks had exited. The failed wrapper logs are
+`/tmp/bifrost-containers-43d4f9da2-e2e.log` and
+`/tmp/bifrost-containers-43d4f9da2-unit.log`. Both used the prebuilt test image.
+The same image at `cceb9c6ab` passed 189 e2e and 1,215 unit tests with the
+startup code and health checks unchanged. Compare hypervisor backup activity
+and host I/O pressure when diagnosing a startup deadline on an otherwise
+idle test host.
+
 Hosted qualification needs explicit approval of the disposable account lane,
 installation, grants, time window and spend bounds, with an independent
 readback operator. Use the exact signed release, a held primary, synthetic
