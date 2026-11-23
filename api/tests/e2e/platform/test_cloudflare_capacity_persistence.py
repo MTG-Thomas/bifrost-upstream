@@ -1226,7 +1226,7 @@ async def test_opted_in_enable_admits_only_the_verified_revision(
     app = app_journal(installation, release.digest, now)
     if scenario == "missing_readiness":
         db_session.add(CloudflareOwnedResource(
-            installation_id=installation.id, account_id=installation.account_id,
+            id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
             scope="containers", kind="worker_script", target_name=f"bifrost-{installation.id.hex}-r{revision}-containers",
             desired_revision=revision, artifact_digest=release.digest, effect_id=uuid4(),
             state="present", provider_id=str(uuid4()), provider_version=str(uuid4()),
