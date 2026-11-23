@@ -1296,7 +1296,7 @@ async def test_container_application_effect_survives_provisioning_failures(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("canary_result", [
     "missing", "failed", "ready", "retire-timeout", "refresh-failure",
-    "pending-wrong-digest", "pending-expired", "pending-near-expiry",
+    "pending-wrong-digest", "pending-expired", "pending-near-expiry", "pending-replaced",
 ])
 async def test_cold_enable_prepares_image_and_deploys_container_application(
     db_session, installation, monkeypatch, tmp_path, canary_result,
@@ -1393,7 +1393,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 pytest.fail(f"Unexpected OCI tool call {executable.name}, {args}")
 
     async def provider(request):
-        nonlocal bindings, application, started, stopped
+        nonlocal bindings, application, started, stopped, actor
         path = request.url.path
         if request.url.host == "github.com":
             return httpx.Response(200, content=assets[path.split("cloudflare-containers-")[1]])
@@ -1408,7 +1408,11 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             if path == "/v1/egress-probe":
                 assert len(body["control_key"]) == 64
                 await db_session.refresh(installation)
-                assert installation.deployment_evidence["container_qualification_backoff"]["failures"] == 1
+                assert installation.deployment_evidence["container_qualification_backoff"]["failures"] == (
+                    2 if events.count("canary") else 1
+                )
+                actor = canary_id.hex * 2
+                stopped = None
                 row = await db_session.get(ExecutionWorker, canary_id)
                 pin = await db_session.get(CloudflareWorkerReservation, canary_id)
                 assert row is not None and row.reserved_for_dispatch_id is None
@@ -1574,7 +1578,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             assert events == ["copy", "prepare", "launcher", "application", "canary"]
             if canary_result.startswith("pending-"):
                 proof = dict(installation.deployment_evidence[enable_job.PENDING_QUALIFICATION_KEY])
-                if canary_result == "pending-wrong-digest":
+                if canary_result in ("pending-wrong-digest", "pending-replaced"):
                     proof["release_digest"] = "d" * 64
                 else:
                     age = 61 if canary_result == "pending-expired" else 46
@@ -1583,14 +1587,22 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                     **installation.deployment_evidence, enable_job.PENDING_QUALIFICATION_KEY: proof,
                 }
                 await db_session.flush()
-                with pytest.raises(PlatformJobRequiresAction) as deferred:
-                    await enable_job._settle_enable(context, payload, http, workers)
-                assert deferred.value.result["code"] == enable_job.QUALIFICATION_BACKOFF_CODE
-                await db_session.refresh(installation)
-                assert installation.admitted_revision is installation.containers_ready_revision is None
-                assert provisioner.create.await_count == 0
-                assert events == ["copy", "prepare", "launcher", "application", "canary"]
-                return
+                if canary_result == "pending-replaced":
+                    key = enable_job.QUALIFICATION_BACKOFF_KEY
+                    installation.deployment_evidence = {
+                        **installation.deployment_evidence,
+                        key: {**installation.deployment_evidence[key], "retry_at": datetime.now(UTC).isoformat()},
+                    }
+                    await db_session.flush()
+                else:
+                    with pytest.raises(PlatformJobRequiresAction) as deferred:
+                        await enable_job._settle_enable(context, payload, http, workers)
+                    assert deferred.value.result["code"] == enable_job.QUALIFICATION_BACKOFF_CODE
+                    await db_session.refresh(installation)
+                    assert installation.admitted_revision is installation.containers_ready_revision is None
+                    assert provisioner.create.await_count == 0
+                    assert events == ["copy", "prepare", "launcher", "application", "canary", "stop", "retire"]
+                    return
         for _ in range(1 if canary_result == "failed" else 2):
             if canary_ready:
                 assert (await enable_job._settle_enable(context, payload, http, workers))["outcome"] == "enabled"
@@ -1600,7 +1612,8 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 assert held.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
                 if canary_result == "failed":
                     assert held.value.result["canary_failure"] == {"stage": "ack", "error_class": "invalid_reply"}
-    assert events == ["copy", "prepare", "launcher", "application"] + (["canary", "stop", "retire"] if canary_started else [])
+    starts = 2 if canary_result == "pending-replaced" else int(canary_started)
+    assert events == ["copy", "prepare", "launcher", "application"] + ["canary", "stop", "retire"] * starts
     assert provisioner.create.await_count == (3 if canary_ready else 0)
     journals = (await db_session.scalars(select(CloudflareOwnedResource).where(
         CloudflareOwnedResource.installation_id == installation.id,
@@ -5448,9 +5461,9 @@ async def test_upgrade_scheduler_only_requeues_self_healing_actions(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("matching_digest", [True, False])
+@pytest.mark.parametrize("mismatch", [None, "digest", "release-not-installed", "provider-version"])
 async def test_qualification_backoff_bypass_requires_the_installed_application(
-    db_session, installation, monkeypatch, matching_digest,
+    db_session, installation, monkeypatch, mismatch,
 ):
     from src.services.worker_pool.cloudflare_containers_egress import (
         PENDING_QUALIFICATION_KEY,
@@ -5460,7 +5473,8 @@ async def test_qualification_backoff_bypass_requires_the_installed_application(
     now = datetime.now(UTC)
     workers_digest = "a" * 64
     application_digest = "b" * 64
-    monkeypatch.setattr(lifecycle_job, "installed_workers_release_digest", lambda: workers_digest)
+    monkeypatch.setattr(lifecycle_job, "installed_workers_release_digest",
+                        lambda: None if mismatch == "release-not-installed" else workers_digest)
     installation.desired_state = "enabled"
     installation.deployed_revision = installation.desired_revision
     installation.policy = {**installation.policy, "bounds_release": workers_digest}
@@ -5468,9 +5482,9 @@ async def test_qualification_backoff_bypass_requires_the_installed_application(
         "installation_id": str(installation.id),
         "revision": installation.desired_revision,
         "origin": installation.worker_ingress_origin,
-        "release_digest": application_digest if matching_digest else "c" * 64,
+        "release_digest": "c" * 64 if mismatch == "digest" else application_digest,
         "provider_id": "fixture-app",
-        "provider_version": "1",
+        "provider_version": "2" if mismatch == "provider-version" else "1",
         "observed_at": now.isoformat(),
     }}
     record_egress_refresh_failure(installation, now, qualification=True)
@@ -5493,7 +5507,7 @@ async def test_qualification_backoff_bypass_requires_the_installed_application(
     assert await db_session.scalar(select(func.count()).select_from(PlatformJob).where(
         PlatformJob.job_type == lifecycle_job.RECONCILE_JOB,
         PlatformJob.resource_id == str(installation.id), PlatformJob.status.in_(("queued", "running")),
-    )) == int(matching_digest)
+    )) == int(mismatch is None)
 
 
 @pytest.mark.asyncio

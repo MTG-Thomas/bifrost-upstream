@@ -300,7 +300,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         and installed_release is not None and installed_release == installation.policy.get("bounds_release")
     )
     deployment = await deployment_evidence(db, installation)
-    recovery = recovery_for_job(latest_job) if latest_job is not None and (
+    recovery = recovery_for_job(latest_job, installation=installation, now=as_of) if latest_job is not None and (
         latest_job.payload.get("revision") == installation.desired_revision
     ) else None
     job_code = recovery.code if recovery else None

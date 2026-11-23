@@ -619,12 +619,10 @@ async def _qualify_container_revision(
                 "CF_CONTAINERS_CLEANUP_PENDING", "Waiting for the Container Canary to Retire", retryable=True,
             ) from None
 
-    if pending is not None:
-        for prior_worker in prior:
-            await retire(prior_worker)
-        prior = ()
-        if read_pending_qualification(installation, datetime.now(UTC)) is not None:
-            return await _commit_container_egress(context, payload, release, pending, refresh=False)
+    for prior_worker in prior:
+        await retire(prior_worker)
+    if pending is not None and read_pending_qualification(installation, datetime.now(UTC)) is not None:
+        return await _commit_container_egress(context, payload, release, pending, refresh=False)
     if retry is not None and retry.retry_at > datetime.now(UTC):
         if refresh:
             return "backoff"
@@ -633,8 +631,6 @@ async def _qualify_container_revision(
             "code": QUALIFICATION_BACKOFF_CODE, "retry_at": retry_at,
             "instructions": [f"Retry this capacity action at or after {retry_at}."],
         })
-    for prior_worker in prior:
-        await retire(prior_worker)
     async with get_db_context() as db:
         reserved = await reserve_container_canary(
             db, installation_id=payload.installation_id, controller_id=context.job_id,

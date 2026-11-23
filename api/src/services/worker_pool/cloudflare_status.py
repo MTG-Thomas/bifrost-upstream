@@ -50,6 +50,7 @@ from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIE
 from src.services.worker_pool.cloudflare_containers_egress import (
     QUALIFICATION_BACKOFF_CODE,
     read_egress_refresh,
+    read_pending_qualification,
     read_verified_egress,
 )
 from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
@@ -146,7 +147,9 @@ def reason(code: CloudflarePlacementCode, at: datetime | None = None) -> Cloudfl
     return CloudflarePlacementReason(code=code, label=label, remedy=remedy, next_eligible_at=at)
 
 
-def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | None:
+def recovery_for_job(
+    job: PlatformJob | None, *, installation: CloudflareInstallation | None = None, now: datetime | None = None,
+) -> CloudflareRecoveryDetails | None:
     if job is None or job.status not in ("failed", "requires_action"):
         return None
     result = job.result or {}
@@ -166,10 +169,7 @@ def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | Non
         "CF_PRIOR_WORKERS_LIVE": PLACEMENT["cleanup_pending"][1],
         "CF_PROVIDER_UNAVAILABLE": PLACEMENT["cloudflare_capacity_unavailable"][1],
         "CF_CONTAINERS_UNVERIFIED": PLACEMENT["container_readiness_unverified"][1],
-        "CF_CONTAINERS_CLEANUP_PENDING": (
-            "Retry Enable promptly, within an hour of verification, to reuse the verified Container proof "
-            "if it has at least 15 minutes left. Scale In invalidates that proof."
-        ),
+        "CF_CONTAINERS_CLEANUP_PENDING": "Wait for the Container canary to retire, then retry Enable.",
         QUALIFICATION_BACKOFF_CODE: "Retry this capacity action after the Container qualification backoff.",
         "CF_CONTAINERS_RELEASE_UNAVAILABLE": PLACEMENT["release_mismatch"][1],
         "CF_TUNNEL_VERIFICATION_CHANGED": TUNNEL_VERIFICATION_CHANGED_REMEDY,
@@ -193,6 +193,16 @@ def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | Non
         if valid:
             sanitized = dict(zip(("resource_class", "check", "observed_category", "expected_category"), values, strict=True))
     remedy = remedies[code]
+    if code == "CF_CONTAINERS_CLEANUP_PENDING":
+        pending = read_pending_qualification(installation, now) if installation is not None and now is not None else None
+        if job.job_type == "capacity.cloudflare_reconcile":
+            remedy = (
+                "Automatic Reconcile will verify retirement and reuse the proof if it is still eligible."
+                if pending is not None else
+                "Automatic Reconcile will verify retirement before attempting a new Container qualification."
+            )
+        elif pending is not None:
+            remedy = "Retry Enable within 45 minutes of verification to reuse the proof. Scale In invalidates it."
     if code == QUALIFICATION_BACKOFF_CODE:
         retry_at = result.get("retry_at")
         if isinstance(retry_at, str):

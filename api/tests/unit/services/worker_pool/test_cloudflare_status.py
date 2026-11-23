@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.kubernetes_execution import KubernetesPolicy
@@ -36,11 +37,19 @@ def test_qualification_backoff_recovery_includes_the_retry_time():
     assert recovery is not None and recovery.remedy == f"Retry this capacity action at or after {retry_at}."
 
 
-def test_qualification_cleanup_recovery_preserves_the_pending_proof():
-    recovery = recovery_for_job(PlatformJob(status="failed", error_code="CF_CONTAINERS_CLEANUP_PENDING"))
+@pytest.mark.parametrize(("job_type", "has_proof", "expected"), [
+    ("enable", False, "then retry Enable"),
+    ("enable", True, "within 45 minutes"),
+    ("reconcile", False, "before attempting a new Container qualification"),
+    ("reconcile", True, "reuse the proof if it is still eligible"),
+])
+def test_qualification_cleanup_recovery_depends_on_pending_proof(monkeypatch, job_type, has_proof, expected):
+    monkeypatch.setattr(cloudflare_status, "read_pending_qualification", lambda *_: object() if has_proof else None)
+    recovery = recovery_for_job(PlatformJob(
+        job_type=f"capacity.cloudflare_{job_type}", status="failed", error_code="CF_CONTAINERS_CLEANUP_PENDING",
+    ), installation=CloudflareInstallation(), now=NOW)
     assert recovery is not None
-    assert "Retry Enable" in recovery.remedy and "within an hour" in recovery.remedy
-    assert "Scale In invalidates" in recovery.remedy
+    assert expected in recovery.remedy
 
 def test_container_refresh_failure_backs_off_and_surfaces_persistent_failure():
     installation = SimpleNamespace(desired_revision=3, deployment_evidence={})
