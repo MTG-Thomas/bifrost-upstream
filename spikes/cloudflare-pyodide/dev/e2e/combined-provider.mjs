@@ -263,8 +263,9 @@ function upgrade(req, socket, head) {
       }
       if (challenges.delete(frame.payload?.reply)) {
         const denied = frame.payload.result?.denied;
+        const checks = ['alternate-origin', 'raw-tcp', 'wrong-host', 'disallowed-route', 'redirect'];
         event('canary-reply', {
-          passedChecks: Array.isArray(denied) ? denied.length : 0,
+          passedChecks: Array.isArray(denied) ? checks.filter((check) => denied.includes(check)) : [],
           failed: Boolean(frame.payload.error_type),
         });
       }

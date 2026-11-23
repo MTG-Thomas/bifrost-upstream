@@ -13,8 +13,11 @@ from src.worker.remote.container_egress import (
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [None, "alternate-origin", "raw-tcp", "redirect"])
-async def test_egress_canary_only_records_observed_denials(monkeypatch, failure):
+@pytest.mark.parametrize(("failure", "redirect"), [
+    (None, "relay"), (None, "ingress"), ("alternate-origin", "relay"), ("raw-tcp", "relay"),
+    ("redirect", "unmarked"), ("redirect", "leaked-location"),
+])
+async def test_egress_canary_only_records_observed_denials(monkeypatch, failure, redirect):
     origin, alternate = "https://ingress.example.test", "https://scope.example.test"
     address, worker, proof = "192.0.2.23", UUID(int=1), "a" * 64
     closed = AsyncMock()
@@ -39,8 +42,12 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure)
         assert request.headers["authorization"] == f"Bearer {proof}"
         assert request.headers["x-bifrost-canary-generation"] == "2"
         if "x-bifrost-canary-redirect" in request.headers:
-            if failure == "redirect":
-                return httpx.Response(403)  # A generic error is not a relay witness.
+            if redirect == "unmarked":
+                return httpx.Response(404)
+            if redirect == "leaked-location":
+                return httpx.Response(404, headers={"location": "/blocked", "x-bifrost-worker-ingress": "v1; denied"})
+            if redirect == "ingress":
+                return httpx.Response(404, headers={"x-bifrost-worker-ingress": "v1; denied"})
             return httpx.Response(403, headers={CONTAINER_RELAY_REJECTION: "redirect"})
         return httpx.Response(204, headers={"x-bifrost-worker-ingress": "v1; allowed"})
 

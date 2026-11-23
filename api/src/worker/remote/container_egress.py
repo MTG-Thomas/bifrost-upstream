@@ -31,6 +31,15 @@ async def run_container_egress_checks(
             async with client.stream("GET", url, headers=headers) as response:
                 return response.status_code == 403 and response.headers.get(CONTAINER_RELAY_REJECTION) == reason
 
+        async def redirect_denied() -> bool:
+            async with client.stream("GET", route, headers={**auth, "X-Bifrost-Canary-Redirect": "1"}) as response:
+                # The dedicated ingress can suppress the redirect before it
+                # reaches the relay. Both guards return their own marker.
+                return "location" not in response.headers and (
+                    (response.status_code == 403 and response.headers.get(CONTAINER_RELAY_REJECTION) == "redirect")
+                    or (response.status_code == 404 and response.headers.get("x-bifrost-worker-ingress") == "v1; denied")
+                )
+
         async def connect_denied(target: str) -> bool:
             # A successful TCP connection is enough to fail the challenge.
             # TLS trust failures must never stand in for a network denial.
@@ -50,7 +59,7 @@ async def run_container_egress_checks(
             connect_denied(alternate_url.host), connect_denied(address),
             denied(route, "origin", {"Host": "wrong-host.invalid"}),
             denied(f"{origin}/__bifrost_canary_denied__", "route"),
-            denied(route, "redirect", {**auth, "X-Bifrost-Canary-Redirect": "1"}),
+            redirect_denied(),
         )
     return [
         name for name, observed in zip(
