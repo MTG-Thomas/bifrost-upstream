@@ -7,9 +7,10 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: bifrost-cloudflare-connector
-  # NetworkPolicy does not provide isolation from the connector's own node.
+  # Own-node and host-network egress depend on the cluster's CNI.
   # See the Managed Tunnel runbook for the control-plane boundary.
-  policyTypes: [Egress]
+  policyTypes: [Ingress, Egress]
+  ingress: []
   egress:
     - to:
         - podSelector:

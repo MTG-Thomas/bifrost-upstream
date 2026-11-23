@@ -314,7 +314,8 @@ controller and synchronized nftables rules. Kindnet
 `sha256:e59a687ca28ae274a2fc92f1e2f5f1c739f353178a43a23aafc71adb802ed166`.
 [Kind v0.24.0 release](https://github.com/kubernetes-sigs/kind/releases/tag/v0.24.0)
 
-The connector used the rendered component policy. Listening fixtures used
+The connector used the rendered egress rules before the follow-up added
+ingress isolation. Listening fixtures used
 the rendered Service selectors and target ports. An unselected pod in the
 same namespace reached all 22 targets. The node had no IPv4 or IPv6 default
 route. A route inside the disposable node sent the allowed edge address and
@@ -329,9 +330,10 @@ a separate test address to a local listener.
 | Bifrost main API, Postgres, Redis and SeaweedFS, each via Service and direct endpoint | Blocked | Reachable |
 | Kubernetes API via Service and same-node control-plane endpoint | Reachable | Reachable |
 
-Standard NetworkPolicy exempts traffic to the node running the connector.
-In this single-node layout, the Kubernetes API Service also led to that
-node. A temporary node-local firewall rule scoped to the connector's
+Kindnet and its bundled policy controller allowed egress to the local
+node. In this single-node layout, the Kubernetes API Service also led to
+that node. Other CNIs can handle own-node and host-network traffic
+differently. Probe the Service and direct endpoint in each cluster. A temporary node-local firewall rule scoped to the connector's
 source address blocked both API paths. The same rule left edge and worker
 ingress reachable from the connector and left both API paths reachable
 from the control pod. The rule was removed after the check. Deployments

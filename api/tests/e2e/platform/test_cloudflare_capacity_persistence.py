@@ -2487,10 +2487,14 @@ async def test_supervisor_reserves_and_retires_without_restarting(
     (3, "scaled_in", "draining", False, 0, "lifetime"),
     (3, "disconnected", "retired", False, 0, "job"),
     (3, "disconnected", "retired", False, 0, "unrelated"),
+    (3, "disconnected", "retired", False, 0, "action_mismatch"),
+    (3, "enabled", "retired", False, 0, "upgrade"),
+    (3, "disconnected", "retired", False, 0, "current_revision"),
+    (3, "disconnected", "retired", False, 0, "partial"),
     (3, "disconnected", "retired", True, 1, ""),
     (10, "disconnected", "retired", False, 1, "job"),
 ])
-async def test_container_pins_only_consume_an_explicit_shared_ceiling(
+async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
     isolated_capacity_installation, monkeypatch, shared_cap, desired_state, worker_state, deleted, expected_jobs, scenario,
 ) -> None:
     db_session, installation = isolated_capacity_installation
@@ -2511,23 +2515,38 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
         "limits": {**installation.policy["limits"], "shared_managed_worker_cap": shared_cap},
     }
     now = datetime.now(UTC)
-    for _ in range(3):
+    worker_pins = []
+    for index in range(3):
         worker_id = uuid4()
         end_reason = None
         if worker_state == "draining":
             end_reason = "max_lifetime" if scenario == "lifetime" else "cloudflare_admission_closed"
+        workers_lane = worker_state == "draining"
+        state = "ready" if scenario == "policy" else worker_state
         db_session.add(ExecutionWorker(
-            id=worker_id, form="external", state=worker_state, capacity_scope="containers", end_reason=end_reason,
+            id=worker_id, form="external", state=state,
+            capacity_scope="workers" if workers_lane else "containers",
+            runtime_profile="cloudflare-python-v1" if workers_lane else "linux-process-v1",
+            end_reason=None if scenario == "policy" else end_reason,
             capacity_resource_deleted_at=now if deleted else None,
+            memory_reserved_bytes=1 if scenario == "policy" else 0,
             heartbeat_at=now, memory_budget_bytes=128 * 2**20,
         ))
         await db_session.flush()
-        db_session.add(CloudflareWorkerReservation(
-            worker_id=worker_id, installation_id=installation.id, scope="containers", deployment_revision=1,
-            control_root_version=installation.control_root_version,
-            container_tenant=str(uuid4()), container_release="c" * 64,
-            container_envelope={}, container_reserved_at=now,
-        ))
+        if workers_lane:
+            scope = ManagedCloudflareScope(installation.id, "workers", 1)
+            pin = scope.pin(worker_id, 1, reserved_at=now - timedelta(seconds=120), lifetime=3600, deadline_wire=False)
+            worker_pins.append(pin)
+        else:
+            current = scenario == "current_revision" or (scenario == "partial" and index == 2)
+            pin = CloudflareWorkerReservation(
+                worker_id=worker_id, installation_id=installation.id, scope="containers",
+                deployment_revision=installation.desired_revision if current else 1,
+                control_root_version=installation.control_root_version,
+                container_tenant=str(uuid4()), container_release="c" * 64,
+                container_envelope={}, container_reserved_at=now,
+            )
+        db_session.add(pin)
     await db_session.flush()
 
     settings = Settings(_env_file=None)
@@ -2550,17 +2569,24 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
     idle = await get_cloudflare_capacity_status(db_session, _platform_operator())
     assert not any(reason.code == "primary_limited_by_cloudflare_cleanup" for reason in idle.placement_reasons)
     assert not any(reason.code == "primary_limited_by_cloudflare_drain" for reason in idle.placement_reasons)
-    if scenario in ("job", "lifetime", "unrelated"):
+    if scenario in ("job", "lifetime", "unrelated", "action_mismatch", "upgrade", "current_revision", "partial"):
         title = "Drain Fixture Workers" if worker_state == "draining" else "Disconnect Fixture Capacity"
         action = "scale_in" if desired_state == "scaled_in" else "disconnect"
-        job_type = "capacity.cloudflare_reconcile" if scenario == "unrelated" else "capacity.cloudflare_disable"
+        job_type = "capacity.cloudflare_reconcile" if scenario in ("unrelated", "upgrade") else "capacity.cloudflare_disable"
+        payload = {"revision": installation.desired_revision, "action": action}
         if scenario == "unrelated":
             title = "Unrelated Fixture Reconcile"
+        if scenario == "action_mismatch":
+            payload["action"] = "scale_in"
+        if scenario == "upgrade":
+            title = "Upgrade Fixture Capacity"
+            payload["operation"] = "upgrade"
+            installation.upgrade_release = "fixture-release"
         db_session.add(PlatformJob(
             job_type=job_type, title=title, status="requires_action",
             resource_type="cloudflare_installation", resource_id=str(installation.id),
             requested_by_user_id=str(OPERATOR_ID), requested_by_email="operator@example.test",
-            requested_by_name="Fixture Operator", payload={"revision": installation.desired_revision, "action": action},
+            requested_by_name="Fixture Operator", payload=payload,
         ))
     run = Execution(workflow_name="fixture", executed_by_name="fixture")
     db_session.add(run)
@@ -2570,12 +2596,42 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
         message={}, payload={}, memory_request_bytes=64 * 2**20, created_at=now - timedelta(seconds=10),
     ))
     await db_session.flush()
+    if scenario == "policy":
+        @asynccontextmanager
+        async def retirement_context():
+            async with context() as db:
+                yield db
+                await db.commit()
+
+        monkeypatch.setattr(external_controller, "get_db_context", retirement_context)
+        profile = external_controller.WorkerCapacityProfile.model_validate({
+            "protocol_version": 2, "scope": "workers", "worker_version": "test",
+            "runtime_profile": "cloudflare-python-v1", "memory_limit_bytes": 128 * 2**20,
+            "max_workers": 3, "max_lifetime_seconds": 3600,
+        })
+        async with httpx.AsyncClient(transport=httpx.MockTransport(Mock())) as http:
+            client = external_controller.ExternalCapacityClient("https://capacity.example.test", "t" * 40, http=http)
+            supervisor = external_controller.ExternalWorkerPoolController(client, settings, profile)
+            supervisor.managed_cloudflare_scope = ManagedCloudflareScope(installation.id, "workers", 1)
+            for pin in worker_pins:
+                await supervisor._retire_closed_worker(pin.worker_id)
+            before_expiry = await get_cloudflare_capacity_status(db_session, _platform_operator())
+            assert any(reason.code == "primary_limited_by_cloudflare_drain" for reason in before_expiry.placement_reasons)
+            for pin in worker_pins:
+                pin.workers_deadline_at = now - timedelta(seconds=60)
+                pin.workers_lifetime_seconds = 60
+            await db_session.flush()
+            for pin in worker_pins:
+                await supervisor._retire_closed_worker(pin.worker_id)
+
     status = await get_cloudflare_capacity_status(db_session, _platform_operator())
     cleanup_limit = next((reason for reason in status.placement_reasons
                           if reason.code == "primary_limited_by_cloudflare_cleanup"), None)
     assert (cleanup_limit is not None) == (shared_cap == 3 and worker_state == "retired" and not deleted)
     if cleanup_limit is not None:
-        expected = "Disconnect Fixture Capacity" if scenario == "job" else "Verify deletion of the outstanding"
+        expected = {
+            "job": "Disconnect Fixture Capacity", "upgrade": "Upgrade Fixture Capacity",
+        }.get(scenario, "Verify deletion of the outstanding")
         assert expected in cleanup_limit.remedy
         assert "Unrelated Fixture Reconcile" not in cleanup_limit.remedy
     drain_limit = next((reason for reason in status.placement_reasons

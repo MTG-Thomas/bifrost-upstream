@@ -328,6 +328,13 @@ the reserved ceiling on each start.
 
 ## Joint drain, replacement and teardown
 
+The primary-capacity admission-closure drain notice currently describes
+Workers launchers. Containers reservations continue to count toward the
+shared cap and appear in verified cleanup status. A Containers lane that
+reports live admission-closure drains should first record a stable
+Containers lifecycle cause and add an explicit status mapping with
+regression coverage.
+
 Extend Phase 4's **one** installation revision barrier. The desired release
 pins both scope bundles, image, ingress contract and meter bounds. A
 Containers-only image change triggers the same barrier when both scopes are

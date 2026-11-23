@@ -188,20 +188,26 @@ def test_local_readme_documents_supported_entrypoints_and_worker_jobs() -> None:
 
 
 
-def test_managed_tunnel_connector_limits_egress_to_dns_ingress_and_tunnel_edge() -> None:
+def test_managed_tunnel_connector_policy_isolates_ingress_and_limits_egress() -> None:
     component = REPO_ROOT / "k8s" / "cloudflare-tunnel"
-    policy = yaml.safe_load((component / "network-policy.yaml").read_text())["spec"]
+    policy_doc = yaml.safe_load((component / "network-policy.yaml").read_text())
+    policy = policy_doc["spec"]
+    assert "network-policy.yaml" in yaml.safe_load((component / "kustomization.yaml").read_text())["resources"]
     deployment = next(doc for doc in yaml.safe_load_all((component / "connector.yaml").read_text())
                       if doc["kind"] == "Deployment")
+    assert policy_doc["metadata"]["namespace"] == deployment["metadata"]["namespace"]
     pod = deployment["spec"]["template"]
     connector = {"app.kubernetes.io/name": "bifrost-cloudflare-connector"}
     assert policy["podSelector"] == {"matchLabels": connector}
     assert pod["metadata"]["labels"].items() >= connector.items()
     assert pod["spec"]["automountServiceAccountToken"] is False
     assert not pod["spec"].get("hostNetwork")
-    assert policy["policyTypes"] == ["Egress"]
-    ingress, dns, edge = policy["egress"]
-    assert ingress == {
+    container, = pod["spec"]["containers"]
+    assert not {"livenessProbe", "readinessProbe", "startupProbe"} & container.keys()
+    assert policy["policyTypes"] == ["Ingress", "Egress"]
+    assert policy["ingress"] == []
+    worker_ingress_egress, dns, edge = policy["egress"]
+    assert worker_ingress_egress == {
         "to": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "bifrost-api"}}}],
         "ports": [{"protocol": "TCP", "port": 8001}],
     }
