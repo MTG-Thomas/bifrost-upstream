@@ -451,6 +451,7 @@ class TunnelRest(WorkersRestCleanup):
                 )
         if before_write is not None and not await before_write():
             return False
+        # Per-installation job serialization protects this unconditional PUT of the approved route.
         await self._put_ingress(path, desired)
         await self.verify_ingress(tunnel, origin)
         return True

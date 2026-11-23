@@ -273,7 +273,7 @@ def verification_identity(
 ) -> tuple[object, ...]:
     return (
         row.id, row.reachability_mode, row.account_id, row.zone_id, row.worker_ingress_origin,
-        _resource_fence(item), _resource_fence(record),
+        row.api_token_version, row.tunnel_token_version, _resource_fence(item), _resource_fence(record),
     )
 
 

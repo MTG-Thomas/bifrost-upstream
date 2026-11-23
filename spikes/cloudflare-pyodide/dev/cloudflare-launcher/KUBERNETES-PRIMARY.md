@@ -289,25 +289,43 @@ path. This is intentional. Reconcile can admit a new deployment, so it must
 verify the same projected token and attached session. A connector that
 remains unready after the 180-second wait ends that job with non-retryable
 `CF_CONNECTOR_UNAVAILABLE`. A later explicit replay can reuse the
-journaled connector credential. Enable, rotation readiness checks, and
-Reconcile verification release their database transactions before reading
-the provider, including the Reconcile reads for DNS, ingress, and the
-connector credential. Secret projection can take the installation lock
-while those calls are in flight. Before recording, the job rechecks its
-lease, the installation state and revision, the resource receipts, and the
-credential and projection versions before recording health. A confirmed
-problem closes admission while the lease and the same tunnel and DNS
-receipts are current, including when projection has advanced. Reconcile
-commits the closure before repairing ingress. Repair verifies the exact
-provider target, rechecks the lease and installation before writing the
-approved route, and leaves admission closed for the next Enable check.
+journaled connector credential. Enable commits the credential before
+entering its connector wait. The wait releases the installation lock
+before every provider call and sleep, so projection can deliver the
+first token within that wait. The ingress watcher retries a timed-out
+projection on its next pass.
 
-After projection, eviction targets only exact session IDs captured before
-the token was activated. A connector attached by a concurrent rotation
-is outside that set. Connector credential rotation still holds the
-installation lock while it journals the pre-rotation session inventory
-and applies and adopts the provider credential. Projection begins once
-the replacement credential has been committed to the journal.
+Reconcile verification and rotation readiness checks also release the
+transaction before provider reads. Reconcile rechecks the job lease,
+installation revision, tunnel and DNS receipts, and credential versions.
+A confirmed ingress or ownership problem closes admission for the same
+target. Readiness results require the same projection state. If projection
+advances across a session read, Reconcile retries before acting on it.
+Repair runs after admission closure commits and rechecks the job before
+its PUT and after readback. The `cloudflare-installation:{id}` job lock
+serializes lifecycle writers for an installation, including ingress
+repair and credential rotation. The provider ingress PUT relies on this
+serialization and the exact tunnel receipt.
+
+Eviction targets only exact session IDs captured before the token was
+activated, so a connector attached by a concurrent rotation is outside
+that set. The following provider calls still hold the installation lock
+and can delay a projection attempt:
+
+- Connector credential rotation journals the old sessions and applies and
+  adopts the replacement under the lease. Projection of the replacement
+  starts after the credential commits.
+- Account-token rotation verifies management writes, including the ingress
+  PUT, before promoting the staged account credential.
+- Enable provisions the tunnel and DNS under their journal fences. The
+  initial connector credential is first available to project when the DNS
+  transaction commits.
+- Enable's final Upgrade inventory read runs with the admission transaction
+  so the verified receipts and deployment promotion stay fenced. It runs
+  after the connector has projected and attached.
+- Disable's tunnel cleanup advances one journaled step under the lock.
+  Withdrawal of the connector credential commits before cleanup waits for
+  the empty projection and proceeds with provider deletion.
 
 Strict kubeconform validated all 23 adapted manifests in each replay. Both
 replays removed the namespace and connector workload, then verified that

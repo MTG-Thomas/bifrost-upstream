@@ -794,7 +794,11 @@ async def _settle_reconcile(
         except ObservationPending:
             raise CloudflareRestUnavailable("Managed Tunnel inventory could not be confirmed") from None
 
-    tunnel_problem = tunnel_snapshot is not None and issue is not None
+    # An empty session list is only meaningful for the projection state we sampled.
+    tunnel_problem = (
+        tunnel_snapshot is not None and connectors is None and issue is not None
+        and issue[1] != "CF_MANAGEMENT_CREDENTIAL"
+    )
     if token is not None and issue is None:
         try:
             roles = {receipt.intent.target.name.rsplit("-", 1)[-1] for receipt in inventory}
@@ -837,11 +841,12 @@ async def _settle_reconcile(
             tunnel_resources = await _current_tunnel_resources(db, installation, tunnel_snapshot)
             if tunnel_resources is None:
                 return {"outcome": "superseded"}
-        if installation.admitted_revision is None and admitted_revision is not None:
+        if installation.api_token_version != token_version or (
+            installation.admitted_revision is None and admitted_revision is not None
+        ):
             return {"outcome": "superseded"}
         if not tunnel_problem and (
-            installation.api_token_version != token_version
-            or installation.admitted_revision != admitted_revision
+            installation.admitted_revision != admitted_revision
             or await _inventory_snapshot(db, installation.id, revision=payload.revision) != inventory
             or await usage_script_identities(db, installation.id) != usage_identities
         ):

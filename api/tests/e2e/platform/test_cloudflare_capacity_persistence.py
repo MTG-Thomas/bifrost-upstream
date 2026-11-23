@@ -1521,19 +1521,24 @@ def _running_tunnel_job(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("race", "code"), [
     ("disconnected", "CF_CONNECTOR_UNAVAILABLE"),
+    ("projection_completed", None),
+    ("credential_denied", "CF_MANAGEMENT_CREDENTIAL"),
+    ("credential_replaced", None),
     ("ownership", "CF_OWNERSHIP_CONFLICT"),
     ("repair", "CF_TUNNEL_INGRESS_MISMATCH"),
+    ("repair_superseded_before_reads", None),
     ("repair_superseded", None),
+    ("repair_superseded_after_readback", None),
     ("target_replaced", None),
     ("admission_superseded", None),
     ("unhealthy_admission_superseded", None),
     ("healthy_projection_changed", None),
 ])
-async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_projection, race, code) -> None:
+async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_projection, monkeypatch, race, code) -> None:
     sessions, token_file, installation_id, provider = managed_tunnel_for_projection
     payload = lifecycle_job.CloudflareReconcilePayload(installation_id=installation_id, revision=1)
     healthy_read = race in ("admission_superseded", "healthy_projection_changed")
-    if healthy_read or race == "repair":
+    if healthy_read or race in ("repair", "disconnected", "credential_denied"):
         assert await cloudflare_connector_channel.project_connector(None) == (installation_id, 1, 1)
     if healthy_read:
         provider.connectors = [str(uuid4())]
@@ -1549,7 +1554,21 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
         row.deployment_evidence = {"connector_session": "disconnected"}
         running = _running_tunnel_job(db, installation_id, lifecycle_job.RECONCILE_JOB, payload.model_dump(mode="json"))
 
-    reads = writes = 0
+    reads = writes = transactions = 0
+
+    @asynccontextmanager
+    async def supersede_after_closure():
+        nonlocal transactions
+        transactions += 1
+        async with sessions.begin() as db:
+            if transactions == 3:
+                row = await db.get(CloudflareInstallation, installation_id)
+                assert row is not None and row.admitted_revision is None
+                row.desired_revision = 2
+            yield db
+
+    if race == "repair_superseded_before_reads":
+        monkeypatch.setattr(lifecycle_job, "get_db_context", supersede_after_closure)
 
     async def slow_provider(request):
         nonlocal reads, writes
@@ -1566,8 +1585,17 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
                 assert row is not None
                 if race.startswith("repair") and reads >= 2:
                     assert row.admitted_revision is None
-                    if race == "repair_superseded":
+                    if race == "repair_superseded" or (
+                        race == "repair_superseded_after_readback" and request.method == "GET" and writes == 1
+                    ):
                         row.desired_revision = 2
+                if race == "credential_replaced":
+                    version = row.api_token_version + 1
+                    db.add(seal_credential(
+                        CredentialRef(row.id, row.account_id, "account_token", "", version),
+                        SecretStr("synthetic-replacement-management-token"), actor=str(OPERATOR_ID), now=datetime.now(UTC),
+                    ))
+                    row.api_token_version = version
                 if race == "target_replaced":
                     item = await cloudflare_tunnel.connector_resource(db, row)
                     item.provider_version = "replacement-receipt"
@@ -1575,6 +1603,8 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
                     row.admitted_revision = None
                 if race == "healthy_projection_changed":
                     row.tunnel_token_projected_version = 0
+            if race in ("credential_denied", "credential_replaced"):
+                return httpx.Response(403)
         return provider(request)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(slow_provider)) as http:
@@ -1583,21 +1613,31 @@ async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_proje
             with pytest.raises(PlatformJobRequiresAction) as issue:
                 await reconcile
             assert issue.value.result == {"code": code}
-        elif race == "healthy_projection_changed":
+        elif race in ("healthy_projection_changed", "projection_completed"):
             with pytest.raises(CloudflareRestUnavailable, match="changed during verification"):
                 await reconcile
         else:
             assert await reconcile == {"outcome": "superseded"}
 
-    assert reads >= 1
-    assert writes == (race == "repair")
+    assert reads == {
+        "repair": 3, "repair_superseded": 2, "repair_superseded_after_readback": 3,
+    }.get(race, 1)
+    wrote_ingress = race in ("repair", "repair_superseded_after_readback")
+    assert writes == int(wrote_ingress)
     if race.startswith("repair"):
-        assert provider.config["warp-routing"] == {"enabled": (race == "repair_superseded")}
+        assert provider.config["warp-routing"] == {"enabled": not wrote_ingress}
     async with sessions() as db:
         row = await db.get(CloudflareInstallation, installation_id)
         assert row is not None
-        assert row.admitted_revision == (1 if race in ("target_replaced", "healthy_projection_changed") else None)
-        assert row.deployment_evidence == {"connector_session": "disconnected"}
+        still_admitted = race in (
+            "target_replaced", "healthy_projection_changed", "projection_completed", "credential_replaced",
+        )
+        assert row.admitted_revision == (1 if still_admitted else None)
+        if race == "disconnected":
+            assert row.deployment_evidence["connector_session"] == "disconnected"
+            assert row.deployment_evidence["connector_observed_token_version"] == 1
+        else:
+            assert row.deployment_evidence == {"connector_session": "disconnected"}
 
 
 @pytest.mark.asyncio
