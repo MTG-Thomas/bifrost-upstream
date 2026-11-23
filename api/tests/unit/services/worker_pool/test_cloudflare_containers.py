@@ -551,16 +551,23 @@ async def test_refresh_changes_admission_only_on_conflicting_evidence(monkeypatc
         db.execute.return_value = Mock(one_or_none=Mock(return_value=SimpleNamespace(result={}, remote_session_generation=1)))
 
     if outcome in ("backoff", "qualification-backoff"):
-        cloudflare_enable.record_egress_refresh_failure(row, datetime.now(UTC))
+        cloudflare_enable.record_egress_refresh_failure(
+            row, datetime.now(UTC), qualification=outcome == "qualification-backoff",
+        )
     if outcome in ("verified", "retire-pending"):
         cloudflare_enable.record_egress_refresh_failure(row, datetime.now(UTC) - timedelta(hours=2))
     payload = cloudflare_enable.CloudflareEnablePayload(installation_id=installation_id, revision=1)
     context = PlatformJobContext(uuid4(), uuid4(), None, str(uuid4()), "", "")
     if outcome == "qualification-backoff":
         row.admitted_revision = row.containers_ready_revision = row.containers_release_digest = None
-        with pytest.raises(cloudflare_enable.PlatformJobFailure) as pending:
+        with pytest.raises(PlatformJobRequiresAction) as pending:
             await cloudflare_enable._qualify_container_revision(context, payload, None, None, TOKEN, release)
-        assert pending.value.code == "CF_CONTAINERS_CLEANUP_PENDING"
+        retry = cloudflare_enable.read_egress_refresh(row, qualification=True)
+        assert retry is not None
+        assert pending.value.result == {
+            "code": "CF_CONTAINERS_QUALIFICATION_BACKOFF", "retry_at": retry.retry_at.isoformat(),
+            "instructions": [f"Retry this capacity action at or after {retry.retry_at.isoformat()}."],
+        }
         reserve.assert_not_awaited()
         return
     with pytest.raises(PlatformJobRequiresAction) if mismatch else nullcontext():

@@ -61,8 +61,7 @@ async def run_container_egress_checks(
                     or (response.status_code == 404 and response.headers.get("x-bifrost-worker-ingress") == "v1; denied")
                 ):
                     return True
-                if response.headers.get(_RELAY_FORWARDED) == "1":
-                    return False
+                # This challenge is supposed to reach the upstream canary route.
                 require_probe_response(response)
                 return False
 

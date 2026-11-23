@@ -1,5 +1,4 @@
 import errno
-from contextlib import nullcontext
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
@@ -20,6 +19,7 @@ from src.worker.remote.container_egress import (
     ("redirect", "unmarked"), ("redirect", "leaked-location"),
     ("rate-limited", "relay"), ("relay-unavailable", "relay"), ("socket-unavailable", "relay"),
     ("disallowed-route", "relay"), ("disallowed-route", "transient"),
+    (None, 408), (None, 429), (None, 502), (None, 503),
 ])
 async def test_egress_canary_only_records_observed_denials(monkeypatch, failure, redirect):
     origin, alternate = "https://ingress.example.test", "https://scope.example.test"
@@ -51,6 +51,8 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure,
         assert request.headers["authorization"] == f"Bearer {proof}"
         assert request.headers["x-bifrost-canary-generation"] == "2"
         if "x-bifrost-canary-redirect" in request.headers:
+            if isinstance(redirect, int):
+                return httpx.Response(redirect, headers={"x-bifrost-container-relay-forwarded": "1"})
             if redirect == "transient":
                 return httpx.Response(502)
             if redirect == "unmarked":
@@ -69,7 +71,14 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure,
     transient = {
         "rate-limited": httpx.HTTPStatusError, "relay-unavailable": httpx.HTTPStatusError, "socket-unavailable": OSError,
     }.get(failure)
-    with pytest.raises(transient) if transient is not None else nullcontext():
+    if isinstance(redirect, int):
+        with pytest.raises(httpx.HTTPStatusError) as exc:
+            await run_container_egress_checks(origin, alternate, address, worker, 2, proof)
+        assert exc.value.response.status_code == redirect
+    elif transient is not None:
+        with pytest.raises(transient):
+            await run_container_egress_checks(origin, alternate, address, worker, 2, proof)
+    else:
         observed = await run_container_egress_checks(origin, alternate, address, worker, 2, proof)
         missing = {failure} | ({"redirect"} if redirect == "transient" else set())
         assert set(observed) == (CONTAINER_EGRESS_DENIALS - missing)

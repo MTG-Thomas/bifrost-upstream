@@ -113,7 +113,7 @@ def _schedule_launch_wake(wake: asyncio.Event, delay: float) -> asyncio.TimerHan
     return loop.call_later(max(0.0, delay) + time.get_clock_info("monotonic").resolution, wake.set)
 
 
-async def _primary_pool(
+async def read_primary_pool(
     settings: Settings, http: httpx.AsyncClient, *, kubernetes: bool,
 ) -> tuple[PrimaryPool | None, PrimaryCause | None]:
     async with get_db_context() as db:
@@ -228,7 +228,7 @@ async def _reconcile_containers(
         if release.digest != release_digest:
             return
         releases[binding] = release
-    primary, cause = await _primary_pool(settings, http, kubernetes=kubernetes)
+    primary, cause = await read_primary_pool(settings, http, kubernetes=kubernetes)
     if primary is None or receipt_limit:
         await record_controller_observation(
             binding, primary=primary, cause=cause, placement_code="container_receipt_limit" if receipt_limit else None,
@@ -330,7 +330,7 @@ async def _reconcile_scope(
     controller.cloudflare_primary = None
     if controller.burst_launch_allowed:
         try:
-            controller.cloudflare_primary, cause = await _primary_pool(
+            controller.cloudflare_primary, cause = await read_primary_pool(
                 settings, http, kubernetes=kubernetes,
             )
         except (CapacityProtocolError, httpx.HTTPError) as exc:

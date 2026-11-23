@@ -27,6 +27,15 @@ NOW = datetime(2026, 11, 22, tzinfo=UTC)
 SIZING = JobSizing.of(KubernetesPolicy(), 0.85, 256 * 2**20)
 
 
+def test_qualification_backoff_recovery_includes_the_retry_time():
+    retry_at = (NOW + timedelta(minutes=5)).isoformat()
+    job = PlatformJob(status="requires_action", result={
+        "code": "CF_CONTAINERS_QUALIFICATION_BACKOFF", "retry_at": retry_at,
+    })
+    recovery = recovery_for_job(job)
+    assert recovery is not None and recovery.remedy == f"Retry this capacity action at or after {retry_at}."
+
+
 def test_container_refresh_failure_backs_off_and_surfaces_persistent_failure():
     installation = SimpleNamespace(desired_revision=3, deployment_evidence={})
     now = NOW

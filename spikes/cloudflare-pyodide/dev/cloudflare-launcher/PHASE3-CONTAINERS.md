@@ -500,6 +500,11 @@ Qualification records the next allowed canary start with each reservation.
 Automatic recovery honors the same capped backoff and spend guard even if
 the job loses its lease or canary cleanup is still pending. Conflicting proof
 requires a new operator action.
+Cold qualification and automatic refresh keep separate backoff histories.
+If retirement times out after a verified challenge, qualification saves the
+proof and resumes cleanup before it can publish readiness. An Enable that
+needs another paid attempt during qualification backoff reports the earliest
+retry time.
 A policy with a one-instance ceiling has no spare seat for automatic
 refresh. Scale In followed by Enable runs qualification with the revision
 drained.

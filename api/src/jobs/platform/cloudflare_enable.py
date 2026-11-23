@@ -67,9 +67,16 @@ from src.services.worker_pool.cloudflare_canary import CANARY_DEADLINE_SECONDS, 
 from src.services.worker_pool.cloudflare_containers_admission import reserve_container_canary
 from src.services.worker_pool.cloudflare_containers_control import reconcile_container_stop
 from src.services.worker_pool.cloudflare_containers_egress import (
+    EGRESS_PROOF_MAX_AGE,
+    EGRESS_REFRESH_KEY,
+    PENDING_QUALIFICATION_KEY,
+    QUALIFICATION_BACKOFF_CODE,
+    QUALIFICATION_BACKOFF_KEY,
     ContainerEgressMismatch,
+    VerifiedEgress,
     current_container_application,
     read_egress_refresh,
+    read_pending_qualification,
     read_verified_egress,
     record_egress_refresh_failure,
     verify_container_egress,
@@ -322,12 +329,13 @@ async def _settle_enable(
         if not already_admitted:
             await _require_legacy_cleanup(db)
     if refresh and container_release is not None:
-        from src.services.worker_pool.cloudflare_supervisor import _primary_pool
+        from src.services.worker_pool.cloudflare_supervisor import read_primary_pool
 
         settings = get_settings()
-        primary, _ = await _primary_pool(
-            settings, http, kubernetes=await may_manage_jobs(settings),
-        )
+        try:
+            primary, _ = await read_primary_pool(settings, http, kubernetes=await may_manage_jobs(settings))
+        except (CapacityProtocolError, httpx.HTTPError):
+            primary = None
         if primary is None:
             return {"outcome": "container_egress_refresh_pending"}
         await context.report("Checking Cloudflare Container Ingress")
@@ -575,13 +583,19 @@ async def _qualify_container_revision(
             select(joint_container_readiness(payload.revision)).where(CloudflareInstallation.id == installation.id),
         ):
             return True
-        retry = read_egress_refresh(installation)
-        if retry is not None and retry.retry_at > datetime.now(UTC):
+        now = datetime.now(UTC)
+        pending = read_pending_qualification(installation, now) if not refresh else None
+        if pending is not None and pending.release_digest != release.digest:
+            pending = None
+        retry = read_egress_refresh(installation, qualification=not refresh)
+        if pending is None and retry is not None and retry.retry_at > now:
             if refresh:
                 return "backoff"
-            raise PlatformJobFailure(
-                "CF_CONTAINERS_CLEANUP_PENDING", "Waiting to Retry Cloudflare Container Qualification",
-            )
+            retry_at = retry.retry_at.isoformat()
+            raise PlatformJobRequiresAction("Cloudflare Container Qualification Is Cooling Down", {
+                "code": QUALIFICATION_BACKOFF_CODE, "retry_at": retry_at,
+                "instructions": [f"Retry this capacity action at or after {retry_at}."],
+            })
         origin = installation.worker_ingress_origin
         pin = CloudflareWorkerReservation
         prior = tuple(await db.scalars(select(pin.worker_id).join(
@@ -615,6 +629,8 @@ async def _qualify_container_revision(
 
     for prior_worker in prior:
         await retire(prior_worker)
+    if pending is not None:
+        return await _commit_container_egress(context, payload, release, pending, refresh=False)
     async with get_db_context() as db:
         reserved = await reserve_container_canary(
             db, installation_id=payload.installation_id, controller_id=context.job_id,
@@ -627,6 +643,7 @@ async def _qualify_container_revision(
     verified = None
     failure = None
     mismatch = False
+    retirement_failure = None
     try:
         async with timeout(CANARY_DEADLINE_SECONDS):
             while verified is None:
@@ -665,9 +682,11 @@ async def _qualify_container_revision(
                     wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
         try:
             await retire(reserved.worker_id)
-        except PlatformJobFailure:
+        except PlatformJobFailure as exc:
             if not refresh and not mismatch:
-                raise
+                if verified is None:
+                    raise
+                retirement_failure = exc
     if verified is None:
         if refresh and not mismatch:
             async with get_db_context() as db:
@@ -681,6 +700,18 @@ async def _qualify_container_revision(
             **({"canary_failure": failure.as_result()} if failure is not None else {}),
         })
 
+    committed = await _commit_container_egress(
+        context, payload, release, verified, refresh=refresh, retirement_pending=retirement_failure is not None,
+    )
+    if committed and retirement_failure is not None:
+        raise retirement_failure
+    return committed
+
+
+async def _commit_container_egress(
+    context: PlatformJobContext, payload: CloudflareEnablePayload, release: VerifiedContainerRelease,
+    verified: VerifiedEgress, *, refresh: bool, retirement_pending: bool = False,
+) -> bool:
     async with get_db_context() as db:
         installation = await _locked_current(db, context, payload)
         if installation is None:
@@ -691,6 +722,7 @@ async def _qualify_container_revision(
         if (
             application != (verified.provider_id, verified.provider_version)
             or installation.worker_ingress_origin != verified.origin
+            or verified.observed_at < datetime.now(UTC) - EGRESS_PROOF_MAX_AGE
         ):
             if not refresh:
                 raise ObservationPending("Cloudflare Container application changed after ingress qualification")
@@ -698,11 +730,16 @@ async def _qualify_container_revision(
             installation.containers_release_digest = None
             wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
         else:
-            installation.containers_ready_revision = payload.revision
-            installation.containers_release_digest = release.digest
             evidence = dict(installation.deployment_evidence or {})
-            evidence.pop("container_egress_refresh", None)
-            installation.deployment_evidence = {**evidence, "container_egress": verified.as_record()}
+            if retirement_pending:
+                evidence[PENDING_QUALIFICATION_KEY] = verified.as_record()
+            else:
+                installation.containers_ready_revision = payload.revision
+                installation.containers_release_digest = release.digest
+                for key in (EGRESS_REFRESH_KEY, QUALIFICATION_BACKOFF_KEY, PENDING_QUALIFICATION_KEY):
+                    evidence.pop(key, None)
+                evidence["container_egress"] = verified.as_record()
+            installation.deployment_evidence = evidence
             return True
     raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
 

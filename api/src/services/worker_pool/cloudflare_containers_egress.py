@@ -68,8 +68,17 @@ class ContainerEgressRefresh(BaseModel):
     retry_at: AwareDatetime
 
 
-def read_egress_refresh(installation: CloudflareInstallation) -> ContainerEgressRefresh | None:
-    evidence = (installation.deployment_evidence or {}).get("container_egress_refresh")
+EGRESS_REFRESH_KEY = "container_egress_refresh"
+QUALIFICATION_BACKOFF_KEY = "container_qualification_backoff"
+PENDING_QUALIFICATION_KEY = "container_pending_qualification"
+QUALIFICATION_BACKOFF_CODE = "CF_CONTAINERS_QUALIFICATION_BACKOFF"
+
+
+def read_egress_refresh(
+    installation: CloudflareInstallation, *, qualification: bool = False,
+) -> ContainerEgressRefresh | None:
+    key = QUALIFICATION_BACKOFF_KEY if qualification else EGRESS_REFRESH_KEY
+    evidence = (installation.deployment_evidence or {}).get(key)
     if evidence is None:
         return None
     try:
@@ -79,13 +88,16 @@ def read_egress_refresh(installation: CloudflareInstallation) -> ContainerEgress
     return refresh if refresh.revision == installation.desired_revision else None
 
 
-def record_egress_refresh_failure(installation: CloudflareInstallation, now: datetime) -> None:
-    previous = read_egress_refresh(installation)
+def record_egress_refresh_failure(
+    installation: CloudflareInstallation, now: datetime, *, qualification: bool = False,
+) -> None:
+    key = QUALIFICATION_BACKOFF_KEY if qualification else EGRESS_REFRESH_KEY
+    previous = read_egress_refresh(installation, qualification=qualification)
     failures = previous.failures + 1 if previous else 1
     delay = min(timedelta(minutes=5 * 2 ** min(failures - 1, 4)), EGRESS_PROOF_MAX_AGE)
     refresh = ContainerEgressRefresh(revision=installation.desired_revision, failures=failures, retry_at=now + delay)
     installation.deployment_evidence = {
-        **(installation.deployment_evidence or {}), "container_egress_refresh": refresh.model_dump(mode="json"),
+        **(installation.deployment_evidence or {}), key: refresh.model_dump(mode="json"),
     }
 
 
@@ -135,14 +147,14 @@ class VerifiedEgress:
         return ContainerEgressRecord.model_validate(self, from_attributes=True).model_dump(mode="json")
 
 
-def read_verified_egress(installation: CloudflareInstallation, now: datetime) -> VerifiedEgress | None:
-    """Reconstitute only the current, fresh proof committed by joint qualification."""
+def _read_egress_proof(
+    installation: CloudflareInstallation, now: datetime, key: str, revision: int | None,
+) -> VerifiedEgress | None:
     try:
-        record = ContainerEgressRecord.model_validate((installation.deployment_evidence or {}).get("container_egress"))
+        record = ContainerEgressRecord.model_validate((installation.deployment_evidence or {}).get(key))
         if (
-            (record.installation_id, record.revision, record.release_digest, record.origin) != (
-                installation.id, installation.containers_ready_revision, installation.containers_release_digest,
-                installation.worker_ingress_origin,
+            (record.installation_id, record.revision, record.origin) != (
+                installation.id, revision, installation.worker_ingress_origin,
             )
             or record.observed_at.tzinfo is None
             or not now - EGRESS_PROOF_MAX_AGE <= record.observed_at <= now
@@ -151,6 +163,17 @@ def read_verified_egress(installation: CloudflareInstallation, now: datetime) ->
     except ValidationError:
         return None
     return VerifiedEgress(record, _mint=_MINT)
+
+
+def read_verified_egress(installation: CloudflareInstallation, now: datetime) -> VerifiedEgress | None:
+    """Reconstitute only the current, fresh proof committed by joint qualification."""
+    proof = _read_egress_proof(installation, now, "container_egress", installation.containers_ready_revision)
+    return proof if proof is not None and proof.release_digest == installation.containers_release_digest else None
+
+
+def read_pending_qualification(installation: CloudflareInstallation, now: datetime) -> VerifiedEgress | None:
+    """Read a fresh proof whose canary still needs independently verified retirement."""
+    return _read_egress_proof(installation, now, PENDING_QUALIFICATION_KEY, installation.desired_revision)
 
 
 def current_container_application(installation: CloudflareInstallation, revision: int, release_digest: str):

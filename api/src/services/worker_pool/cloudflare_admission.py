@@ -50,6 +50,8 @@ class ManagedWorkerOccupancy:
 async def read_shared_managed_worker_cap(db: AsyncSession, *, admitting_installation_id: UUID | None = None) -> int | None:
     """Use the tightest cap among admitted, still-occupied, and qualifying installations."""
     pin = CloudflareWorkerReservation
+    # Durable state keeps a stale-heartbeat worker counted until retirement
+    # records that the provider resource was deleted.
     unsettled = select(pin.worker_id).join(ExecutionWorker).where(
         pin.installation_id == CloudflareInstallation.id,
         (ExecutionWorker.form.in_(MANAGED_WORKER_FORMS) & ExecutionWorker.state.in_(LIVE_STATES))

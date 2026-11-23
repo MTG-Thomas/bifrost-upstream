@@ -47,7 +47,11 @@ from src.services.worker_pool.cloudflare_admission import (
     read_managed_worker_occupancy,
 )
 from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION, linux_source_current_sql
-from src.services.worker_pool.cloudflare_containers_egress import read_egress_refresh, read_verified_egress
+from src.services.worker_pool.cloudflare_containers_egress import (
+    QUALIFICATION_BACKOFF_CODE,
+    read_egress_refresh,
+    read_verified_egress,
+)
 from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
 from src.services.worker_pool.cloudflare_provisioning import ObservationCheck, OwnershipCheck, OwnershipResource
 from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admission, tenant_key
@@ -163,6 +167,7 @@ def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | Non
         "CF_PROVIDER_UNAVAILABLE": PLACEMENT["cloudflare_capacity_unavailable"][1],
         "CF_CONTAINERS_UNVERIFIED": PLACEMENT["container_readiness_unverified"][1],
         "CF_CONTAINERS_CLEANUP_PENDING": PLACEMENT["cleanup_pending"][1],
+        QUALIFICATION_BACKOFF_CODE: "Retry this capacity action after the Container qualification backoff.",
         "CF_CONTAINERS_RELEASE_UNAVAILABLE": PLACEMENT["release_mismatch"][1],
         "CF_TUNNEL_VERIFICATION_CHANGED": TUNNEL_VERIFICATION_CHANGED_REMEDY,
     }
@@ -184,7 +189,17 @@ def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | Non
         )
         if valid:
             sanitized = dict(zip(("resource_class", "check", "observed_category", "expected_category"), values, strict=True))
-    return CloudflareRecoveryDetails(code=code, remedy=remedies[code], **sanitized)
+    remedy = remedies[code]
+    if code == QUALIFICATION_BACKOFF_CODE:
+        retry_at = result.get("retry_at")
+        if isinstance(retry_at, str):
+            try:
+                retry = datetime.fromisoformat(retry_at)
+                if retry.utcoffset() is not None:
+                    remedy = f"Retry this capacity action at or after {retry.astimezone(UTC).isoformat()}."
+            except (ValueError, OverflowError):
+                pass
+    return CloudflareRecoveryDetails(code=code, remedy=remedy, **sanitized)
 
 
 @dataclass(frozen=True)

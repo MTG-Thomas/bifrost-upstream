@@ -52,7 +52,12 @@ from src.services.work_dispatch import (
 )
 from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION
-from src.services.worker_pool.cloudflare_containers_egress import read_egress_refresh, read_verified_egress
+from src.services.worker_pool.cloudflare_containers_egress import (
+    QUALIFICATION_BACKOFF_CODE,
+    read_egress_refresh,
+    read_pending_qualification,
+    read_verified_egress,
+)
 from src.services.worker_pool.cloudflare_containers_release import ContainersReleaseUnavailable
 from src.services.worker_pool.cloudflare_containers_rest import ContainerRegistry, ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
@@ -121,6 +126,7 @@ SELF_HEALING_RECONCILE_CODES = frozenset({
     "CF_DRAIN_TIMEOUT", "CF_CLEANUP_PENDING", "CF_RELEASE_MISMATCH",
     "CF_PROVIDER_UNAVAILABLE", "CF_SPEND_UNVERIFIED", "CF_CONNECTOR_UNAVAILABLE",
     "CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_RELEASE_FETCH", "CF_CONTAINERS_RELEASE_UNAVAILABLE",
+    QUALIFICATION_BACKOFF_CODE,
 })
 PINNED_UPGRADE_RUNNER_CODES = frozenset({
     "unsupported_payload_version", "runner_shutdown", "runner_lost", "runner_exited", "timeout",
@@ -1560,8 +1566,8 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
     if not needs_staging and (latest is None or latest.status == "succeeded"):
         return
     if installation.admitted_revision is None:
-        retry = read_egress_refresh(installation)
-        if retry is not None and retry.retry_at > now:
+        retry = read_egress_refresh(installation, qualification=True)
+        if retry is not None and retry.retry_at > now and read_pending_qualification(installation, now) is None:
             return
     if latest is not None and latest.status != "succeeded":
         code = (latest.result or {}).get("code") if latest.status == "requires_action" else latest.error_code

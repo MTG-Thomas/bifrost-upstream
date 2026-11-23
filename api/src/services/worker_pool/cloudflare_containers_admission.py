@@ -499,7 +499,7 @@ async def reserve_container_canary(
     if reserved is not None and refresh_primary is None:
         # Persist the next paid-start boundary before the canary can run,
         # even if this attempt loses its lease or cleanup never settles.
-        record_egress_refresh_failure(capacity.installation, capacity.now)
+        record_egress_refresh_failure(capacity.installation, capacity.now, qualification=True)
     return reserved
 
 

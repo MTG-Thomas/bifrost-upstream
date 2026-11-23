@@ -1294,7 +1294,7 @@ async def test_container_application_effect_survives_provisioning_failures(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("canary_result", ["missing", "failed", "ready"])
+@pytest.mark.parametrize("canary_result", ["missing", "failed", "ready", "retire-timeout", "refresh-failure"])
 async def test_cold_enable_prepares_image_and_deploys_container_application(
     db_session, installation, monkeypatch, tmp_path, canary_result,
 ) -> None:
@@ -1304,7 +1304,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     from src.worker.remote.protocol import nonce_digest
 
     canary_started = canary_result != "missing"
-    canary_ready = canary_result == "ready"
+    canary_ready = canary_result in ("ready", "retire-timeout", "refresh-failure")
     container, image, config = make_release()
     manifest = container.manifest
     workers = SimpleNamespace(digest=manifest.workers_release_digest, manifest=SimpleNamespace(
@@ -1405,7 +1405,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             if path == "/v1/egress-probe":
                 assert len(body["control_key"]) == 64
                 await db_session.refresh(installation)
-                assert installation.deployment_evidence["container_egress_refresh"]["failures"] == 1
+                assert installation.deployment_evidence["container_qualification_backoff"]["failures"] == 1
                 row = await db_session.get(ExecutionWorker, canary_id)
                 pin = await db_session.get(CloudflareWorkerReservation, canary_id)
                 assert row is not None and row.reserved_for_dispatch_id is None
@@ -1554,6 +1554,21 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     )))
     payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        if canary_result == "refresh-failure":
+            enable_job.record_egress_refresh_failure(installation, datetime.now(UTC))
+            await db_session.flush()
+        if canary_result == "retire-timeout":
+            with monkeypatch.context() as cleanup:
+                cleanup.setattr(enable_job, "reconcile_container_stop", AsyncMock(side_effect=PlatformJobFailure(
+                    "CF_CONTAINERS_CLEANUP_PENDING", "Fixture timeout", retryable=True,
+                )))
+                with pytest.raises(PlatformJobFailure) as waiting:
+                    await enable_job._settle_enable(context, payload, http, workers)
+            assert waiting.value.code == "CF_CONTAINERS_CLEANUP_PENDING" and waiting.value.retryable
+            await db_session.refresh(installation)
+            assert installation.admitted_revision is installation.containers_ready_revision is None
+            assert enable_job.read_pending_qualification(installation, datetime.now(UTC)) is not None
+            assert events == ["copy", "prepare", "launcher", "application", "canary"]
         for _ in range(1 if canary_result == "failed" else 2):
             if canary_ready:
                 assert (await enable_job._settle_enable(context, payload, http, workers))["outcome"] == "enabled"
@@ -1581,6 +1596,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", [
     "fetch", "unpublished", "signature", "wrong_digest", "missing_readiness", "ready", "readiness_lost",
+    "primary-http-error", "primary-protocol-error",
 ])
 async def test_opted_in_enable_admits_only_the_verified_revision(
     db_session, installation, monkeypatch, scenario, tmp_path,
@@ -1594,7 +1610,8 @@ async def test_opted_in_enable_admits_only_the_verified_revision(
     installation.containers_policy = {"enabled": True}
     installation.containers_ready_revision = None if scenario == "missing_readiness" else revision
     installation.containers_release_digest = None if scenario == "missing_readiness" else release.digest
-    if scenario in ("fetch", "unpublished", "signature", "wrong_digest"):
+    primary_failed = scenario.startswith("primary-")
+    if primary_failed or scenario in ("fetch", "unpublished", "signature", "wrong_digest"):
         installation.admitted_revision = revision
     now = datetime.now(UTC)
     app = app_journal(installation, release.digest, now)
@@ -1692,7 +1709,22 @@ async def test_opted_in_enable_admits_only_the_verified_revision(
     payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=revision)
     running = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
-        if scenario == "ready":
+        if primary_failed:
+            error = (
+                httpx.ConnectError("Fixture capacity endpoint unavailable") if scenario == "primary-http-error"
+                else enable_job.CapacityProtocolError("Fixture capacity profile mismatch")
+            )
+            read_primary = AsyncMock(side_effect=error)
+            monkeypatch.setattr(cloudflare_supervisor, "read_primary_pool", read_primary)
+            monkeypatch.setattr(enable_job, "may_manage_jobs", AsyncMock(return_value=False))
+            qualify = AsyncMock()
+            monkeypatch.setattr(enable_job, "_qualify_container_revision", qualify)
+            assert await enable_job._settle_enable(
+                running, payload, http, workers_release, refresh_container_egress=True,
+            ) == {"outcome": "container_egress_refresh_pending"}
+            read_primary.assert_awaited_once()
+            qualify.assert_not_awaited()
+        elif scenario == "ready":
             assert await enable_job._settle_enable(running, payload, http, workers_release) == {
                 "outcome": "enabled", "http_connections": [],
             }
@@ -1710,7 +1742,7 @@ async def test_opted_in_enable_admits_only_the_verified_revision(
             )
         loader.assert_awaited_once_with(http, workers_release)
     await db_session.refresh(installation)
-    assert installation.admitted_revision == (revision if scenario in ("ready", "fetch", "unpublished") else None)
+    assert installation.admitted_revision == (revision if primary_failed or scenario in ("ready", "fetch", "unpublished") else None)
     if scenario in ("ready", "readiness_lost"):
         provision.assert_awaited_once()
         assert provisioner.create.await_count == 3
@@ -1718,7 +1750,7 @@ async def test_opted_in_enable_admits_only_the_verified_revision(
         provisioner.create.assert_not_awaited()
         if scenario == "missing_readiness":
             provision.assert_awaited_once()
-        else:
+        elif not primary_failed:
             paid.assert_not_awaited()
             provision.assert_not_awaited()
 
@@ -3775,22 +3807,24 @@ async def test_supervisor_primary_uses_cap_from_unconfirmed_retired_installation
     ))
     settings = Settings(_env_file=None, worker_capacity_url=None, worker_capacity_token=None)
     async with httpx.AsyncClient(transport=httpx.MockTransport(Mock())) as http:
-        assert await cloudflare_supervisor._primary_pool(settings, http, kubernetes=True) == (
+        assert await cloudflare_supervisor.read_primary_pool(settings, http, kubernetes=True) == (
             PrimaryPool("job", ceiling=2), None,
         )
         worker.capacity_resource_deleted_at = now
         await db.flush()
-        assert await cloudflare_supervisor._primary_pool(settings, http, kubernetes=True) == (
+        assert await cloudflare_supervisor.read_primary_pool(settings, http, kubernetes=True) == (
             PrimaryPool("job", ceiling=6), None,
         )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("shared_cap", "desired_state", "worker_state", "deleted", "expected_jobs", "scenario"), [
+    (10, "enabled", "ready", False, 1, ""),
     (10, "enabled", "ready", False, 1, "settled_container"),
     (3, "enabled", "ready", False, 0, ""),
     (3, "enabled", "ready", False, 0, "settled_container"),
     (None, "enabled", "ready", False, 1, "settled_container"),
+    (None, "enabled", "ready", False, 1, ""),
     (3, "scaled_in", "draining", False, 0, "job"),
     (3, "disconnected", "draining", False, 0, "job"),
     (3, "enabled", "draining", False, 0, "policy"),
@@ -4306,7 +4340,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
 
         for module in (cloudflare_supervisor, cloudflare_containers_control, claims):
             monkeypatch.setattr(module, "get_db_context", transaction)
-        monkeypatch.setattr(cloudflare_supervisor, "_primary_pool", AsyncMock(return_value=(primary, None)))
+        monkeypatch.setattr(cloudflare_supervisor, "read_primary_pool", AsyncMock(return_value=(primary, None)))
         monkeypatch.setattr(cloudflare_supervisor, "record_controller_observation", AsyncMock())
         actor = "a" * 64
         requests = []
@@ -5321,6 +5355,7 @@ async def test_upgrade_migration_pauses_prior_pilot_and_scheduler_pins_the_new_r
     ("failed", "CF_CONNECTOR_UNAVAILABLE", True),
     ("failed", "CF_CONTAINERS_CLEANUP_PENDING", True),
     ("failed", "CF_CONTAINERS_RELEASE_FETCH", True),
+    ("requires_action", "CF_CONTAINERS_QUALIFICATION_BACKOFF", True),
     ("requires_action", "CF_CONTAINERS_RELEASE_UNAVAILABLE", True),
     ("requires_action", "CF_CONTAINERS_UNVERIFIED", False),
     ("failed", "unsupported_payload_version", True),
@@ -5365,8 +5400,8 @@ async def test_upgrade_scheduler_only_requeues_self_healing_actions(
     if code == "CF_CONTAINERS_CLEANUP_PENDING":
         from src.services.worker_pool.cloudflare_containers_egress import record_egress_refresh_failure
 
-        record_egress_refresh_failure(installation, now - timedelta(minutes=5))
-        record_egress_refresh_failure(installation, now)
+        record_egress_refresh_failure(installation, now - timedelta(minutes=5), qualification=True)
+        record_egress_refresh_failure(installation, now, qualification=True)
         await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=5))
         assert await db_session.scalar(count) == 1
         first_retry = 10
