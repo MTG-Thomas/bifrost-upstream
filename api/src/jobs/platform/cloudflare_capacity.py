@@ -193,7 +193,7 @@ async def _management_token(db: AsyncSession, installation: CloudflareInstallati
 async def _cleanup_one(
     db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup, *, before_revision: int | None = None,
     stranded_scope: tuple[str, int] | None = None,
-    containers_only: bool = False,
+    scope_only: Literal["workers", "containers"] | None = None,
     container_adapter: ContainersRest | None = None,
 ) -> Literal["complete", "progressed", "settling"]:
     # Newer generations first, then withdraw the capacity entry point before
@@ -205,8 +205,10 @@ async def _cleanup_one(
     query = select(CloudflareOwnedResource).where(
         CloudflareOwnedResource.installation_id == row.id,
         CloudflareOwnedResource.state != "absent",
-        containers if containers_only else (CloudflareOwnedResource.scope == "workers") | containers,
+        (CloudflareOwnedResource.scope == "workers") | containers,
     )
+    if scope_only is not None:
+        query = query.where(CloudflareOwnedResource.scope == scope_only)
     if before_revision is not None:
         query = query.where(CloudflareOwnedResource.desired_revision < before_revision)
     if stranded_scope is not None:
@@ -277,7 +279,9 @@ async def _cleanup_container_application(
     if not namespace or (resource.provider_version is not None and resource.provider_version != namespace):
         raise OwnershipConflict("Container namespace does not match the journal",
                                 OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
-    observed = await adapter.observe_application(token, intent, namespace, recorded_id=resource.provider_id)
+    observed = await adapter.observe_application(
+        token, intent, namespace, recorded_id=resource.provider_id, for_deletion=True,
+    )
     now = datetime.now(UTC)
     if resource.state == "creating":
         sent = resource.provider_details.get("creation_sent") is True
@@ -490,7 +494,7 @@ async def _settle_disable(
             if not workers_remain:
                 try:
                     cleanup = await _cleanup_one(
-                        db, row, adapter, containers_only=payload.action == "scale_in",
+                        db, row, adapter, scope_only="containers" if payload.action == "scale_in" else None,
                         container_adapter=container_adapter,
                     )
                     if cleanup == "complete" and payload.action == "disconnect" and row.reachability_mode == "managed_tunnel":
@@ -1114,12 +1118,12 @@ async def _rotate_worker_credential(context: PlatformJobContext, parsed: BaseMod
                     if scope:
                         # Keep the revision fence through the exact delete
                         # and absence receipt, even if the job lease expires.
-                        progress = await _cleanup_one(db, row, adapter, container_adapter=ContainersRest(http))
+                        progress = await _cleanup_one(db, row, adapter, scope_only="workers")
                         if progress == "progressed":
                             continue
                         if progress == "settling":
                             raise PlatformJobRequiresAction("Wait for Cloudflare Creation to Settle", {"code": "CF_CLEANUP_PENDING"})
-                        await _remove_verified_scopes(db, row)
+                        await _remove_verified_scopes(db, row, scope="workers")
                     ref = CredentialRef(row.id, row.account_id, payload.credential, scope, payload.replacement_version)
                     db.add(seal_credential(
                         ref, SecretStr(secrets.token_urlsafe(48)), actor=context.requested_by_user_id, now=datetime.now(UTC),
@@ -1138,10 +1142,14 @@ async def _rotate_worker_credential(context: PlatformJobContext, parsed: BaseMod
                         actor_override=ActorContext(None, None, source="scheduler"),
                     )
                     break
-    except OwnershipConflict:
-        raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
-    except ObservationPending:
-        raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"}) from None
+    except OwnershipConflict as exc:
+        raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {
+            "code": "CF_OWNERSHIP_CONFLICT", "details": exc.as_result(),
+        }) from None
+    except ObservationPending as exc:
+        raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {
+            "code": "CF_CLEANUP_PENDING", "details": exc.as_result(),
+        }) from None
     except CloudflareManagementDenied:
         raise PlatformJobRequiresAction("Reconnect Cloudflare", {"code": "CF_MANAGEMENT_CREDENTIAL"}) from None
     except CloudflareRestUnavailable:

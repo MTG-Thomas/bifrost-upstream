@@ -75,7 +75,7 @@ class ContainersRest(WorkersRestCleanup):
             raise OwnershipConflict("Invalid Container launcher namespace",
                                     OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.NAMESPACE_CLASS)
         if await observe_owned(self, api_token=token, intent=expected.intent, recorded=expected) is None:
-            raise ObservationSettling("The owned Container launcher is absent",
+            raise ObservationPending("The owned Container launcher is absent",
                                       OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_RECORDED_ABSENT)
         namespaces = await self._script_namespaces(token, expected.intent.target, namespace_ids=frozenset({namespace}))
         launchers = [row for row in namespaces if row.get("class") == "ContainerLauncher" or row["id"] == namespace]
@@ -138,8 +138,9 @@ class ContainersRest(WorkersRestCleanup):
 
     async def observe_application(
         self, token: SecretStr, intent: ResourceIntent, namespace: str, *,
-        recorded_id: str | None = None,
+        recorded_id: str | None = None, for_deletion: bool = False,
     ) -> ResourceObservation | None:
+        settling = DeletionSettling if for_deletion else ObservationSettling
         name = _name(intent, "container_application")
         account = intent.target.account_id
         if not _HEX32.fullmatch(namespace) or (recorded_id is not None and not _APP_ID.fullmatch(recorded_id)):
@@ -159,7 +160,7 @@ class ContainersRest(WorkersRestCleanup):
                 receipt = await self._request(token, account, "GET", f"{path}/{recorded_id}", allow_missing=True)
                 if receipt is not None:
                     self._application(receipt["result"], account, name, namespace)
-                    raise ObservationSettling("Container application inventory differs from ID lookup",
+                    raise settling("Container application inventory differs from ID lookup",
                                               OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
             return None
         app_id = self._application(rows[0], account, name, namespace)
@@ -168,17 +169,27 @@ class ContainersRest(WorkersRestCleanup):
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
         receipt = await self._request(token, account, "GET", f"{path}/{app_id}", allow_missing=True)
         if receipt is None:
-            raise ObservationSettling("Container application has no matching ID readback",
+            raise settling("Container application has no matching ID readback",
                                       OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
         if self._application(receipt["result"], account, name, namespace) != app_id:
             raise OwnershipConflict("Container application ID changed",
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
+        if for_deletion and "health" in receipt["result"]:
+            health = receipt["result"]["health"]
+            counts = health.get("instances") if isinstance(health, dict) and health.get("summary") != "pending" else None
+            if not isinstance(counts, dict) or any(
+                type(value := counts.get(state)) is not int or value != 0 for state in ("active", "starting")
+            ):
+                # The aggregate can veto deletion. A zero count is not a
+                # substitute for the independent placement inventory.
+                raise DeletionSettling("Container application still has activity or an incomplete health sweep",
+                                       OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_PLACEMENTS)
         return ResourceObservation(intent, app_id, namespace)
 
     async def delete_application(self, token: SecretStr, expected: ResourceObservation) -> None:
         intent = expected.intent
         observed = await self.observe_application(
-            token, intent, expected.provider_version, recorded_id=expected.provider_id,
+            token, intent, expected.provider_version, recorded_id=expected.provider_id, for_deletion=True,
         )
         if observed is None:
             return
@@ -194,7 +205,9 @@ class ContainersRest(WorkersRestCleanup):
             raise DeletionSettling("Container application still has live or unverified placements",
                                    OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_PLACEMENTS)
         await self._request(token, account, "DELETE", path, allow_missing=True)
-        if await self.observe_application(token, intent, expected.provider_version, recorded_id=expected.provider_id):
+        if await self.observe_application(
+            token, intent, expected.provider_version, recorded_id=expected.provider_id, for_deletion=True,
+        ):
             raise DeletionSettling("Container application is still visible",
                                    OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
 

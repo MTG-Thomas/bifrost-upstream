@@ -41,9 +41,11 @@ from src.services.worker_pool.cloudflare_containers_rest import (
     ContainersRest,
 )
 from src.services.worker_pool.cloudflare_provisioning import (
+    DeletionSettling,
     ObservationPending,
     OwnershipConflict,
     ResourceIntent,
+    ResourceObservation,
     ResourceTarget,
 )
 from tests.helpers.cloudflare_containers import (
@@ -437,6 +439,36 @@ async def test_opaque_application_readback_and_ambiguous_create_use_exact_invent
         assert all(request.method == "GET" for request in requests)
         with pytest.raises(OwnershipConflict):
             await adapter.observe_application(TOKEN, intent, "d" * 32)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("health", [
+    {"instances": {"active": 1, "starting": 0}},
+    {"instances": {"active": 0, "starting": 1}},
+    {"instances": {"active": 0, "starting": 0}, "summary": "pending"},
+    {"instances": {"active": 0}},
+])
+async def test_container_health_vetoes_deletion(health) -> None:
+    installation = uuid4()
+    name = f"bifrost-{installation.hex}-r1"
+    intent = ResourceIntent(ResourceTarget(installation, ACCOUNT, "containers", "container_application", name), uuid4(), 1, "1" * 64)
+    row = {
+        "id": APP, "account_id": ACCOUNT, "name": name, "scheduling_policy": "durable_object",
+        "durable_objects": {"namespace_id": NAMESPACE}, "health": health,
+    }
+
+    def provider(request):
+        assert request.method == "GET"
+        if request.url.path.endswith("/applications"):
+            result = [row]
+        else:
+            assert request.url.path.endswith(f"/{APP}")
+            result = row
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        with pytest.raises(DeletionSettling, match="activity or an incomplete health sweep"):
+            await ContainersRest(http).delete_application(TOKEN, ResourceObservation(intent, APP, NAMESPACE))
 
 
 @pytest.mark.asyncio

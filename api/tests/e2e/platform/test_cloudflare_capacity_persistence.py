@@ -1182,7 +1182,7 @@ async def test_container_application_effect_survives_provisioning_failures(
                 row = await session.get(CloudflareInstallation, installation.id)
                 assert row is not None
                 return await lifecycle_job._cleanup_one(
-                    session, row, adapter, containers_only=True, container_adapter=adapter,
+                    session, row, adapter, scope_only="containers", container_adapter=adapter,
                 )
 
         assert await cleanup() == "progressed"
@@ -1992,6 +1992,16 @@ async def test_rotate_worker_credential_is_drain_first(
             CredentialRef(installation.id, installation.account_id, purpose, scope, 1),
             SecretStr("previous-scope-bearer"), actor=str(OPERATOR_ID), now=datetime.now(UTC),
         ))
+    now = datetime.now(UTC)
+    app = app_journal(installation, "e" * 64, now)
+    db_session.add(app)
+    container_ref = CredentialRef(installation.id, installation.account_id, "scope_bearer", "containers", 1)
+    db_session.add(seal_credential(container_ref, SecretStr("container-scope-bearer"), actor=str(OPERATOR_ID), now=now))
+    await db_session.flush()
+    db_session.add(CloudflareCapacityScope(
+        installation_id=installation.id, scope="containers", deployment_revision=1, bearer_version=1,
+        endpoint="https://containers.example.test",
+    ))
     installation.desired_state = "enabled"
     with pytest.raises(CloudflarePolicyConflict, match="Scale in"):
         await lifecycle_job.enqueue_cloudflare_worker_credential_rotation(
@@ -2029,6 +2039,9 @@ async def test_rotate_worker_credential_is_drain_first(
     assert active is not None and active.ciphertext is not None
     assert installation.control_root_version == (1 if scope else 2)
     assert installation.desired_revision == (2 if scope else 1)
+    await db_session.refresh(app)
+    assert app.state == "present"
+    assert await db_session.get(CloudflareCapacityScope, (installation.id, "containers", 1)) is not None
 
 
 @pytest.mark.asyncio
@@ -2177,6 +2190,134 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
     assert installation.retired_at is not None and installation.api_token_version is None
     actions = set(await db_session.scalars(select(AuditLog.action).where(AuditLog.resource_id == installation.id)))
     assert {"capacity.cloudflare_disconnect", "capacity.cloudflare_retired"} <= actions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["disconnect", "upgrade"])
+async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers(
+    db_session, installation, monkeypatch, lifecycle_audit_actor, operation,
+) -> None:
+    from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+
+    app = app_journal(installation, "c" * 64, datetime.now(UTC))
+    app.namespace_ids = {"ContainerLauncher": app.provider_version}
+    scripts = [
+        CloudflareOwnedResource(
+            id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+            scope=scope, kind="worker_script",
+            target_name=f"{app.target_name}-{suffix}", desired_revision=1, artifact_digest="c" * 64,
+            effect_id=uuid4(), state="present", provider_id=str(uuid4()), provider_version=str(uuid4()),
+        )
+        for scope, suffix in (("workers", "launcher"), ("containers", "containers"), ("workers", "capacity"))
+    ]
+    db_session.add_all([app, *scripts])
+    installation.desired_revision = 2
+    installation.desired_state = "disconnected" if operation == "disconnect" else "enabled"
+    installation.upgrade_release = "d" * 64 if operation == "upgrade" else None
+    installation.deployed_revision = 1
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def transaction():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as db:
+            yield db
+            await db.commit()
+
+    written = []
+    present = {resource.target_name for resource in scripts}
+    script_receipts = {
+        resource.target_name: ResourceObservation(
+            lifecycle_job._resource_intent(resource), resource.provider_id, resource.provider_version,
+        ) for resource in scripts
+    }
+    listed = True
+    by_id = True
+    app_row = {
+        "id": app.provider_id, "name": app.target_name, "account_id": app.account_id,
+        "scheduling_policy": "durable_object", "durable_objects": {"namespace_id": app.provider_version},
+        "health": {"instances": {"active": 0, "starting": 0}},
+    }
+
+    def remote(request):
+        nonlocal listed
+        path = request.url.path
+        if request.method == "DELETE":
+            assert path.endswith(f"/applications/{app.provider_id}") and listed
+            written.append("application")
+            listed = False
+            return httpx.Response(204)
+        if path.endswith("/applications"):
+            result = [app_row] if listed else []
+        elif path.endswith("/instances-v2"):
+            result = []
+        else:
+            assert path.endswith(f"/applications/{app.provider_id}")
+            if not by_id:
+                return httpx.Response(404)
+            result = app_row
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async def observe(*, api_token, intent):
+        return script_receipts[intent.target.name] if intent.target.name in present else None
+
+    async def delete_script(*, api_token, expected):
+        name = expected.intent.target.name
+        present.remove(name)
+        written.append(name.rsplit("-", 1)[1])
+
+    cleanup = SimpleNamespace(observe=observe, delete=delete_script, verify_absent=AsyncMock())
+
+    async def wait_for_readback(_delay):
+        nonlocal by_id
+        assert by_id and written == ["application"]
+        by_id = False
+
+    monkeypatch.setattr(lifecycle_job, "get_db_context", transaction)
+    monkeypatch.setattr(enable_job, "get_db_context", transaction)
+    for target in (lifecycle_job, enable_job):
+        monkeypatch.setattr(target, "_hold_installation_lease", AsyncMock())
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    monkeypatch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=wait_for_readback))
+    monkeypatch.setattr(enable_job, "sleep", wait_for_readback)
+
+    context = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        if operation == "disconnect":
+            payload = lifecycle_job.CloudflareDisablePayload(installation_id=installation.id, revision=2, action="disconnect")
+            assert await lifecycle_job._settle_disable(context, payload, cleanup, tunnel_http=http) == {"outcome": "disconnected"}
+        else:
+            payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=2)
+            assert await enable_job._drain_previous_revision(
+                context, payload, cleanup, upgrading=True, container_adapter=ContainersRest(http),
+            )
+    assert written == ["application", "capacity", "launcher", "containers"]
+    for resource in [app, *scripts]:
+        await db_session.refresh(resource)
+        assert resource.state == "absent" and resource.observed_at is not None
+    await db_session.refresh(installation)
+    assert (installation.retired_at is not None) if operation == "disconnect" else (installation.upgrade_drained_at is not None)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_confirms_absence_without_a_sent_container_create(db_session, installation) -> None:
+    from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+
+    app = app_journal(installation, "c" * 64, datetime.now(UTC))
+    app.namespace_ids = {"ContainerLauncher": app.provider_version}
+    app.provider_id = app.provider_version = app.observed_at = None
+    app.state = "creating"
+    db_session.add(app)
+    await db_session.flush()
+
+    def remote(request):
+        assert request.method == "GET" and request.url.path.endswith("/applications")
+        return httpx.Response(200, json={"success": True, "result": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        adapter = ContainersRest(http)
+        assert await lifecycle_job._cleanup_one(db_session, installation, adapter, container_adapter=adapter) == "progressed"
+    assert app.state == "absent" and app.observed_at is not None
 
 
 @pytest.mark.asyncio
