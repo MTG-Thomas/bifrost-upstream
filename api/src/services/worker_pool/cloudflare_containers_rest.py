@@ -4,11 +4,15 @@ import base64
 import json
 import os
 import re
+from asyncio import Lock, sleep
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 from typing import Any
+
+import httpx
 
 from pydantic import SecretStr
 
@@ -38,6 +42,12 @@ REGISTRY = "registry.cloudflare.com"
 _HEX32 = re.compile(r"[a-f0-9]{32}")
 _ACTOR_ID = re.compile(r"[a-f0-9]{64}")
 _APP_ID = re.compile(r"[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
+_INVENTORY_PAGE_SIZE = 100
+_MAX_INVENTORY_PAGES = 100
+# Two settlement inventory reads per second per shared adapter leaves room
+# for other requests under the published account/user limit of 1,200/5 min.
+# https://developers.cloudflare.com/fundamentals/api/reference/limits/
+_PLACEMENT_READ_INTERVAL = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +69,22 @@ def _name(intent: ResourceIntent, kind: str) -> str:
 
 
 class ContainersRest(WorkersRestCleanup):
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        super().__init__(http)
+        self._placement_read_lock = Lock()
+        self._next_placement_read = 0.0
+
+    async def _placement_read(
+        self, token: SecretStr, account: str, path: str, *, params: dict[str, int | str] | None = None,
+    ) -> dict[str, Any] | None:
+        # A settlement pass shares this adapter across its actors.
+        async with self._placement_read_lock:
+            delay = self._next_placement_read - monotonic()
+            if delay > 0:
+                await sleep(delay)
+            self._next_placement_read = monotonic() + _PLACEMENT_READ_INTERVAL
+        return await self._request(token, account, "GET", path, params=params)
+
     async def verify_launcher_namespace(
         self, token: SecretStr, expected: ResourceObservation, namespace: str,
     ) -> None:
@@ -81,16 +107,32 @@ class ContainersRest(WorkersRestCleanup):
     async def _inventory(
         self, token: SecretStr, account: str, path: str, **filters: str,
     ) -> list[dict[str, Any]]:
-        params: dict[str, int | str] = {"per_page": 100, **filters}
+        # Containers lists document result_info.page_token (echoed request),
+        # next_page_token and per_page. An envelope with page/total_pages
+        # instead is checked as numbered pagination, never mixed with cursors.
+        # https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/list/
+        params: dict[str, int | str] = {"per_page": _INVENTORY_PAGE_SIZE, **filters}
         rows: dict[str, dict[str, Any]] = {}
         cursors: set[str] = set()
         total = None
-        for _ in range(100):
-            envelope = await self._request(token, account, "GET", path, params=params)
+        page_count = None
+        page_size = _INVENTORY_PAGE_SIZE
+        for page in range(1, _MAX_INVENTORY_PAGES + 1):
+            if path.endswith("/instances-v2"):
+                envelope = await self._placement_read(token, account, path, params=params)
+            else:
+                envelope = await self._request(token, account, "GET", path, params=params)
             assert envelope is not None
             batch, info = envelope["result"], envelope.get("result_info", {})
-            if not isinstance(batch, list) or not isinstance(info, dict) or info.get("count", len(batch)) != len(batch):
+            if not isinstance(batch, list) or not isinstance(info, dict):
                 break
+            count = info.get("count", len(batch))
+            reported_size = info.get("per_page", page_size)
+            if (type(count) is not int or count != len(batch)
+                    or type(reported_size) is not int or not 1 <= reported_size <= _INVENTORY_PAGE_SIZE
+                    or (page > 1 and reported_size != page_size) or len(batch) > reported_size):
+                break
+            page_size = reported_size
             if any(not isinstance(row, dict) or not isinstance(row.get("id"), str) for row in batch):
                 break
             ids = {row["id"] for row in batch}
@@ -102,15 +144,42 @@ class ContainersRest(WorkersRestCleanup):
                 if type(reported) is not int or reported < len(rows) or (total is not None and total != reported):
                     break
                 total = reported
-            cursor = info.get("next_page_token")
-            if cursor is None or cursor == "":
-                if (total is not None and total != len(rows)) or (not info and len(batch) >= 100):
-                    break
-                return list(rows.values())
-            if not isinstance(cursor, str) or cursor in cursors or not batch:
+            if total is not None and len(rows) > total:
                 break
-            cursors.add(cursor)
-            params["page_token"] = cursor
+
+            cursor = info.get("next_page_token")
+            echoed_cursor = info.get("page_token")
+            if echoed_cursor is not None and echoed_cursor != params.get("page_token", ""):
+                break
+            if page_count is not None or "page" in info or "total_pages" in info:
+                reported_page, reported_pages = info.get("page"), info.get("total_pages")
+                if (cursors or cursor not in (None, "") or type(reported_page) is not int or reported_page != page
+                        or type(reported_pages) is not int or not 0 <= reported_pages <= _MAX_INVENTORY_PAGES
+                        or (page_count is not None and page_count != reported_pages)):
+                    break
+                page_count = reported_pages
+                if page < page_count:
+                    if len(batch) != page_size or (total is not None and len(rows) >= total):
+                        break
+                    params["page"] = page + 1
+                    continue
+                if ((page > page_count and not (page_count == 0 and page == 1 and not batch))
+                        or (page > 1 and not batch)):
+                    break
+            elif cursor not in (None, ""):
+                if not isinstance(cursor, str) or cursor in cursors or not batch or total == len(rows):
+                    break
+                cursors.add(cursor)
+                params["page_token"] = cursor
+                continue
+            elif total is None and len(batch) == page_size:
+                # A full page without a continuation or declared total does
+                # not establish absence, even when other metadata is present.
+                break
+
+            if total is None or total == len(rows):
+                return list(rows.values())
+            break
         raise ObservationPending("Container inventory is incomplete",
                                  OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_INVENTORY)
 
@@ -263,7 +332,7 @@ class ContainersRest(WorkersRestCleanup):
         ):
             raise OwnershipConflict("Invalid Container instance observation target")
         path = f"containers/applications/{application.provider_id}"
-        app = await self._request(token, account, "GET", path)
+        app = await self._placement_read(token, account, path)
         assert app is not None
         if self._application(app["result"], account, name, application.provider_version) != application.provider_id:
             raise OwnershipConflict("Container application ID changed")

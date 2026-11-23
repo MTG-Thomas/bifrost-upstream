@@ -528,7 +528,11 @@ hold. Pair the closure with a singleton management inventory result for
 the fenced actor and exact placement start. Read complete
 [`instances-v2` inventory](https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/list/)
 and match the exact actor ID locally. The provider prefix filter can hide a
-named placement from an actor-ID search. Application health counts can veto
+named placement from an actor-ID search. Walk the documented cursor
+pagination and check any numbered pages against their declared total.
+A full page without continuation or a total cannot establish absence.
+Share one management adapter across a settlement pass to pace ownership and
+placement inventory reads at two per second. Application health counts can veto
 deletion when the provider reports activity or an incomplete sweep. Verify
 inventory behavior during hosted qualification. Missing or ambiguous evidence
 keeps the seat unresolved. The controller

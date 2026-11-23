@@ -1,6 +1,7 @@
 """Release, provider readback and placement checks without Cloudflare calls."""
 
 import json
+from asyncio import gather
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -14,6 +15,7 @@ import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 from src.models.orm.execution_workers import ExecutionWorker
+from src.services.worker_pool import cloudflare_containers_rest
 from src.services.worker_pool.cloudflare_admission import PrimaryPool
 from src.services.worker_pool.cloudflare_containers_admission import (
     LinuxReview,
@@ -520,3 +522,96 @@ async def test_inventory_missing_suffix_cannot_confirm_prior_create() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         with pytest.raises(ObservationPending, match="incomplete"):
             await ContainersRest(http).observe_application(TOKEN, intent, NAMESPACE)
+
+
+@pytest.fixture
+def observed_container():
+    installation = uuid4()
+    name = f"bifrost-{installation.hex}-r1"
+    target = ResourceTarget(installation, ACCOUNT, "containers", "container_application", name)
+    intent = ResourceIntent(target, uuid4(), 1, "1" * 64)
+    row = {
+        "id": APP, "account_id": ACCOUNT, "name": name, "scheduling_policy": "durable_object",
+        "durable_objects": {"namespace_id": NAMESPACE},
+    }
+    return ResourceObservation(intent, APP, NAMESPACE), row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("style", ["cursor", "numbered", "complete", "truncated", "cursor-loop", "numbered-drift"])
+async def test_placement_absence_requires_complete_inventory(observed_container, monkeypatch, style) -> None:
+    application, row = observed_container
+    actor = "f" * 64
+    first = [{"id": f"{index:064x}", "application_id": APP} for index in range(100)]
+    next_page = "next-page"
+    pages = []
+    monkeypatch.setattr(cloudflare_containers_rest, "_PLACEMENT_READ_INTERVAL", 0)
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        if request.url.path.endswith(f"/applications/{APP}"):
+            return httpx.Response(200, json={"success": True, "result": row})
+        assert request.url.path.endswith(f"/applications/{APP}/instances-v2")
+        assert request.url.params["per_page"] == "100"
+        assert "name_prefix" not in request.url.params
+        pages.append(request.url.params)
+        numbered = style.startswith("numbered")
+        if len(pages) == 1:
+            assert "page_token" not in request.url.params and "page" not in request.url.params
+            if numbered:
+                info = {"page": 1, "total_pages": 2, "per_page": 100, "count": 100}
+            elif style == "truncated":
+                info = {"per_page": 100, "count": 100}
+            else:
+                info = {"per_page": 100, "next_page_token": next_page}
+            result = first
+        else:
+            assert len(pages) == 2
+            if numbered:
+                assert request.url.params["page"] == "2" and "page_token" not in request.url.params
+                info = {"page": 2, "total_pages": 3 if style == "numbered-drift" else 2, "per_page": 100, "count": 1}
+            else:
+                assert request.url.params["page_token"] == next_page and "page" not in request.url.params
+                info = {"per_page": 100, "page_token": next_page}
+                if style == "cursor-loop":
+                    info["next_page_token"] = next_page
+            # The placement has a name which does not start with the actor ID.
+            result = [{"id": "e" * 64 if style == "complete" else actor, "application_id": APP, "name": "named-placement"}]
+        return httpx.Response(200, json={"success": True, "result": result, "result_info": info})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        adapter = ContainersRest(http)
+        if style == "complete":
+            await adapter.observe_no_placement(TOKEN, application, actor)
+        else:
+            message = "still has a provider placement" if style in {"cursor", "numbered"} else "inventory is incomplete"
+            with pytest.raises(ObservationPending, match=message):
+                await adapter.observe_no_placement(TOKEN, application, actor)
+    assert len(pages) == (1 if style == "truncated" else 2)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_placement_reads_share_one_request_pacing_budget(observed_container, monkeypatch) -> None:
+    application, row = observed_container
+    now = 100.0
+    starts = []
+
+    async def advance(delay):
+        nonlocal now
+        now += delay
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        starts.append(now)
+        result = [] if request.url.path.endswith("/instances-v2") else row
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    monkeypatch.setattr(cloudflare_containers_rest, "monotonic", lambda: now)
+    monkeypatch.setattr(cloudflare_containers_rest, "sleep", advance)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        adapter = ContainersRest(http)
+        await gather(
+            adapter.observe_no_placement(TOKEN, application, "e" * 64),
+            adapter.observe_no_placement(TOKEN, application, "f" * 64),
+        )
+    assert starts == [100.0, 100.5, 101.0, 101.5]
