@@ -14,6 +14,7 @@ CONTAINER_EGRESS_DENIALS = frozenset({"alternate-origin", "wrong-host", "raw-tcp
 # Bifrost before asking the guest to connect.
 # https://developers.cloudflare.com/fundamentals/reference/network-ports/
 CONTAINER_RAW_PROBE_PORT = 8443
+CONTAINER_ALTERNATE_PROBE_PORT = 2053
 
 
 async def run_container_egress_checks(
@@ -61,7 +62,9 @@ async def run_container_egress_checks(
             if response.status_code != 204 or response.headers.get("x-bifrost-worker-ingress") != "v1; allowed":
                 raise RuntimeError("The Container SDK canary did not reach verified worker ingress")
         results = await asyncio.gather(
-            connect_denied(alternate_url.host, 443), connect_denied(address, CONTAINER_RAW_PROBE_PORT),
+            # The API has already resolved the alternate name and reached
+            # both sockets. Guest DNS is intentionally restricted by policy.
+            connect_denied(address, CONTAINER_ALTERNATE_PROBE_PORT), connect_denied(address, CONTAINER_RAW_PROBE_PORT),
             denied(route, "origin", {"Host": "wrong-host.invalid"}),
             denied(f"{origin}/__bifrost_canary_denied__", "route"),
             redirect_denied(),

@@ -827,7 +827,7 @@ class ContainerRehearsal(Rehearsal):
             assert os.fstat(fd).st_ino != os.stat("/proc/self/ns/net").st_ino
             subprocess.run([
                 "nsenter", f"--net=/proc/self/fd/{fd}", "--", "iptables", "-I", "OUTPUT",
-                "-p", "tcp", "--dport", "8443", "-j", "REJECT", "--reject-with", "tcp-reset",
+                "-p", "tcp", "-m", "multiport", "--dports", "2053,8443", "-j", "REJECT", "--reject-with", "tcp-reset",
             ], check=True, pass_fds=(fd,))
         evidence("container-raw-tcp-boundary", {"worker": str(incarnation)})
 

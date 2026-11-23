@@ -155,9 +155,9 @@ signal.pause()
         probe_peer = """  container-probe-peer:
     image: node:26.13.1-bookworm-slim
     pull_policy: never
-    command: [node, -e, "require('node:net').createServer(socket => socket.end()).listen(8443, '0.0.0.0')"]
+    command: [node, -e, "for (const port of [2053, 8443]) require('node:net').createServer(socket => socket.end()).listen(port, '0.0.0.0')"]
     healthcheck:
-      test: [CMD, node, -e, "require('node:net').connect(8443, '127.0.0.1').on('connect', function () { this.end() })"]
+      test: [CMD, node, -e, "for (const port of [2053, 8443]) require('node:net').connect(port, '127.0.0.1').on('connect', function () { this.end() })"]
       interval: 1s
 """
     overlay = f"""services:

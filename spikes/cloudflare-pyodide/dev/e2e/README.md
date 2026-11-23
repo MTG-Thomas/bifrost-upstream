@@ -102,14 +102,16 @@ uploaded registry, checks signed start and stop requests, and uses Docker
 to run the paired Linux image through the exact worker ingress. Docker
 placement readback is separate from the registry response.
 The raw TCP challenge uses a private peer on the API's internal Docker
-network. The API connects to it on port 8443 before giving its address to
-the guest. This keeps the raw socket separate from the TLS intercept on
+network. The API resolves the alternate hostname and reaches its peer on
+2053 and 8443 before giving the address to the guest. This keeps both
+socket checks separate from the TLS intercept on
 port 443, which can accept a handshake before it sees the request. The
 local proxy accepts the raw handshake even when the peer refuses it. The
 driver supplies the provider-side denial with an output rule inside the
 exact disposable guest namespace before forwarding its hello. The API
 still reaches the peer. The guest must observe a real failed connection.
-Hosted raw TCP denial remains unqualified.
+Hosted DNS behavior, control-endpoint reachability on the probe ports,
+and provider raw TCP denial remain unqualified.
 
 The driver requires a successful native import, a subprocess result and an
 SDK request on a Container worker. It waits for idle settlement, verifies

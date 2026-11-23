@@ -1,8 +1,9 @@
 """Canary HMAC inputs are bound to a worker, run lease and session generation."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, call
 from uuid import UUID
 
 import pytest
@@ -23,6 +24,33 @@ def test_capacity_canary_is_bound_to_worker_lease_and_generation() -> None:
     assert challenge != _proof(key, UUID(int=3), lease, 1)
     assert challenge != _proof(key, worker, UUID(int=3), 1)
     assert challenge != _proof(key, worker, lease, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_baseline", [None, "dns", "raw"])
+async def test_container_probe_requires_both_reachable_sockets_before_authorizing_the_challenge(monkeypatch, missing_baseline):
+    endpoint = "https://control.example.test"
+    address = "192.0.2.10"
+    writer = Mock(wait_closed=AsyncMock(), get_extra_info=Mock(return_value=(address, 2053)))
+    answers = [OSError("unreachable") if missing_baseline == "dns" else (None, writer),
+               OSError("unreachable") if missing_baseline == "raw" else (None, writer)]
+    dial = AsyncMock(side_effect=answers)
+
+    @asynccontextmanager
+    async def transaction():
+        yield SimpleNamespace(execute=AsyncMock(return_value=Mock(
+            one_or_none=Mock(return_value=(endpoint, "https://ingress.example.test")),
+        )))
+
+    monkeypatch.setattr(cloudflare_canary, "get_db_context", transaction)
+    monkeypatch.setattr(cloudflare_canary.asyncio, "open_connection", dial)
+    if missing_baseline:
+        with pytest.raises(OSError):
+            await cloudflare_canary.container_probe_target(UUID(int=1))
+    else:
+        assert await cloudflare_canary.container_probe_target(UUID(int=1)) == (endpoint, address)
+    expected = [call("control.example.test", 2053), call(address, 8443)]
+    assert dial.await_args_list == expected[:1 if missing_baseline == "dns" else 2]
 
 
 @pytest.mark.parametrize(

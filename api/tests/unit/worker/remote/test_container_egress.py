@@ -24,10 +24,9 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure,
     writer = Mock(wait_closed=closed)
 
     async def connect(host, port):
-        assert (host, port) in {("scope.example.test", 443), (address, 8443)}
-        if (host, failure) in {("scope.example.test", "alternate-origin"), (address, "raw-tcp")}:
+        assert host == address and port in {2053, 8443}
+        if (port, failure) in {(2053, "alternate-origin"), (8443, "raw-tcp")}:
             return None, writer
-        assert host in ("scope.example.test", address)
         raise OSError("blocked")
 
     def provider(request: httpx.Request) -> httpx.Response:
