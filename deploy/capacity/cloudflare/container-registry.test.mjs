@@ -63,6 +63,25 @@ test("a lost reply replays its original reservation across registry reset", () =
     db.close();
 });
 
+test("a prepared reservation tolerates a bounded lag in the actor clock", (t) => {
+    const { db, registry, pin } = fixture(1);
+    t.after(() => db.close());
+    const request = { ...pin(), reservedAt: 10_000, startDeadline: 11_000, deadline: 133_000 };
+    const instance = "b".repeat(64);
+    const tooEarly = 6999;
+    const withinSkew = 7000;
+    const scope = registry();
+    assert.equal(scope.reserve(request).status, "reserved");
+    assert.equal(scope.reserveForStart(request, instance, tooEarly).status, "closed");
+    assert.equal(scope.authorizeStart(request.uid, instance, tooEarly, request.deadline).status, "conflict");
+    assert.equal(scope.reserveForStart(request, instance, withinSkew).status, "reserved");
+    assert.equal(scope.authorizeStart(request.uid, instance, withinSkew, request.deadline).status, "authorized");
+    assert.equal(scope.chargeRelay(request.uid, instance, "ingress", 10, withinSkew), true);
+    assert.equal(scope.chargeRelay(request.uid, instance, "ingress", 10, request.deadline), false);
+    assert.equal(scope.observeStart(request.uid, instance, request.reservedAt).status, "observed");
+    assert.equal(scope.closeStart(request.uid, instance, 10_001).authorizedAt, request.reservedAt);
+});
+
 test("unconfirmed instances retain the tenant seat and the last fleet seat is exclusive", async () => {
     const { db, registry, pin } = fixture();
     assert.equal(registry().reserve(pin()).status, "reserved");

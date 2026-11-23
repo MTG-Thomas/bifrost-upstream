@@ -13,6 +13,9 @@ const HTTP_REQUEST_BODY_FLOOR = 256;
 // observation bound. Hosted qualification owns validation of that bound.
 const BOOT_OBSERVATION_MS = 60_000;
 const LAUNCHER_DRAIN_GRACE_MS = 300_000;
+// Permit a small difference between the API's database clock and the DO's
+// clock at reservation. The pinned start and expiry deadlines stay absolute.
+const RESERVATION_CLOCK_SKEW_MS = 3000;
 
 export class ScopeRegistry {
     constructor(ctx, env) {
@@ -58,9 +61,11 @@ export class ScopeRegistry {
 
     reserveForStart(pin, instance, now) {
         if (!/^[a-f0-9]{64}$/.test(instance) || !Number.isSafeInteger(now)) return { status: "invalid" };
-        if (now < pin.reservedAt) return { status: "closed" };
+        if (now < pin.reservedAt - RESERVATION_CLOCK_SKEW_MS) return { status: "closed" };
         if (now >= pin.startDeadline) return this.reserve(pin);
-        return this.#storeReservation(pin, { instance, now, onlyWhenFull: true });
+        return this.#storeReservation(pin, {
+            instance, now: Math.max(now, pin.reservedAt), onlyWhenFull: true,
+        });
     }
 
     // Accept the immutable API pin even if the controller crashed before prepare.
@@ -154,7 +159,9 @@ export class ScopeRegistry {
         return this.storage.transactionSync(() => {
             const slot = this.sql.exec("SELECT * FROM reservations WHERE uid = ?", uid).toArray()[0];
             if (!slot || slot.state === "retired") return { status: "closed" };
-            if (slot.deadline !== deadline || now < slot.reserved_at) return { status: "conflict" };
+            if (slot.deadline !== deadline || now < slot.reserved_at - RESERVATION_CLOCK_SKEW_MS) {
+                return { status: "conflict" };
+            }
             const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
             if (start) {
                 if (start.instance !== instance) return { status: "conflict" };
@@ -165,7 +172,8 @@ export class ScopeRegistry {
             this.sql.exec(
                 "INSERT INTO start_fences (uid, instance, authorized_at, start_deadline, deadline, ingress_limit, "
                 + "outbound_limit) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                uid, instance, now, slot.start_deadline, deadline, slot.ingress_limit, slot.outbound_limit,
+                uid, instance, Math.max(now, slot.reserved_at), slot.start_deadline, deadline,
+                slot.ingress_limit, slot.outbound_limit,
             );
             return { status: "authorized" };
         });
@@ -252,7 +260,8 @@ export class ScopeRegistry {
         return this.storage.transactionSync(() => {
             const row = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
             if (!row || row.instance !== instance || row.closed_at !== null
-                || !Number.isSafeInteger(now) || now < row.authorized_at || now >= row.deadline) return false;
+                || !Number.isSafeInteger(now) || now < row.authorized_at - RESERVATION_CLOCK_SKEW_MS
+                || now >= row.deadline) return false;
             const total = Math.min(Number.MAX_SAFE_INTEGER, row[direction] + bytes);
             if (row.relay_blocked || total > row[`${direction}_limit`]) {
                 if (arrived) {
