@@ -214,3 +214,65 @@ of its volume, its six imported images, both trial image references, the
 bridge, the kubeconfig, and the source and fixture files. The local provider
 state existed only in that cluster. Hosted Cloudflare requests and model
 calls were both zero.
+
+### Disconnect settlement after first Activate
+
+The first-Activate log captured the capacity reasons `cleanup_pending` and
+`setup_required` at submission. The rehearsal reached its 90-second
+observation cutoff with the job still active. That log lacked the job phase
+and connector readbacks needed to identify its last step.
+
+The instrumented Kind replay at `d3d64529aeaef4a1968f49bb56ca85448b74f72c`
+started Disconnect immediately after the first successful Enable. There were
+zero live Workers usage incarnations and zero unreleased slots throughout.
+The job ran on attempt one. The timings below are sampled from the
+rehearsal's first job poll.
+
+| Elapsed | Observed state |
+| --- | --- |
+| 3.2 s | All three Workers scripts were absent. The database wanted no connector token. The job was `running` in `Verifying Cloudflare Deletion`. |
+| 5.7 s | The Kubernetes Secret object was empty, DNS was absent, and the tunnel receipt was `deleting`. The connector pod still had the previous mounted token and one provider session. |
+| 57.3 s | The token mount and the attached session were empty. The tunnel still awaited a deletion check. |
+| 66.0 s | Attempt one was `succeeded` with outcome `disconnected`. The tunnel was deleted, three script and four namespace reads returned HTTP 404, and there were no live usage rows, unreleased slots, stored credentials, or non-absent ownership receipts. |
+
+The wait was for the mounted Secret to refresh and the connector to detach,
+followed by the next deletion poll. The cleanup journal had already verified
+Workers and DNS absence before that wait. Shared-cap persistence could
+affect placement but did not participate in this path, and the connector
+readiness wait runs in Enable, Upgrade, and rotation. While the job was
+`running`, its error and result codes were empty. The capacity status reason
+was `cleanup_pending`, with `setup_required` also present. The earlier
+7.6-second run submitted Disconnect after Scale In and did not capture when
+the Secret mount refreshed. Its successful readback shows that the wait can
+finish on an early deletion poll.
+
+A controlled replay changed only the disposable node's kubelet sync period
+to 105 seconds. The Secret object, DNS, and Workers scripts were clear by
+5.6 seconds. At 90.4 seconds the pod still held the token and the provider
+still reported one session. The job was `running` in `Verifying Cloudflare
+Deletion`, with no PlatformJob error or result code. The installation
+still reported `cleanup_pending`. At 100.5 seconds the mounted token and
+session had cleared. Disconnect succeeded on attempt one at 125.6 seconds
+and verified the same absence checks as the default replay.
+
+Kubernetes documents that a mounted Secret update is eventually consistent.
+The delay includes kubelet synchronization and cache propagation. Kubernetes
+v1.31 also jitters regular pod resync by up to 50 percent. An empty Secret
+object and a still-present token in the pod can therefore coexist, especially
+when Disconnect follows shortly after the token was first projected. [Kubernetes Secret volume updates](https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod). [Kubernetes v1.31 pod worker resync](https://github.com/kubernetes/kubernetes/blob/v1.31.0/pkg/kubelet/pod_workers.go).
+
+The rehearsal now waits up to 16 minutes for Disconnect to reach a terminal
+PlatformJob state. This covers the 15-minute attempt limit and one minute to
+claim the job. It logs status, attempt, phase, and code on transitions and
+still requires verified absence. Within the attempt, deletion checks back
+off from 2 seconds to at most 30 seconds. If deletion is still settling at
+the first unresolved check after the 10-minute drain deadline, the job
+requires action with `CF_CLEANUP_PENDING`.
+
+Strict kubeconform validated all 23 adapted manifests in each replay. Both
+replays removed the namespace and connector workload, then verified that
+the trial containers, node volumes containing the six imported images,
+bridge, and two trial image references were absent. The source, fixtures,
+local bundle copy, kubeconfig, and Kind binary were removed. Only the
+rehearsal evidence was retained. Both runs used the isolated local provider
+with zero hosted Cloudflare requests or model calls.

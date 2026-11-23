@@ -24,6 +24,8 @@ MANAGEMENT = "local-rehearsal-management-token"
 ACTIVE_JOB = {"queued", "running", "waiting"}
 WORKERS_OVERFLOW_AGE_SECONDS = 2
 ENABLE_RESULT_SECONDS = 180
+# Allow one 15-minute Disconnect attempt and time for it to be claimed.
+DISCONNECT_RESULT_SECONDS = 16 * 60
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -177,8 +179,22 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         return str(UUID(result["job_id"]))
 
     def completed(self, job, outcome, *, window=90):
+        started = time.monotonic()
+        last_progress = None
+
         def terminal():
+            nonlocal last_progress
             state = self.send("/api/platform-jobs/" + job, method="GET")
+            if outcome == "disconnected":
+                progress = {
+                    "status": state["status"],
+                    "attempt": state["attempt"],
+                    "phase": (state.get("progress") or {}).get("phase"),
+                    "code": (state.get("result") or {}).get("code") or (state.get("error") or {}).get("code"),
+                }
+                if progress != last_progress:
+                    evidence("disconnect-job", {**progress, "elapsed_seconds": round(time.monotonic() - started, 3)})
+                    last_progress = progress
             return state if state["status"] not in ACTIVE_JOB else None
 
         state = wait(outcome, terminal, window)
@@ -558,7 +574,7 @@ async def {name}():
         job = self.job("disconnect")
         if "managementToken" not in self.cfg:
             self.observe_status("disconnect-requested")
-        self.completed(job, "disconnected")
+        self.completed(job, "disconnected", window=DISCONNECT_RESULT_SECONDS)
         assert self.install() is None
         absent = self.verify_receipts_absent(receipts)
         expected = (0, 0, 0, 0)
