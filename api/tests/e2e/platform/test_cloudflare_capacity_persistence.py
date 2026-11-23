@@ -1174,7 +1174,13 @@ async def test_opted_in_enable_admits_only_the_verified_revision(db_session, ins
     installation.containers_release_digest = release.digest
     if scenario in ("fetch", "signature", "wrong_digest"):
         installation.admitted_revision = revision
-    app = app_journal(installation, release.digest, datetime.now(UTC))
+    now = datetime.now(UTC)
+    app = app_journal(installation, release.digest, now)
+    db_session.add(seal_credential(
+        CredentialRef(installation.id, installation.account_id, "scope_bearer", "containers", revision),
+        SecretStr("synthetic-container-scope-bearer-key"), actor=str(OPERATOR_ID), now=now,
+    ))
+    await db_session.flush()
     db_session.add_all([app, CloudflareCapacityScope(
         installation_id=installation.id, scope="containers", deployment_revision=revision,
         endpoint="https://containers.example.test", bearer_version=revision,
