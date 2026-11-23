@@ -42,6 +42,7 @@ from src.services.worker_pool.cloudflare_spend import (
     seal_launcher_meter,
 )
 from src.services.worker_pool.cloudflare_workers_rest import WorkersDeployment
+from src.worker.remote.container_egress import CONTAINER_RAW_PROBE_PORT
 from src.services.worker_pool.external_client import (
     CapacityProtocolCheck,
     CapacityProtocolError,
@@ -171,7 +172,7 @@ async def container_probe_target(worker_id: UUID) -> tuple[str, str]:
     if alternate.scheme != "https" or alternate.port is not None or alternate.host == httpx.URL(ingress).host:
         raise ValueError("Container challenge requires a separate HTTPS control origin")
     async with asyncio.timeout(5):
-        _, writer = await asyncio.open_connection(alternate.host, 443)
+        _, writer = await asyncio.open_connection(alternate.host, CONTAINER_RAW_PROBE_PORT)
     try:
         peer = writer.get_extra_info("peername")
         address = str(ip_address(peer[0]))

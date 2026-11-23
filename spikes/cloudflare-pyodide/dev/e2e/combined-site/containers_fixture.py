@@ -139,7 +139,7 @@ def configure_challenge(module):
             return getattr(asyncio, name)
 
         async def open_connection(self, host, port):
-            if port != 443 or re.fullmatch(rf"{REPOSITORY}-containers\.rehearsal\.workers\.dev", host) is None:
+            if port != 8443 or re.fullmatch(rf"{REPOSITORY}-containers\.rehearsal\.workers\.dev", host) is None:
                 raise ValueError("Unexpected alternate Container challenge destination")
             reader, writer = await asyncio.open_connection("container-probe-peer", port)
             assert writer.get_extra_info("peername")[0] != PROVIDER["address"]

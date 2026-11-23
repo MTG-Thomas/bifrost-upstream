@@ -9,6 +9,11 @@ import httpx
 
 CONTAINER_RELAY_REJECTION = "x-bifrost-container-relay-rejection"
 CONTAINER_EGRESS_DENIALS = frozenset({"alternate-origin", "wrong-host", "raw-tcp", "disallowed-route", "redirect"})
+# The exact TLS intercept can accept a TCP handshake at 443 before seeing
+# SNI. Probe another Cloudflare edge port and verify it is reachable from
+# Bifrost before asking the guest to connect.
+# https://developers.cloudflare.com/fundamentals/reference/network-ports/
+CONTAINER_RAW_PROBE_PORT = 8443
 
 
 async def run_container_egress_checks(
@@ -40,12 +45,12 @@ async def run_container_egress_checks(
                     or (response.status_code == 404 and response.headers.get("x-bifrost-worker-ingress") == "v1; denied")
                 )
 
-        async def connect_denied(target: str) -> bool:
+        async def connect_denied(target: str, port: int) -> bool:
             # A successful TCP connection is enough to fail the challenge.
             # TLS trust failures must never stand in for a network denial.
             try:
                 async with asyncio.timeout(5):
-                    _, writer = await asyncio.open_connection(target, 443)
+                    _, writer = await asyncio.open_connection(target, port)
             except (OSError, TimeoutError):
                 return True
             writer.close()
@@ -56,7 +61,7 @@ async def run_container_egress_checks(
             if response.status_code != 204 or response.headers.get("x-bifrost-worker-ingress") != "v1; allowed":
                 raise RuntimeError("The Container SDK canary did not reach verified worker ingress")
         results = await asyncio.gather(
-            connect_denied(alternate_url.host), connect_denied(address),
+            connect_denied(alternate_url.host, 443), connect_denied(address, CONTAINER_RAW_PROBE_PORT),
             denied(route, "origin", {"Host": "wrong-host.invalid"}),
             denied(f"{origin}/__bifrost_canary_denied__", "route"),
             redirect_denied(),

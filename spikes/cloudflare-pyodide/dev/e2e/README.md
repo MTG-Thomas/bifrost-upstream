@@ -100,9 +100,9 @@ uploaded registry, checks signed start and stop requests, and uses Docker
 to run the paired Linux image through the exact worker ingress. Docker
 placement readback is separate from the registry response.
 The raw TCP challenge uses a private peer on the API's internal Docker
-network. The API connects to it before giving its address to the guest.
-Miniflare's proxy can reach the Docker host gateway, so the harness uses
-the private peer as its local isolation witness.
+network. The API connects to it on port 8443 before giving its address to
+the guest. This keeps the raw socket separate from the TLS intercept on
+port 443, which can accept a handshake before it sees the request.
 
 The driver requires a successful native import, a subprocess result and an
 SDK request on a Container worker. It waits for idle settlement, verifies

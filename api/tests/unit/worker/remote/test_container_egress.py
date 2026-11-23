@@ -24,7 +24,7 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure,
     writer = Mock(wait_closed=closed)
 
     async def connect(host, port):
-        assert port == 443
+        assert (host, port) in {("scope.example.test", 443), (address, 8443)}
         if (host, failure) in {("scope.example.test", "alternate-origin"), (address, "raw-tcp")}:
             return None, writer
         assert host in ("scope.example.test", address)
