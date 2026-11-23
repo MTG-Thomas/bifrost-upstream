@@ -6647,7 +6647,9 @@ async def test_status_explains_placement_over_rest(
 
 
 @pytest.mark.asyncio
-async def test_status_uses_scoped_runs_and_deployed_controller_observation(db_session, installation, monkeypatch):
+async def test_status_uses_scoped_runs_and_deployed_controller_observation(isolated_capacity_installation, monkeypatch):
+    # Fit packs the whole queue before applying caller visibility.
+    db_session, installation = isolated_capacity_installation
     org = Organization(name="Gap 5 Status Fixture", created_by="test")
     db_session.add(org)
     await db_session.flush()
