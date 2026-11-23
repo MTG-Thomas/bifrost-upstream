@@ -289,13 +289,16 @@ path. This is intentional. Reconcile can admit a new deployment, so it must
 verify the same projected token and attached session. A connector that
 remains unready after the 180-second wait ends that job with non-retryable
 `CF_CONNECTOR_UNAVAILABLE`. A later explicit replay can reuse the
-journaled connector credential. The `_wait_for_connector` loop releases its database
-transaction before reading connector sessions, so a slow provider read
-cannot block Secret projection. It rechecks the job, installation, and
-token versions before recording the observation. Rotation evicts superseded
-sessions and reads them back under the existing fence after the new token
-is projected. Reconcile verification of an admitted deployment still reads
-the provider under the installation row lock.
+journaled connector credential. Enable, rotation readiness checks, and
+Reconcile verification release their database transactions before reading
+the provider, including the Reconcile reads for DNS, ingress, and the
+connector credential. Secret projection can take the installation lock
+while those calls are in flight. Before recording, the job rechecks its
+lease, the installation state and revision, the resource receipts, and the
+credential and projection versions. A changed fence discards the observation.
+After projection, eviction targets only exact session IDs captured before
+the token was activated. A connector attached by a concurrent rotation
+is outside that set.
 
 Strict kubeconform validated all 23 adapted manifests in each replay. Both
 replays removed the namespace and connector workload, then verified that
