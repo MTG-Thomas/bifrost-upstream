@@ -182,6 +182,19 @@ RUN mkdir -p /workspace /tmp/bifrost && \
 # The connector runs this same release image under a separate non-root UID
 # context with only a read-only token projection. Pin both released binaries.
 ARG TARGETARCH
+# The owned-image deletion path also needs exact manifest digests.
+RUN case "${TARGETARCH:-amd64}" in \
+      amd64) arch=x86_64; digest=c1d593d01551f2c9a3df5ca0a0be4385a839bd9b86d4a76e18d7b17d16559127 ;; \
+      arm64) arch=arm64; digest=fc0515857bc38e4ddd2d37a5ab03fb5959449c7b2d4ad759bcc1174ac0cad91b ;; \
+      *) exit 1 ;; \
+    esac && curl --fail --silent --show-error --location \
+      "https://github.com/google/go-containerregistry/releases/download/v0.20.6/go-containerregistry_Linux_${arch}.tar.gz" \
+      --output /tmp/crane.tar.gz \
+    && echo "$digest  /tmp/crane.tar.gz" | sha256sum -c - \
+    && install -d /app/artifacts/cloudflare/bin \
+    && tar -xzf /tmp/crane.tar.gz -C /app/artifacts/cloudflare/bin crane \
+    && rm /tmp/crane.tar.gz \
+    && [ "$(/app/artifacts/cloudflare/bin/crane version)" = v0.20.6 ]
 RUN case "${TARGETARCH:-amd64}" in \
       amd64) digest=97bb3b02d23a5980fc9c15a1a270e692da1923f103f920d5b16d4931d5ab55e7 ;; \
       arm64) digest=b155cec3e48e489cfb8e5c602769fb8c771083018d8881d68b4d18a791567c5a ;; \
