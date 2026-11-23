@@ -19,13 +19,15 @@ from src.jobs.platform.cloudflare_capacity import (
     RECONCILE_INTERVAL_SECONDS,
     schedule_cloudflare_reconcile,
 )
+from src.models.enums import ExecutionStatus
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareCredential,
     CloudflareInstallation,
     CloudflareWorkerReservation,
 )
-from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
+from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.scheduler.leadership import SchedulerLeadershipLease
 from src.services.kubernetes_control import may_manage_jobs
@@ -77,6 +79,7 @@ from src.services.worker_pool.external_controller import ExternalWorkerPoolContr
 from src.worker.remote.protocol import (
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     LINUX_RUNTIME_PROFILE,
+    WORKER_DRAIN_GRACE_SECONDS,
     cloudflare_slots,
 )
 
@@ -157,8 +160,22 @@ async def _reconcile_containers(
         management = await load_account_token(db, installation)
         now = await db.scalar(select(func.clock_timestamp()))
         assert now is not None
+        # Preserve the first observation across scheduler ownership changes.
+        await db.execute(update(pin).where(
+            pin.installation_id == binding.installation_id, pin.scope == CONTAINERS_SCOPE,
+            pin.deployment_revision == binding.revision, pin.cleanup_started_at.is_(None),
+            pin.container_stopped_at.is_(None),
+            pin.worker_id.in_(select(ExecutionWorker.id).where(ExecutionWorker.state == "draining")),
+        ).values(cleanup_started_at=now))
+        live_claim = select(ExecutionWorkerClaim.worker_id).join(
+            Execution, Execution.id == ExecutionWorkerClaim.subject_id,
+        ).where(
+            ExecutionWorkerClaim.worker_id == ExecutionWorker.id,
+            Execution.status.in_((ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING)),
+        ).correlate(ExecutionWorker).exists()
         existing = (await db.execute(select(
             pin.worker_id, pin.container_envelope, pin.canary_job_id, ExecutionWorker.state, container_deadline_sql(),
+            pin.cleanup_started_at, (ExecutionWorker.active_runs > 0) | live_claim,
         ).join(ExecutionWorker, ExecutionWorker.id == pin.worker_id).where(
             pin.installation_id == binding.installation_id, pin.scope == CONTAINERS_SCOPE,
             pin.deployment_revision == binding.revision,
@@ -183,12 +200,15 @@ async def _reconcile_containers(
             pass  # A readback may still be settling. Revisit at the next pass.
 
     receipt_limit = False
-    for worker_id, envelope, canary_job_id, worker_state, deadline in existing:
+    for worker_id, envelope, canary_job_id, worker_state, deadline, drain_started, busy in existing:
         if envelope is None:
             continue
         start_deadline = datetime.fromisoformat(envelope["start_deadline"])
         if (
-            canary_job_id is not None or worker_state in ("draining", "lost", "retired") or deadline <= now
+            canary_job_id is not None or worker_state in ("lost", "retired") or deadline <= now
+            or (worker_state == "draining" and (not busy or (
+                drain_started is not None and now >= drain_started + timedelta(seconds=WORKER_DRAIN_GRACE_SECONDS)
+            )))
             or (worker_state in ("reserved", "starting") and (
                 not admitting or now >= start_deadline + timedelta(milliseconds=BOOT_OBSERVATION_MS)
             ))
@@ -199,6 +219,7 @@ async def _reconcile_containers(
             receipt_limit |= receipt is not None and receipt.status == "receipt-limit"
 
     if verified is None:
+        await record_controller_observation(binding)
         return
     release = releases.get(binding)
     if release is None or release.digest != release_digest:

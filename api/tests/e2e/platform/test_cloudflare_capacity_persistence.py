@@ -3646,6 +3646,33 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         assert claim is not None and claim.subject_id == run_id and claim.workflow_slot is None
         assert await claims.claim_next(primary_id, fits_bytes=512, budget_bytes=512) is None
         assert await claims.claim_next(worker.id, fits_bytes=512, budget_bytes=512) is None
+        if not refuse:
+            worker.state = "draining"
+            worker.active_runs = 1
+            await db.flush()
+            settlement = AsyncMock(return_value=True)
+            monkeypatch.setattr(cloudflare_supervisor, "reconcile_container_stop", settlement)
+            async with httpx.AsyncClient(transport=httpx.MockTransport(placement_provider)) as http:
+                await cloudflare_supervisor._reconcile_containers(
+                    binding, get_settings(), http, uuid4(), {binding: release}, kubernetes=False,
+                )
+                settlement.assert_not_awaited()
+                await db.refresh(pin)
+                assert pin.cleanup_started_at is not None
+                worker.active_runs = 0
+                execution.status = ExecutionStatus.RUNNING
+                await db.flush()
+                await cloudflare_supervisor._reconcile_containers(
+                    binding, get_settings(), http, uuid4(), {binding: release}, kubernetes=False,
+                )
+                settlement.assert_not_awaited()
+                execution.status = ExecutionStatus.SUCCESS
+                await db.flush()
+                await cloudflare_supervisor._reconcile_containers(
+                    binding, get_settings(), http, uuid4(), {binding: release}, kubernetes=False,
+                )
+                assert settlement.await_count == 1
+                assert settlement.await_args.args[-1] == worker.id
         return
     elif reason == "stale-hash":
         await db.execute(update(FileIndex).where(FileIndex.path == path).values(content_hash="b" * 64))
