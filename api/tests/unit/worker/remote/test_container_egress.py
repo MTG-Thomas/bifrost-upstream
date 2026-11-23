@@ -1,3 +1,5 @@
+import errno
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
@@ -16,6 +18,7 @@ from src.worker.remote.container_egress import (
 @pytest.mark.parametrize(("failure", "redirect"), [
     (None, "relay"), (None, "ingress"), ("alternate-origin", "relay"), ("raw-tcp", "relay"),
     ("redirect", "unmarked"), ("redirect", "leaked-location"),
+    ("rate-limited", "relay"), ("relay-unavailable", "relay"), ("socket-unavailable", "relay"),
 ])
 async def test_egress_canary_only_records_observed_denials(monkeypatch, failure, redirect):
     origin, alternate = "https://ingress.example.test", "https://scope.example.test"
@@ -27,7 +30,9 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure,
         assert host == address and port in {2053, 8443}
         if (port, failure) in {(2053, "alternate-origin"), (8443, "raw-tcp")}:
             return None, writer
-        raise OSError("blocked")
+        if failure == "socket-unavailable":
+            raise OSError(errno.EMFILE, "fixture process limit")
+        raise ConnectionRefusedError(errno.ECONNREFUSED, "blocked")
 
     def provider(request: httpx.Request) -> httpx.Response:
         assert request.url.host == "ingress.example.test"
@@ -36,6 +41,8 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure,
             return httpx.Response(403, headers={CONTAINER_RELAY_REJECTION: "origin"})
         if request.url.path == "/__bifrost_canary_denied__":
             assert request.headers.get("authorization") is None
+            if failure in ("rate-limited", "relay-unavailable"):
+                return httpx.Response(429 if failure == "rate-limited" else 502)
             return httpx.Response(403, headers={CONTAINER_RELAY_REJECTION: "route"})
         assert request.url.path == f"/api/sdk/capacity-canary/{worker}"
         assert request.headers["authorization"] == f"Bearer {proof}"
@@ -54,5 +61,9 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure,
     monkeypatch.setattr(container_egress, "create_default_context", Mock())
     monkeypatch.setattr(container_egress.httpx, "AsyncClient", Mock(return_value=client))
     monkeypatch.setattr(container_egress.asyncio, "open_connection", connect)
-    observed = await run_container_egress_checks(origin, alternate, address, worker, 2, proof)
-    assert set(observed) == (CONTAINER_EGRESS_DENIALS - {failure})
+    transient = {
+        "rate-limited": httpx.HTTPStatusError, "relay-unavailable": httpx.HTTPStatusError, "socket-unavailable": OSError,
+    }.get(failure)
+    with pytest.raises(transient) if transient is not None else nullcontext():
+        observed = await run_container_egress_checks(origin, alternate, address, worker, 2, proof)
+        assert set(observed) == (CONTAINER_EGRESS_DENIALS - {failure})

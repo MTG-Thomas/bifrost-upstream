@@ -1,6 +1,7 @@
 """Measure the Container network boundary from the trusted supervisor."""
 
 import asyncio
+import errno
 from ipaddress import ip_address
 from ssl import create_default_context
 from uuid import UUID
@@ -15,6 +16,10 @@ CONTAINER_EGRESS_DENIALS = frozenset({"alternate-origin", "wrong-host", "raw-tcp
 # https://developers.cloudflare.com/fundamentals/reference/network-ports/
 CONTAINER_RAW_PROBE_PORT = 8443
 CONTAINER_ALTERNATE_PROBE_PORT = 2053
+_CONNECT_DENIALS = frozenset({
+    errno.EACCES, errno.ECONNREFUSED, errno.ECONNRESET, errno.EHOSTUNREACH,
+    errno.ENETUNREACH, errno.EPERM, errno.ETIMEDOUT,
+})
 
 
 async def run_container_egress_checks(
@@ -33,12 +38,18 @@ async def run_container_egress_checks(
     auth = {"Authorization": f"Bearer {proof}", "X-Bifrost-Canary-Generation": str(generation)}
     tls = create_default_context(cafile="/etc/cloudflare/certs/cloudflare-containers-ca.crt")
     async with httpx.AsyncClient(verify=tls, trust_env=False, follow_redirects=False) as client:
+        def require_probe_response(response: httpx.Response) -> None:
+            if response.status_code >= 500 or response.status_code in (408, 429):
+                response.raise_for_status()
+
         async def denied(url: str, reason: str, headers: dict[str, str] | None = None) -> bool:
             async with client.stream("GET", url, headers=headers) as response:
+                require_probe_response(response)
                 return response.status_code == 403 and response.headers.get(CONTAINER_RELAY_REJECTION) == reason
 
         async def redirect_denied() -> bool:
             async with client.stream("GET", route, headers={**auth, "X-Bifrost-Canary-Redirect": "1"}) as response:
+                require_probe_response(response)
                 # The dedicated ingress can suppress the redirect before it
                 # reaches the relay. Both guards return their own marker.
                 return "location" not in response.headers and (
@@ -52,7 +63,11 @@ async def run_container_egress_checks(
             try:
                 async with asyncio.timeout(5):
                     _, writer = await asyncio.open_connection(target, port)
-            except (OSError, TimeoutError):
+            except TimeoutError:
+                return True
+            except OSError as exc:
+                if exc.errno not in _CONNECT_DENIALS:
+                    raise
                 return True
             writer.close()
             await writer.wait_closed()
