@@ -352,9 +352,41 @@ class ContainerRegistry:
             if not visible:
                 await run_oci_tool(self.crane, "copy", release.manifest.image, destination, cwd=cwd, timeout=90)
             await self._verify_image(destination, release, cwd)
-            if "release" not in await self._tags(token, account, name, cwd):
-                raise ObservationPending("Exact registry tag is still unconfirmed")
-        return ResourceObservation(intent, destination, release.manifest.image_digest)
+            observed_tags = await self._tags(token, account, name, cwd)
+            if observed_tags - {"release"}:
+                raise OwnershipConflict(
+                    "Container registry repository acquired an unexpected tag",
+                    OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED,
+                )
+            if not observed_tags:
+                raise ObservationSettling(
+                    "Exact registry tag is still unconfirmed",
+                    OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
+                )
+        digest = release.manifest.image_digest
+        image = f"{REGISTRY}/{account}/{name}@{digest}"
+        response = await self.rest._request(
+            token, account, "POST", "containers/image-preparations", json_body={"image": image},
+        )
+        assert response is not None
+        preparation = response["result"]
+        if not isinstance(preparation, dict) or preparation.get("image") != image:
+            raise OwnershipConflict(
+                "Container preparation refers to a different image",
+                OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.RECEIPT_MISMATCH,
+            )
+        status = preparation.get("status")
+        if status == "pending":
+            raise ObservationSettling(
+                "Waiting for the exact Container image to be prepared",
+                OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
+            )
+        if status != "ready":
+            raise ObservationPending(
+                "Container image preparation did not return ready",
+                OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
+            )
+        return ResourceObservation(intent, destination, digest)
 
     async def _verify_image(self, image: str, release: VerifiedContainerRelease, cwd: Path) -> None:
         manifest = await run_oci_tool(self.crane, "manifest", image, cwd=cwd)

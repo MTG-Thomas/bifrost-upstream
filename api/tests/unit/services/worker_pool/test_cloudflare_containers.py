@@ -43,6 +43,7 @@ from src.services.worker_pool.cloudflare_containers_rest import (
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
     ObservationPending,
+    ObservationSettling,
     OwnershipConflict,
     ResourceIntent,
     ResourceObservation,
@@ -210,17 +211,21 @@ async def test_release_fetch_distinguishes_settling_from_terminal_errors(tmp_pat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("initial_tags", "previously_sent", "conflict"), [
-    (None, True, False),
-    ([], True, False),
-    (["release"], True, False),
-    (["other"], True, True),
-    (["release"], False, True),
-    (["release", "other"], True, True),
-    (["release", "other"], False, True),
+@pytest.mark.parametrize(("initial_tags", "previously_sent", "conflict", "preparation"), [
+    (None, True, False, "ready"),
+    ([], True, False, "ready"),
+    (["release"], True, False, "ready"),
+    (["other"], True, True, "ready"),
+    (["release"], False, True, "ready"),
+    (["release", "other"], True, True, "ready"),
+    (["release", "other"], False, True, "ready"),
+    ([], True, False, "pending"),
+    ([], True, False, "error"),
+    ([], True, False, "wrong_image"),
+    ([], True, False, "foreign_after_copy"),
 ])
 async def test_registry_replays_only_into_an_empty_repository(
-    tmp_path, monkeypatch, initial_tags, previously_sent, conflict,
+    tmp_path, monkeypatch, initial_tags, previously_sent, conflict, preparation,
 ) -> None:
     release, image, config = make_release()
     installation = uuid4()
@@ -229,6 +234,7 @@ async def test_registry_replays_only_into_an_empty_repository(
     tags = list(initial_tags or [])
     permissions = []
     copies = []
+    preparations = []
 
     async def tool(executable, *args, **kwargs):
         if args == ("version",):
@@ -246,11 +252,25 @@ async def test_registry_replays_only_into_an_empty_repository(
         if args[0] == "copy":
             copies.append(args[:3])
             tags.append("release")
+            if preparation == "foreign_after_copy":
+                tags.append("another-tag")
             return b""
         pytest.fail(f"Unexpected OCI tool call {args[0]}")
 
     def provider(request: httpx.Request) -> httpx.Response:
-        permissions.append(json.loads(request.content)["permissions"])
+        body = json.loads(request.content)
+        assert request.method == "POST"
+        if request.url.path.endswith("/containers/image-preparations"):
+            digest = release.manifest.image_digest
+            assert body == {"image": f"registry.cloudflare.com/{ACCOUNT}/{name}@{digest}"}
+            status = preparation if not preparations else "ready"
+            preparations.append(status)
+            return httpx.Response(200, json={"success": True, "result": {
+                "status": "ready" if status == "wrong_image" else status,
+                "image": "different-image" if status == "wrong_image" else body["image"],
+            }})
+        assert request.url.path.endswith("/containers/registries/registry.cloudflare.com/credentials")
+        permissions.append(body["permissions"])
         return httpx.Response(200, json={"success": True, "result": {
             "account_id": ACCOUNT, "registry_host": "registry.cloudflare.com",
             "username": "synthetic", "password": "synthetic",
@@ -262,14 +282,29 @@ async def test_registry_replays_only_into_an_empty_repository(
         if conflict:
             with pytest.raises(OwnershipConflict):
                 await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
-            assert not permissions and not copies
+            assert not permissions and not copies and not preparations
             return
+        if preparation == "foreign_after_copy":
+            with pytest.raises(OwnershipConflict):
+                await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
+            assert not preparations
+            return
+        if preparation in {"error", "wrong_image"}:
+            error = ObservationPending if preparation == "error" else OwnershipConflict
+            with pytest.raises(error):
+                await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
+            assert preparations == [preparation]
+            return
+        if preparation == "pending":
+            with pytest.raises(ObservationSettling):
+                await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
         result = await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
+        assert preparations == (["pending", "ready"] if preparation == "pending" else ["ready"])
         assert result.provider_version == release.manifest.image_digest
         if initial_tags:
             assert permissions == [["pull"]] and not copies
         else:
-            assert permissions == [["pull", "push"]]
+            assert permissions == ([["pull", "push"], ["pull"]] if preparation == "pending" else [["pull", "push"]])
             assert copies == [("copy", release.manifest.image, result.provider_id)]
 
 

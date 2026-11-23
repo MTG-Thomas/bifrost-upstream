@@ -40,6 +40,7 @@ class OwnershipResource(StrEnum):
     WORKERS_SCOPE = "workers_scope"
     UPGRADE_REVISION = "upgrade_revision"
     CONTAINER_APPLICATION = "container_application"
+    CONTAINER_IMAGE = "container_image"
     TUNNEL = "tunnel"
     TUNNEL_INGRESS = "tunnel_ingress"
     CONNECTOR_CREDENTIAL = "connector_credential"
@@ -91,6 +92,7 @@ class ObservationCheck(Enum):
     CONTAINER_INVENTORY = ("container_inventory", "incomplete", "complete_inventory")
     CONTAINER_PLACEMENTS = ("container_placements", "live_or_unverified", "no_live_placements")
     CONTAINER_CREATE = ("container_create_readback", "absent", "exact_creation_receipt")
+    CONTAINER_IMAGE_PREPARATION = ("container_image_preparation", "unconfirmed", "exact_ready_image")
 
 
 def verification_details(resource_class: str, detail: tuple[str, str, str]) -> dict[str, str]:
