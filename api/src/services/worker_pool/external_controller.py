@@ -159,9 +159,6 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             validate_external_policy(
                 policy, self.profile, max_lifetime_seconds=self.settings.pool_max_lifetime_seconds,
                 peer=self.peer_profile,
-                additional=self.additional_profile,
-                containers=self.containers_mode,
-                incomplete_topology=self.containers_scope is not None and self.additional_profile is None,
                 primary_only=(
                     self.dual_capacity and self.runtime_profile == LINUX_RUNTIME_PROFILE
                     and self.peer_profile is None
@@ -262,7 +259,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 await db.execute(update(pin).where(
                     pin.worker_id == worker_id, pin.cleanup_started_at.is_(None),
                 ).values(cleanup_started_at=func.clock_timestamp()))
-        bounded_prepare = runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE or self.containers_mode
+        bounded_prepare = runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
         if bounded_prepare and state in ("reserved", "starting"):
             if _now() - created_at >= timedelta(seconds=self.settings.pool_start_timeout_seconds):
                 reason = "prepare_timeout" if state == "reserved" else "start_timeout"

@@ -17,9 +17,6 @@ def validate_external_policy(
     policy: "KubernetesPolicy", profile: WorkerCapacityProfile, *, max_lifetime_seconds: int,
     peer: WorkerCapacityProfile | None = None,
     primary_only: bool = False,
-    additional: WorkerCapacityProfile | None = None,
-    containers: bool = False,
-    incomplete_topology: bool = False,
 ) -> None:
     """Reject an incompatible policy without changing it or provisioning work."""
     if profile.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
@@ -31,11 +28,11 @@ def validate_external_policy(
                     f"{field} must match the capacity provider's fixed worker memory "
                     f"({profile.memory_limit_bytes // 2**20} MiB)"
                 )
-    limit = profile.max_workers + (peer.max_workers if peer else 0) + (additional.max_workers if additional else 0)
-    if not primary_only and not incomplete_topology and policy.max_workers > limit:
+    limit = profile.max_workers + (peer.max_workers if peer else 0)
+    if not primary_only and policy.max_workers > limit:
         raise ValueError(f"max_workers must not exceed the capacity provider limit ({limit})")
     if (
-        (peer is not None or primary_only) and not containers
+        (peer is not None or primary_only)
         and profile.runtime_profile == LINUX_RUNTIME_PROFILE and policy.warm_workers > profile.max_workers
     ):
         raise ValueError("warm_workers must fit within the primary Linux provider ceiling")

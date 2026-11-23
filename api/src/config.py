@@ -16,7 +16,6 @@ from pydantic import (
     SecretStr,
     computed_field,
     field_validator,
-    model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -41,18 +40,6 @@ class Settings(BaseSettings):
     worker_capacity_url: str | None = Field(default=None, description="External physical-capacity provider HTTPS endpoint")
     worker_capacity_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
     cloudflare_tunnel_channel: Literal["compose", "kustomize"] | None = None
-    cloudflare_containers_scope: str | None = Field(default=None, description="Cloudflare Containers capacity scope")
-    cloudflare_containers_url: str | None = Field(default=None, description="Cloudflare Containers capacity endpoint")
-    cloudflare_containers_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
-
-    @model_validator(mode="after")
-    def reject_retired_cloudflare_containers_controller(self) -> "Settings":
-        if any((
-            self.cloudflare_containers_scope, self.cloudflare_containers_url, self.cloudflare_containers_token,
-        )):
-            raise ValueError("BIFROST_CLOUDFLARE_CONTAINERS_* require the Phase 6 spike's Containers controller")
-        return self
-
     cloudflare_worker_hello_enabled: bool = Field(
         default=False,
         exclude=True,

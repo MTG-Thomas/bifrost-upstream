@@ -13,8 +13,6 @@ from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID
 
 import pytest
-from pydantic import SecretStr
-from shared.worker_control_auth import external_worker_control_key
 from sqlalchemy.exc import OperationalError
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES
@@ -471,69 +469,6 @@ async def test_external_fast_path_hello_is_refused_before_admission() -> None:
         with pytest.raises(AuthenticationError, match="only support the Normal lane"):
             await RemoteControlHost().connect(socket)
     admit.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("scope", "uid", "profile", "use_derived_key", "accepted", "requirements_fail"),
-    [
-        ("containers", "resource-1", LINUX_RUNTIME_PROFILE, True, True, False),
-        ("containers", "resource-1", LINUX_RUNTIME_PROFILE, True, False, True),
-        ("containers", "resource-1", LINUX_RUNTIME_PROFILE, False, False, False),
-        ("containers", "resource-2", LINUX_RUNTIME_PROFILE, True, False, False),
-        ("containers", "resource-1", None, False, False, False),
-        ("vm", "resource-1", None, False, True, False),
-        ("vm", "resource-1", LINUX_RUNTIME_PROFILE, True, False, False),
-    ],
-)
-async def test_containers_hello_uses_only_the_reserved_scope_key(
-    scope: str, uid: str, profile: str | None, use_derived_key: bool, accepted: bool, requirements_fail: bool,
-) -> None:
-    token = "containers-capacity-token"
-    legacy_key = "legacy-platform-signing-key"
-    hello = Hello(
-        launcher_id=LEASE.launcher_id, incarnation_id=LEASE.worker_id,
-        job_uid=None, pod_uid=None, hostname="external", form="external",
-        issued_at=int(time.time()), nonce="n" * 32, hello_sequence=1,
-        resource_uid=uid, runtime_profile=profile,
-    )
-    key = external_worker_control_key(token, LEASE.worker_id, uid) if use_derived_key else legacy_key
-    socket = AsyncMock(scope={})
-    socket.receive_text.return_value = json.dumps({
-        "event": "hello", "hello": sign_hello(key, hello).to_dict(),
-        "sample": {"current": 1, "limit": 100}, "version": "test-build",
-        "handlers": [["workflow.execute", 1]],
-    })
-    reservation = SimpleNamespace(
-        capacity_scope=scope, capacity_resource_uid="resource-1", runtime_profile=LINUX_RUNTIME_PROFILE,
-    )
-    db = AsyncMock()
-    db.execute.return_value = Mock(one_or_none=Mock(return_value=reservation))
-
-    @asynccontextmanager
-    async def database():
-        yield db
-
-    settings = SimpleNamespace(
-        secret_key=legacy_key, cloudflare_containers_scope="containers",
-        cloudflare_containers_token=SecretStr(token),
-    )
-    # Stop at the ownership boundary so no background session is started.
-    with (
-        patch("src.worker.remote.host.get_settings", return_value=settings),
-        patch("src.worker.remote.host.get_liveness_db_context", database),
-        patch("src.worker.remote.host.admit_external_worker", new=AsyncMock(return_value=LEASE.worker_id)) as admit,
-        patch("src.worker.remote.host.acquire_remote_owner", new=AsyncMock(return_value=None)) as acquire,
-        patch("src.core.requirements_cache.get_requirements", new=AsyncMock(
-            return_value=None, side_effect=RuntimeError("requirements unavailable") if requirements_fail else None,
-        )),
-        pytest.raises(RuntimeError if requirements_fail else AuthenticationError),
-    ):
-        await RemoteControlHost().connect(socket)
-    assert admit.await_count == int(accepted)
-    assert acquire.await_count == int(accepted)
-    if requirements_fail:
-        socket.close.assert_awaited_once_with(code=1011, reason="launcher requirements unavailable")
 
 
 @pytest.mark.asyncio

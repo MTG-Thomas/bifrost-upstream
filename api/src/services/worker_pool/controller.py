@@ -36,7 +36,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from shared.models import CloudflareWorkersPolicy, WorkerCapacityProfile
-from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
 from shared.version import get_version
 from sqlalchemy import and_, func, literal, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,6 +83,7 @@ from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     PrimaryPool,
 )
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE
 from src.services.worker_pool.cloudflare_slots import (
     WorkflowSlotAdmission,
     read_workflow_slot_admission,
@@ -93,7 +93,6 @@ from src.services.worker_pool.cloudflare_slots import (
 from src.services.worker_pool.demand import pending_local_platform_job_ids
 from src.services.worker_pool.eligibility import (
     cloudflare_active_claims,
-    containers_workflow_fits,
     profile_matches,
 )
 from src.services.worker_pool.liveness import (
@@ -200,17 +199,8 @@ class WorkerCapacityController(ABC):
         self.runtime_profile = LINUX_RUNTIME_PROFILE
         self.capacity_profile: WorkerCapacityProfile | None = None
         self.peer_profile: WorkerCapacityProfile | None = None
-        self.additional_profile: WorkerCapacityProfile | None = None
         self.managed_cloudflare_scope: ManagedCloudflareScope | None = None
         self.cloudflare_primary: PrimaryPool | None = None
-
-    @property
-    def containers_scope(self) -> str | None:
-        return getattr(self.settings, "cloudflare_containers_scope", None)
-
-    @property
-    def containers_mode(self) -> bool:
-        return self.capacity_profile is not None and self.capacity_profile.scope == self.containers_scope
 
     @property
     def dual_capacity(self) -> bool:
@@ -218,17 +208,16 @@ class WorkerCapacityController(ABC):
 
     def _counts_for_warm_floor(self, worker: ExecutionWorker) -> bool:
         return (
-            not self.dual_capacity
-            or worker.execution_lane != "normal"
-            or (
-                worker.runtime_profile == LINUX_RUNTIME_PROFILE
-                and (self.containers_scope is None or worker.capacity_scope != self.containers_scope)
+            worker.capacity_scope != CONTAINERS_SCOPE
+            and (
+                not self.dual_capacity or worker.execution_lane != "normal"
+                or worker.runtime_profile == LINUX_RUNTIME_PROFILE
             )
         )
 
     def _outdated(self, worker: ExecutionWorker) -> bool:
         if worker.form == "external" and worker.state == "ready":
-            for profile in (self.capacity_profile, self.peer_profile, self.additional_profile):
+            for profile in (self.capacity_profile, self.peer_profile):
                 if profile is not None and worker.capacity_scope == profile.scope and (
                     self.dual_capacity or profile.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
                 ):
@@ -404,7 +393,10 @@ class WorkerCapacityController(ABC):
                     ).with_for_update()
                 )
             ).scalars().all()
-            linux_workers = [worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
+            linux_workers = [
+                worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE
+                and worker.capacity_scope != CONTAINERS_SCOPE
+            ]
             if managed_scope is not None and (
                 self.cloudflare_primary is None or not self.cloudflare_primary.saturated(linux_workers, _now())
             ):
@@ -433,7 +425,7 @@ class WorkerCapacityController(ABC):
             # Publication and decisions share one ordered snapshot. Predictions
             # choose resources; only a measured largest size can reject work.
             cloudflare = self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-            if not cloudflare and not self.containers_mode:
+            if not cloudflare:
                 await _publish_launchable(confirmed_largest, generation)
 
             launch_cutoff = None
@@ -445,7 +437,6 @@ class WorkerCapacityController(ABC):
                 Request(
                     row.id, row.memory_request_bytes, row.handler, row.handler_version,
                     row.cloudflare_revision, row.tenant_id,
-                    platform_job_type=row.platform_job_type,
                 )
                 for row in waiting
                 if launch_cutoff is None or row.created_at <= launch_cutoff
@@ -461,7 +452,6 @@ class WorkerCapacityController(ABC):
                 ):
                     continue
                 handlers = frozenset(worker.supported_handlers)
-                containers = self.containers_scope is not None and worker.capacity_scope == self.containers_scope
                 if worker.state == "draining" or worker.memory_pressured:
                     continue
                 # A worker launched for one dispatch holds it until it claims it.
@@ -470,7 +460,7 @@ class WorkerCapacityController(ABC):
                 if reservation:
                     covered.add(reservation.id)
                 handler_slots = linux_handler_slots(
-                    worker, reservation.handler if reservation else None, containers=containers,
+                    worker, reservation.handler if reservation else None,
                 )
                 # A Job admitted but still starting its pool has not measured
                 # its budget yet; until it reports, count the one expected.
@@ -479,11 +469,11 @@ class WorkerCapacityController(ABC):
                     worker.state in ("reserved", "starting") or worker.memory_budget_bytes is None
                 ):
                     budget = sizing.budget_bytes(launch_limit(worker, sizing.standard_limit_bytes))
-                    free.append(FreeBudget(max(0, budget - held), handlers, handler_slots, containers=containers))
+                    free.append(FreeBudget(max(0, budget - held), handlers, handler_slots))
                 elif worker.state == "ready" and worker.memory_budget_bytes is not None:
                     free.append(FreeBudget(
                         max(0, worker.memory_budget_bytes - worker.memory_reserved_bytes - held),
-                        handlers, handler_slots, containers=containers,
+                        handlers, handler_slots,
                     ))
             cloudflare_workers = [
                 worker for worker in workers
@@ -540,7 +530,7 @@ class WorkerCapacityController(ABC):
                     idle_declared[worker.id] = budget
             # Prefer Cloudflare slots for eligible work, leaving Linux capacity
             # for requests only Linux can execute.
-            free = [*available_declared, *sorted(free, key=lambda budget: budget.containers)]
+            free = [*available_declared, *free]
             needed = [request for request in waiting_requests if request.id not in covered]
             profile, peer = self.capacity_profile, self.peer_profile
             new_declared = None
@@ -582,12 +572,10 @@ class WorkerCapacityController(ABC):
                 scope_room = max(0, profile.max_workers - scope_counts.get(profile.scope, 0))
                 if scope_room == 0:
                     return []
-                if (self.containers_mode or (cloudflare and self.dual_capacity)) and (
-                    peer is None or sum(
-                        worker.form == "external" and worker.capacity_scope == peer.scope
-                        for worker in linux_workers
-                    ) < peer.max_workers
-                ):
+                if cloudflare and peer is not None and sum(
+                    worker.form == "external" and worker.capacity_scope == peer.scope
+                    for worker in linux_workers
+                ) < peer.max_workers:
                     return []
             plan = _plan_launches(
                 needed,
@@ -596,7 +584,6 @@ class WorkerCapacityController(ABC):
                 largest_budget=confirmed_largest if confirmed_largest is not None else sizing.largest_budget_bytes,
                 cold=not measurements, probe_largest=confirmed_largest is None,
                 new_declared=new_declared,
-                new_containers=self.containers_mode,
                 active_tenants=active_tenants,
                 workflow_slots=workflow_slots,
             )
@@ -618,7 +605,7 @@ class WorkerCapacityController(ABC):
                 and not self._outdated(worker)
                 and not self._lifetime_handoff_imminent(worker, now)
             )
-            warm = 0 if self.containers_mode else max(0, policy.warm_workers - undrained - plan.standard - len(plan.sized))
+            warm = max(0, policy.warm_workers - undrained - plan.standard - len(plan.sized))
             if new_declared is not None:
                 launched = [
                     self._reserve(
@@ -747,7 +734,7 @@ class WorkerCapacityController(ABC):
                          and not any(worker.active_handler_counts.values())
                          and not worker.reserved_for_dispatch_id
                          and worker.memory_budget_bytes is not None]
-                for worker_id, budget in (() if self.containers_mode else idle_declared.items()):
+                for worker_id, budget in idle_declared.items():
                     # Retain legacy behavior for a manually enrolled row in
                     # the Linux controller's own scope.
                     if worker_id in owned:
@@ -768,7 +755,7 @@ class WorkerCapacityController(ABC):
                 for worker in ready:
                     assert worker.memory_budget_bytes is not None
                     budget = FreeBudget(
-                        worker.memory_budget_bytes, frozenset(worker.supported_handlers), containers=self.containers_mode,
+                        worker.memory_budget_bytes, frozenset(worker.supported_handlers),
                     )
                     if not any(request.bytes > budget.bytes and budget.takes(request) for request in needed):
                         continue
@@ -843,19 +830,9 @@ class WorkerCapacityController(ABC):
         # An unbound Cloudflare reservation may have prepared with a lost
         # reply. Keep its slot through the bounded absence check as well.
         scopes = ExecutionWorker.capacity_scope.in_([
-            item.scope for item in (profile, peer, self.additional_profile) if item is not None
+            item.scope for item in (profile, peer) if item is not None
         ])
         unbound_can_prepare = ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-        if self.containers_scope is not None:
-            scopes = scopes | (ExecutionWorker.capacity_scope == self.containers_scope)
-            unbound_can_prepare = unbound_can_prepare | (ExecutionWorker.capacity_scope == self.containers_scope)
-        if self.dual_capacity and (peer is None or (self.containers_mode and self.additional_profile is None)):
-            # Discovery can be down while a previous burst incarnation still
-            # occupies shared physical capacity. Its persisted profile is enough.
-            scopes = scopes | (
-                (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
-                & ExecutionWorker.capacity_scope.is_not(None)
-            )
         counts = await db.execute(
             select(ExecutionWorker.capacity_scope, func.count())
             .where(
@@ -1017,8 +994,7 @@ class WorkerCapacityController(ABC):
                 memory_limit_bytes=memory_limit_bytes,
                 memory_calibration=None if cloudflare else {"environment": environment},
                 supported_handlers=(
-                    [CLOUDFLARE_WORKFLOW_HANDLER[0], SOLUTION_GIT_CAPABILITY] if self.containers_mode
-                    else [CLOUDFLARE_WORKFLOW_HANDLER[0]] if cloudflare
+                    [CLOUDFLARE_WORKFLOW_HANDLER[0]] if cloudflare
                     else list(REMOTE_WORKER_HANDLER_NAMES)
                 ),
                 runtime_profile=self.runtime_profile,
@@ -1178,7 +1154,6 @@ async def waiting_capacity_rows(db: AsyncSession, platform_job_ids: list[UUID], 
             WorkDispatch.handler_version,
             WorkDispatch.cloudflare_revision,
             Execution.organization_id.label("tenant_id"),
-            literal(None).label("platform_job_type"),
         )
         .outerjoin(Execution, Execution.id == WorkDispatch.subject_id)
         .where(
@@ -1198,7 +1173,6 @@ async def waiting_capacity_rows(db: AsyncSession, platform_job_ids: list[UUID], 
                 literal(None),
                 literal(None),
                 literal(None),
-                PlatformJob.job_type,
             ).where(
                 PlatformJob.id.in_(platform_job_ids),
                 PlatformJob.status == "queued",
@@ -1210,7 +1184,6 @@ async def waiting_capacity_rows(db: AsyncSession, platform_job_ids: list[UUID], 
                 workflow_request_sql(Workflow),
                 ServiceDefinition.updated_at,
                 # Every physical executor supervises services.
-                literal(None),
                 literal(None),
                 literal(None),
                 literal(None),
@@ -1231,7 +1204,6 @@ class Request:
     handler_version: int | None = None
     cloudflare_revision: str | None = None
     tenant_id: UUID | None = None
-    platform_job_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1242,15 +1214,8 @@ class FreeBudget:
     handlers: frozenset[str]
     handler_slots: dict[str, int] = field(default_factory=lambda: dict(HANDLER_CONCURRENCY_LIMITS))
     runtime_profile: str = LINUX_RUNTIME_PROFILE
-    containers: bool = False
 
     def takes(self, request: Request) -> bool:
-        if self.containers:
-            if request.platform_job_type == SOLUTION_UPDATE_CHECK_JOB:
-                return SOLUTION_GIT_CAPABILITY in self.handlers
-            return containers_workflow_fits(
-                request.handler, request.handler_version, request.cloudflare_revision, request.bytes,
-            )
         if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and request.bytes > CLOUDFLARE_DEV_BUDGET_BYTES:
             return False
         return (request.handler is None or request.handler in self.handlers) and profile_matches(
@@ -1268,10 +1233,7 @@ def take_first_budget(
     for index, budget in enumerate(budgets):
         if not allow_cloudflare and budget.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
             continue
-        handler = (
-            SOLUTION_GIT_CAPABILITY
-            if budget.containers and item.platform_job_type == SOLUTION_UPDATE_CHECK_JOB else item.handler
-        )
+        handler = item.handler
         remaining = slots[index]
         available = None if handler is None else remaining.get(handler, 0 if handler in _LIMITED_HANDLERS else None)
         if rooms[index] >= item.bytes and budget.takes(item) and (available is None or available > 0):
@@ -1282,10 +1244,8 @@ def take_first_budget(
     return None
 
 
-def linux_handler_slots(worker: ExecutionWorker, held_handler: str | None, *, containers: bool = False) -> dict[str, int]:
+def linux_handler_slots(worker: ExecutionWorker, held_handler: str | None) -> dict[str, int]:
     slots = dict(HANDLER_CONCURRENCY_LIMITS)
-    if containers:
-        slots[SOLUTION_GIT_CAPABILITY] = 1
     if worker.state not in ("reserved", "starting"):
         if worker.active_handler_counts is None:
             slots = dict.fromkeys(slots, 0)
@@ -1316,7 +1276,6 @@ def _plan_launches(
     cold: bool = False,
     probe_largest: bool = False,
     new_declared: FreeBudget | None = None,
-    new_containers: bool = False,
     active_tenants: set[UUID | None] | None = None,
     workflow_slots: WorkflowSlotAdmission | None = None,
 ) -> LaunchPlan:
@@ -1346,6 +1305,7 @@ def _plan_launches(
         else:
             workflow_slots.occupied[tenant_key(tenant_id)] += 1
 
+    standard = FreeBudget(standard_budget, frozenset(REMOTE_WORKER_HANDLER_NAMES))
     sized: list[tuple[UUID, int]] = []
     for item in waiting:
         dispatch_id, request = item.id, item.bytes
@@ -1353,10 +1313,6 @@ def _plan_launches(
         if placed is not None:
             if placed.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
                 occupy(item.tenant_id)
-            continue
-        new_handlers = frozenset({CLOUDFLARE_WORKFLOW_HANDLER[0], SOLUTION_GIT_CAPABILITY}) if new_containers else frozenset(REMOTE_WORKER_HANDLER_NAMES)
-        new_budget = FreeBudget(standard_budget, new_handlers, containers=new_containers)
-        if new_containers and not new_budget.takes(item):
             continue
         if new_declared is not None:
             if allows(item.tenant_id) and new_declared.fits(item):
@@ -1373,11 +1329,9 @@ def _plan_launches(
             if request <= largest_budget or probe_largest:
                 sized.append((dispatch_id, request))
             continue
-        bins.append(new_budget)
+        bins.append(standard)
         rooms.append(standard_budget - request)
         new_slots = dict(limited)
-        if new_containers:
-            new_slots[SOLUTION_GIT_CAPABILITY] = int(item.platform_job_type != SOLUTION_UPDATE_CHECK_JOB)
         if item.handler in limited:
             new_slots[item.handler] -= 1
         slots.append(new_slots)

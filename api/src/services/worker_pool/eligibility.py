@@ -70,12 +70,6 @@ def cloudflare_dispatch_sql() -> ColumnElement[bool]:
     )
 
 
-def containers_workflow_fits(handler: str | None, version: int | None, revision: str | None, size: int) -> bool:
-    return (handler, version) == CLOUDFLARE_WORKFLOW_HANDLER and (
-        revision is None or size > CLOUDFLARE_DEV_BUDGET_BYTES
-    )
-
-
 def cloudflare_active_claims() -> Select[tuple[UUID, UUID | None, UUID | None]]:
     """Live Cloudflare claims, including any claim with a missing execution record."""
     worker = aliased(ExecutionWorker)

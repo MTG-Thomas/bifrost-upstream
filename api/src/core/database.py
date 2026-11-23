@@ -215,7 +215,6 @@ def get_engine(settings: Settings | None = None) -> AsyncEngine:
             max_overflow=max_overflow,
             pool_timeout=30,  # Fail fast when pool is exhausted
             echo=settings.debug,
-            hide_parameters=bool(getattr(settings, "cloudflare_containers_scope", None)),
             application_name=settings.database_application_name,
             idle_in_transaction_session_timeout_ms=settings.database_idle_in_transaction_timeout_ms,
             statement_timeout_ms=settings.database_statement_timeout_ms,
@@ -325,7 +324,6 @@ def _get_dispatch_session_factory() -> async_sessionmaker[AsyncSession]:
             max_overflow=settings.database_dispatch_max_overflow,
             pool_timeout=30,
             echo=settings.debug,
-            hide_parameters=bool(getattr(settings, "cloudflare_containers_scope", None)),
             application_name=settings.database_application_name,
             idle_in_transaction_session_timeout_ms=settings.database_idle_in_transaction_timeout_ms,
             statement_timeout_ms=settings.database_statement_timeout_ms,
@@ -362,7 +360,6 @@ def _get_liveness_session_factory() -> async_sessionmaker[AsyncSession]:
             max_overflow=0,
             pool_timeout=10,
             echo=settings.debug,
-            hide_parameters=bool(getattr(settings, "cloudflare_containers_scope", None)),
             application_name=settings.database_application_name,
             idle_in_transaction_session_timeout_ms=settings.database_idle_in_transaction_timeout_ms,
             statement_timeout_ms=settings.database_statement_timeout_ms,

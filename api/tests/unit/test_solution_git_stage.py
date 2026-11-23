@@ -5,12 +5,10 @@ import pytest
 from pydantic import ValidationError
 from shared.solution_git_stage import (
     SOLUTION_GIT_CAPABILITY,
-    SOLUTION_UPDATE_CHECK_JOB,
     DescriptorInput,
     GitInput,
     VersionResult,
 )
-from src.services.worker_pool.controller import FreeBudget, Request, _plan_launches
 from src.worker.remote.platform_stage_protocol import (
     MAX_STAGE_INPUT_BYTES,
     StageBinding,
@@ -53,18 +51,3 @@ async def test_descriptor_compute_uses_the_real_stage_child():
         assert ledger.status(binding)["result"] == expected
     finally:
         await ledger.close()
-
-
-def test_container_capacity_accepts_only_the_negotiated_stage():
-    update = Request(uuid4(), 256, platform_job_type=SOLUTION_UPDATE_CHECK_JOB)
-    publish = Request(uuid4(), 256, platform_job_type="application.publish")
-    service = Request(uuid4(), 256)
-    assert not FreeBudget(1024, frozenset(), containers=True).takes(update)
-    assert _plan_launches(
-        [publish, service, update], [], standard_budget=1024, largest_budget=1024,
-        new_containers=True,
-    ).standard == 1
-    assert _plan_launches(
-        [publish, service], [], standard_budget=1024, largest_budget=1024,
-        new_containers=True,
-    ).standard == 0

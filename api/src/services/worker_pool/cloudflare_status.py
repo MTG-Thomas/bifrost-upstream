@@ -350,7 +350,7 @@ async def overflow_status(
         sizing = JobSizing.of(pool_policy, threshold, job_baseline([], pool_policy.worker_memory_mib * 2**20, threshold))
         covered = primary_coverage(workers, [
             Request(row.id, row.memory_request_bytes, row.handler, row.handler_version, row.cloudflare_revision,
-                    row.tenant_id, platform_job_type=row.platform_job_type)
+                    row.tenant_id)
             for row in waiting
         ], now, sizing)
     slots = await read_workflow_slot_admission(db, installation.id, policy.workers)

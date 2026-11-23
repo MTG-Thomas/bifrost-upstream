@@ -1101,6 +1101,27 @@ async def test_a_sized_job_drains_when_idle_and_is_never_the_warm_minimum(db) ->
     assert await claims.begin_idle_drain(sized.id)
 
 
+async def test_container_does_not_hold_or_replace_the_primary_warm_floor(db) -> None:
+    warm = replace(POLICY, warm_workers=1, max_workers=3)
+    await _store_policy(db.sessions, warm)
+    primary = await _job_worker(db.sessions, state="ready")
+    await _report_budget(primary.id, GIB)
+    async with db.sessions() as session:
+        session.add(ExecutionWorker(
+            id=uuid4(), form="external", state="ready", resource_class="standard",
+            runtime_profile=LINUX_RUNTIME_PROFILE, capacity_scope="containers",
+            capacity_resource_uid=uuid4().hex, memory_budget_bytes=GIB,
+        ))
+        await session.commit()
+
+    assert not await claims.begin_idle_drain(primary.id)
+    async with db.sessions() as session:
+        await session.execute(update(ExecutionWorker).where(ExecutionWorker.id == primary.id).values(state="draining"))
+        await session.commit()
+    pool = controller.WorkerPoolController(FakeCluster(), SETTINGS, SPEC)  # type: ignore[arg-type]
+    assert len(await pool.launch_for_demand(warm)) == 1
+
+
 # --- controller ---------------------------------------------------------------
 
 
