@@ -35,7 +35,15 @@ export class ContainerScopeRegistry extends DurableObject {
         return this.registry.retire(uid, instance, closedAt);
     }
 
-    async relay(uid, instance, request) {
+    async fetch(request) {
+        // Only the bound egress Worker can invoke this fetch path. Use the
+        // fetch transport so a WebSocket upgrade can cross the DO boundary.
+        const uid = request.headers.get("x-bifrost-container-uid");
+        const instance = request.headers.get("x-bifrost-container-instance");
+        if (!UID.test(uid) || !/^[a-f0-9]{64}$/.test(instance)) return new Response(null, { status: 403 });
+        request = new Request(request);
+        request.headers.delete("x-bifrost-container-uid");
+        request.headers.delete("x-bifrost-container-instance");
         const origin = this.env.CONTAINERS_ORIGIN;
         const policy = JSON.parse(this.env.CONTAINERS_INGRESS_POLICY);
         if (!request.headers.has("upgrade")) {
@@ -69,7 +77,10 @@ export class ContainerScopeRegistry extends DurableObject {
 export class ContainerIngress extends WorkerEntrypoint {
     fetch(request) {
         const { uid, instance } = this.ctx.props;
-        return this.env.CONTAINER_REGISTRY.getByName("scope").relay(uid, instance, request);
+        const relayRequest = new Request(request);
+        relayRequest.headers.set("x-bifrost-container-uid", uid);
+        relayRequest.headers.set("x-bifrost-container-instance", instance);
+        return this.env.CONTAINER_REGISTRY.getByName("scope").fetch(relayRequest);
     }
 }
 
