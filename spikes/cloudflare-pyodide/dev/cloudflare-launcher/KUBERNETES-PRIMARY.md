@@ -19,6 +19,28 @@ claimants are independent of provisioning age. A ready Workers launcher
 and a ready Linux executor can both claim eligible work. Primary fit
 controls when Bifrost provisions new Workers capacity. [Claim selection](../../../../api/src/services/worker_pool/claims.py#L226)
 
+Warm claims do not renew a Workers launcher. The reservation fixes the
+deadline at creation. Bifrost checks the remaining lifetime before claiming
+and again before sending the workflow, using database time and the
+workflow's bounded timeout. An active route can use the fixed drain
+allowance. At expiry the controller stops admission and reconciles
+retirement independently of primary fit. Releases with the deadline on
+the wire also enforce it inside the launcher. [Reservation and send fence](../../../../api/src/services/worker_pool/cloudflare_admission.py#L63) · [Claim window](../../../../api/src/services/worker_pool/eligibility.py#L42) · [Retirement](../../../../api/src/services/worker_pool/external_controller.py#L209) · [Launcher alarm](launcher-do.mjs#L391)
+
+Claiming on a warm launcher cannot extend its lifetime reservation or send
+an unbooked workflow. The send path checks the existing ledger against
+the spend guard and books qualified activity before delivery. That
+workflow adds a separate reservation and can bring the estimate to or
+above the limit.
+The ledger also accounts for the launcher through verified deletion and
+retains uncertain usage. The estimate is an admission guard. Actual
+provider charges can exceed it, for example during delayed cleanup.
+[Send path](../../../../api/src/worker/remote/host.py#L314) · [Activity booking](../../../../api/src/services/worker_pool/cloudflare_spend.py#L652) · [Duration accounting](../../../../api/src/services/worker_pool/cloudflare_spend.py#L355)
+
+The persistence suite covers retirement at the pinned deadline and refusing
+work that does not fit the remaining claim window.
+[Retirement test](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py#L2299) · [Claim-window test](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py#L5246)
+
 Record the Enable runner class in the Kubernetes rehearsal. A physical Linux
 launcher reports `remote_launcher`, including a launcher hosted in a reusable
 worker Job. An in-process executor reports `worker_pool`. Isolated build Jobs
@@ -79,3 +101,34 @@ did not start. The disposable node, network, and kind scratch directory
 were removed. Live qualification needs an approved disposable Kubernetes
 host with a functional kubelet and an enforcing CNI, plus a Kubernetes
 adapter for the Compose-oriented Miniflare/provider fixture.
+
+### Node-only retry
+
+Kind v0.24.0 reached a Ready Kubernetes v1.31.0 control plane with
+`KubeletInUserNamespace` enabled and a read-only `/dev/null` bind at
+`/dev/kmsg` inside the node container. During both bootstrap and a later
+restart, a peer test stack appeared after the host was initially clear.
+The disposable node was stopped both times before launching the fixtures.
+[Kind configuration](https://kind.sigs.k8s.io/docs/user/configuration/) · [Kubelet feature gate](https://v1-34.docs.kubernetes.io/docs/tasks/administer-cluster/kubelet-in-userns/)
+
+In a later clear window, the release loader accepted the pinned Workers
+bundle and the Bifrost image imported into the node. A manifest separator
+in the temporary rehearsal adapter blocked application startup. Importing
+the image left 159 MiB free on the shared Docker filesystem. After fixing
+the separator, the attempt stopped at the disk headroom check before
+launching Bifrost. The release image and its node were removed to recover
+space. The rehearsal did not reach Job placement, Scale In, or Disconnect.
+
+A fresh lightweight node ran the rendered connector Deployment and the
+repository's connector supervisor with a local cloudflared stand-in. A
+client impersonating the API ServiceAccount read and resource-version-patched
+the real Kubernetes Secret. The first projected value started the child.
+The rotated value stopped the old child and started its replacement with
+zero container restarts. Clearing the Secret stopped the replacement.
+Sampling put the lower bounds from successful patch to child start at
+about 66 seconds for initial projection and 78 seconds for rotation.
+These observations exceed the 60 seconds of scheduled retry delays. The
+full rotation job, including provider session eviction and retry behavior,
+still needs qualification on a cluster with room for the Bifrost image.
+The connector namespace, disposable nodes, fixture containers, and
+rehearsal networks were removed and their absence verified.
