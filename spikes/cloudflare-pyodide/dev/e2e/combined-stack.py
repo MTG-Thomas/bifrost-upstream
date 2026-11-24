@@ -54,7 +54,8 @@ def container_fixture(image):
     }
 
 
-def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace, containers_image, hold_second_sdk_read):
+def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace, containers_image,
+            hold_second_sdk_read, provider_cache=None):
     containers = container_fixture(containers_image) if containers_image is not None else None
     fixture = root / ".rehearsal"
     fixture.mkdir(mode=0o755)
@@ -67,6 +68,19 @@ def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace
     address = inspection["IPAM"]["Config"][0]["Gateway"]
     if not inspection["Internal"] or not ipaddress.IPv4Address(address).is_private:
         raise SystemExit("Expected a private Docker bridge address")
+    provider_container = None
+    if provider_cache is not None:
+        provider_container = project + "-provider"
+        subprocess.run([
+            "docker", "run", "-d", "--pull", "never", "--name", provider_container,
+            "--network", network, "--mount", f"type=bind,src={root},dst={root}",
+            "--mount", f"type=bind,src={provider_cache},dst=/offline-pyodide,readonly",
+            "--mount", "type=bind,src=/etc/ssl/certs/ca-certificates.crt,dst=/etc/ssl/certs/ca-certificates.crt,readonly",
+            "--env", "REHEARSAL_PYODIDE_CACHE_DIR=/offline-pyodide", "--workdir", str(root),
+            "node:26.13.1-bookworm-slim", "sleep", "infinity",
+        ], check=True)
+        container, = json.loads(subprocess.check_output(["docker", "inspect", provider_container]))
+        address = container["NetworkSettings"]["Networks"][network]["IPAddress"]
     edge, provider = ports(2)
     public_url = "http://localhost:8000"
     managed_host = f"bifrost-workers-{sha256(public_url.encode()).hexdigest()[:16]}.example.test"
@@ -87,6 +101,8 @@ def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace
         proxy_alias = project + "-containers-proxy:local"
         subprocess.run(["docker", "tag", containers["proxyId"], proxy_alias], check=True)
         cfg["containers"] = {**containers, "proxy": proxy_alias}
+    if provider_container is not None:
+        cfg["providerContainer"] = provider_container
     cfg["holdSecondSdkRead"] = hold_second_sdk_read
     (fixture / "config.json").write_text(json.dumps(cfg))
     (fixture / "connector.json").write_text(json.dumps({"base": f"http://{address}:{provider}/local/tunnel-"}))
@@ -200,6 +216,7 @@ if __name__ == "__main__":
     parser.add_argument("--containers-image", help="Use a locally built, matched Dockerfile.containers image")
     parser.add_argument("--containers-hosted-shape", action="store_true", help="Keep SDK reads uninterrupted for the hosted-shaped run")
     parser.add_argument("--lag-worker-namespace", action="store_true")
+    parser.add_argument("--provider-cache", type=Path, help="Attach a Workers-only fixture to the isolated bridge")
     variants = parser.add_mutually_exclusive_group()
     variants.add_argument("--missing-tunnel-config", dest="initial_tunnel_config", action="store_const", const="http_404",
                           help="Return HTTP 404 until tunnel ingress is written")
@@ -212,6 +229,9 @@ if __name__ == "__main__":
         parser.error("Use a fresh private combined-local-* archive")
     if args.containers_hosted_shape and not args.containers_image:
         parser.error("--containers-hosted-shape requires --containers-image")
+    if args.provider_cache is not None and (args.containers_image or not args.provider_cache.is_dir()):
+        parser.error("--provider-cache requires an existing cache directory and Workers-only rehearsal")
     prepare(root, args.project, args.image, initial_tunnel_config=args.initial_tunnel_config,
             lag_worker_namespace=args.lag_worker_namespace, containers_image=args.containers_image,
-            hold_second_sdk_read=not args.containers_hosted_shape)
+            hold_second_sdk_read=not args.containers_hosted_shape,
+            provider_cache=args.provider_cache.resolve() if args.provider_cache else None)

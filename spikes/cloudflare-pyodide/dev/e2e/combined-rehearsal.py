@@ -98,6 +98,15 @@ class Rehearsal:
         self.tenants = {}
 
     def verify_isolation(self, *, successor=None):
+        provider = self.cfg.get("providerContainer")
+        if provider:
+            isolated, = json.loads(subprocess.check_output(["docker", "inspect", provider]))
+            links = isolated["NetworkSettings"]["Networks"]
+            if set(links) != {self.cfg["network"]} or links[self.cfg["network"]]["IPAddress"] != self.cfg["address"]:
+                raise RuntimeError("The provider must use only the rehearsal bridge")
+            routes = subprocess.check_output(["docker", "exec", provider, "cat", "/proc/net/route"], text=True)
+            if any(row.split()[1] == "00000000" for row in routes.splitlines()[1:]):
+                raise RuntimeError("The rehearsal provider has a default route")
         containers = {}
         api_address = None
         for service in ("api", "worker", "cloudflare-connector"):
@@ -115,7 +124,8 @@ class Rehearsal:
                 network, = json.loads(subprocess.check_output(["docker", "network", "inspect", name]))
                 if not network["Internal"] or network["EnableIPv6"]:
                     raise RuntimeError(f"{service} requires internal IPv4-only rehearsal networks")
-                if name == self.cfg["network"] and network["IPAM"]["Config"][0]["Gateway"] != self.cfg["address"]:
+                if (not provider and name == self.cfg["network"]
+                        and network["IPAM"]["Config"][0]["Gateway"] != self.cfg["address"]):
                     raise RuntimeError("The provider address does not match the rehearsal bridge")
         for service in ("api", "worker"):
             check = subprocess.run(["docker", "exec", "--user", "1000:1000", containers[service], "python", "-c", """
@@ -151,7 +161,8 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
 """], check=False, timeout=15)
             if check.returncode:
                 raise RuntimeError(f"{service} failed local isolation verification. Connect or Upgrade is blocked.")
-        evidence("isolation", {"internal_networks": True, "api_worker_hooks_verified": True})
+        evidence("isolation", {"internal_networks": True, "api_worker_hooks_verified": True,
+                               "provider_isolated": bool(provider)})
         if not api_address:
             raise RuntimeError("The API has no rehearsal bridge address")
         return api_address
@@ -179,13 +190,30 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
     def observe_status(self, checkpoint):
         status = self.send("/api/capacity/cloudflare", method="GET")
         workers = next((lane for lane in status["lanes"] if lane["lane"] == "workers"), None)
-        evidence("capacity-status", {
+        workers_only = self.workers_only_status(status) if self.cfg.get("providerContainer") else {}
+        evidence("capacity-status", {**workers_only,
             "checkpoint": checkpoint,
             "placement": sorted(item["code"] for item in status["placement_reasons"]),
             "workers": sorted(item["code"] for item in workers["reasons"]) if workers else [],
             "eligible_queued": workers["eligible_queued"] if workers else None,
             "running": workers["running"] if workers else None,
         })
+
+    def workers_only_status(self, status):
+        lanes = [lane["lane"] for lane in status["lanes"]]
+        assert "containers" not in lanes
+        installation = status["installation"]
+        if installation is None:
+            return {"lanes": lanes}
+        fields = (
+            "fleet_envelope_usd", "workers_fleet_envelope_usd", "containers_fleet_envelope_usd",
+            "containers_remaining_instance_hours", "containers_remaining_qualification_canaries",
+            "containers_instance_budget_resets_at",
+        )
+        values = {key: installation.get(key) for key in fields}
+        assert Decimal(values["fleet_envelope_usd"]) == Decimal(values["workers_fleet_envelope_usd"]) > 0
+        assert all(values[key] is None for key in fields[2:])
+        return {"lanes": lanes, **values}
 
     def job(self, action, extra=None):
         install = self.install()
@@ -861,8 +889,20 @@ print(json.dumps([str(_WORKER_REQUEST_USD),str(_WORKER_CPU_MS_USD)]))
 """], text=True, timeout=10))
         provider = requests * Decimal(rates[0]) + cpu_us * Decimal(rates[1]) / 1000
         assert provider > 0
+        containers = {}
+        if self.cfg.get("providerContainer"):
+            containers = self.sql("""
+                SELECT json_build_object(
+                    'enabled_installations', (SELECT count(*) FROM cloudflare_installations
+                        WHERE containers_policy->>'enabled' = 'true'),
+                    'reservations', count(*) FILTER (WHERE scope = 'containers'),
+                    'canaries', count(*) FILTER (WHERE scope = 'containers' AND canary_job_id IS NOT NULL)
+                ) FROM cloudflare_worker_reservations
+            """)
+            assert not any(containers.values())
+            self.observe_status("synthetic-meter")
         evidence("meter", {"state": result["state"], "synthetic_provider_samples": len(rows),
-                           "workers_only_test_ratio": str(amount / provider)})
+                           "workers_only_test_ratio": str(amount / provider), **containers})
 
 
 def duration(start, end):
