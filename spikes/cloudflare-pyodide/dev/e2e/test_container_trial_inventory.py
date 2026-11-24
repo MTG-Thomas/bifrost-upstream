@@ -8,6 +8,20 @@ from unittest.mock import Mock
 spec = importlib.util.spec_from_file_location("combined_rehearsal", Path(__file__).with_name("combined-rehearsal.py"))
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
+spec = importlib.util.spec_from_file_location("container_trial_planner", Path(__file__).with_name("container-trial-planner.py"))
+planner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(planner)
+
+
+class PlannerTests(unittest.TestCase):
+    def test_reads_destination_from_a_product_class_method(self):
+        class Registry:
+            async def copy(self, account):
+                destination = f"registry.example.test/{account}/repository:release"
+                return destination
+
+        value = planner.assignment_from(Registry.copy, "destination")
+        self.assertEqual(planner.render(value, account="test"), "registry.example.test/test/repository:release")
 
 
 class InventoryTests(unittest.TestCase):

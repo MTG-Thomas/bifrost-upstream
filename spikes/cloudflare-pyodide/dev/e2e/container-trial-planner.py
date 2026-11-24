@@ -7,22 +7,22 @@ import json
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from textwrap import dedent
 from types import SimpleNamespace
 from uuid import UUID
 
-from src.core.security import decrypt_secret
-from src.jobs.platform.cloudflare_enable import _deploy_container_launcher, _settle_enable
-from src.services.worker_pool import cloudflare_containers_rest
-from src.services.worker_pool.cloudflare_containers_rest import REGISTRY, ContainerRegistry, _name
+
+def source_tree(function):
+    return ast.parse(dedent(inspect.getsource(function)))
 
 
 def call_from(function, name):
-    return next(node for node in ast.walk(ast.parse(inspect.getsource(function)))
+    return next(node for node in ast.walk(source_tree(function))
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name)
 
 
 def assignment_from(function, name):
-    return next(node.value for node in ast.walk(ast.parse(inspect.getsource(function)))
+    return next(node.value for node in ast.walk(source_tree(function))
                 if isinstance(node, ast.Assign) and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name)
 
@@ -34,6 +34,10 @@ def render(expression, **bindings):
 
 
 def plan(receipt):
+    from src.core.security import decrypt_secret
+    from src.jobs.platform.cloudflare_enable import _deploy_container_launcher, _settle_enable
+    from src.services.worker_pool.cloudflare_containers_rest import REGISTRY, ContainerRegistry, _name
+
     data = json.loads(decrypt_secret(receipt))
     assert data["purpose"] == "cloudflare-activation-v1" and data["containers_release"]
     installation = UUID(data["installation_id"])
@@ -46,7 +50,7 @@ def plan(receipt):
     application = render(assignment_from(_name, "name"),
                          target=SimpleNamespace(installation_id=installation),
                          intent=SimpleNamespace(desired_revision=revision))
-    launcher = next(node.value for node in ast.walk(ast.parse(inspect.getsource(_deploy_container_launcher)))
+    launcher = next(node.value for node in ast.walk(source_tree(_deploy_container_launcher))
                     if isinstance(node, ast.keyword) and node.arg == "name" and isinstance(node.value, ast.JoinedStr))
     scripts.append(render(launcher, name=application))
     destination = render(assignment_from(ContainerRegistry.copy, "destination"), REGISTRY=REGISTRY,
@@ -59,7 +63,9 @@ def plan(receipt):
 
 
 async def registry(account, token):
-    adapter = ContainerRegistry(None)
+    from src.services.worker_pool import cloudflare_containers_rest
+
+    adapter = cloudflare_containers_rest.ContainerRegistry(None)
     tool = cloudflare_containers_rest.run_oci_tool
     env = {"CLOUDFLARE_ACCOUNT_ID": account, "CLOUDFLARE_API_TOKEN": token}
     with TemporaryDirectory(prefix="bifrost-trial-registry-") as temporary:
