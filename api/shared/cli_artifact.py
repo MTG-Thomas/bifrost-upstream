@@ -32,6 +32,12 @@ def to_pep440(version: str) -> str:
         normalized = f"{base}.dev{number}"
         return f"{normalized}+dirty" if dirty else normalized
 
+    release_candidate = re.fullmatch(r"(\d+\.\d+\.\d+)-rc\.(0|[1-9]\d*)", value)
+    if release_candidate:
+        base, number = release_candidate.groups()
+        normalized = f"{base}rc{number}"
+        return f"{normalized}+dirty" if dirty else normalized
+
     described = re.fullmatch(r"(.+)-(\d+)-(g[0-9a-f]+)", value)
     if described:
         tag, count, sha = described.groups()
