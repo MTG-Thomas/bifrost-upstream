@@ -477,7 +477,6 @@ async function provider(req, res) {
         assert.ok(!workers.has(script));
         workers.set(script, {foreign: true, collision: true, meta: {bindings: []}, namespaces: []});
       } else if (method === 'DELETE') {
-        assert.ok(!foreignImages.has(repository), 'Foreign registry mutation');
         assert.ok(workers.get(script)?.collision);
         workers.delete(script);
       } else {
@@ -499,6 +498,7 @@ async function provider(req, res) {
         images.set(repository, digest);
         event('container-image-copy', {repository});
       } else if (method === 'DELETE') {
+        assert.ok(!foreignImages.has(repository), 'Foreign registry mutation');
         assert.ok(![...applications.values()].some((entry) => entry.name === repository));
         assert.ok(!workers.has(repository + '-containers'));
         assert.ok(images.delete(repository));
