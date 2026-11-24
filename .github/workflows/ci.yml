@@ -57,13 +57,59 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  API_IMAGE: gobifrost/bifrost-api
-  CLIENT_IMAGE: gobifrost/bifrost-client
 
 permissions:
   contents: read
 
 jobs:
+  registry-route:
+    name: Verify Registry Routing
+    runs-on: ubuntu-latest
+    outputs:
+      api-image: ${{ steps.route.outputs.api-image }}
+      client-image: ${{ steps.route.outputs.client-image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate repository-owned image destinations
+        id: route
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+          QUALIFIED_WORKERS_RUNTIME_URL: ${{ vars.QUALIFIED_WORKERS_RUNTIME_URL }}
+          QUALIFIED_WORKERS_METER_BOUNDS: ${{ vars.QUALIFIED_WORKERS_METER_BOUNDS }}
+          CONTAINERS_RELEASE_RATES: ${{ vars.CONTAINERS_RELEASE_RATES }}
+        run: |
+          set -euo pipefail
+          owner="${REPOSITORY_OWNER,,}"
+          repository="${REPOSITORY,,}"
+          if ! [[ "$owner" =~ ^[a-z0-9][a-z0-9-]*$ && "$repository" =~ ^"$owner"/[a-z0-9._-]+$ && "$REGISTRY" == ghcr.io ]]; then
+            echo "::error::Invalid or mismatched registry repository owner."
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            if grep -Ei 'ghcr[.]io/gobifrost/|gobifrost/bifrost-(api|client)' \
+              .github/workflows/ci.yml .github/actions/sign-image/action.yml \
+              deploy/capacity/cloudflare/build-containers.sh; then
+              echo "::error::Hard-coded upstream registry destination."
+              exit 1
+            else
+              test "$?" -eq 1
+            fi
+            # Fork releases carry the trial artifacts. Canonical releases
+            # retain the existing opt-in Workers/Containers packaging.
+            if [[ "$repository" != gobifrost/bifrost || "$GITHUB_REF" == refs/tags/v2.0.0-rc.2026112401 ]]; then
+              for required in QUALIFIED_WORKERS_RUNTIME_URL QUALIFIED_WORKERS_METER_BOUNDS CONTAINERS_RELEASE_RATES; do
+                if [[ -z "${!required//[[:space:]]/}" ]]; then
+                  echo "::error::Missing required release variable: $required"
+                  exit 1
+                fi
+              done
+            fi
+          fi
+          printf 'api-image=%s/bifrost-api\nclient-image=%s/bifrost-client\n' "$owner" "$owner" >> "$GITHUB_OUTPUT"
+
   windows-credentials:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     runs-on: windows-2025
@@ -232,6 +278,9 @@ jobs:
   # =============================================================================
   build-dev-api-candidate:
     if: github.event_name == 'merge_group'
+    needs: [registry-route]
+    env:
+      API_IMAGE: ${{ needs.registry-route.outputs.api-image }}
     runs-on: ubuntu-latest
     name: Build API Dev Candidate
     permissions:
@@ -301,6 +350,9 @@ jobs:
 
   build-dev-client-candidate:
     if: github.event_name == 'merge_group'
+    needs: [registry-route]
+    env:
+      CLIENT_IMAGE: ${{ needs.registry-route.outputs.client-image }}
     runs-on: ubuntu-latest
     name: Build Client Dev Candidate
     permissions:
@@ -365,12 +417,14 @@ jobs:
   # =============================================================================
   test-client-smoke:
     if: >-
-      always() && (
+      always() && needs.registry-route.result == 'success' && (
         github.event_name == 'merge_group' ||
         github.event_name == 'workflow_dispatch' ||
         startsWith(github.ref, 'refs/tags/v')
       )
-    needs: [build-dev-client-candidate]
+    needs: [registry-route, build-dev-client-candidate]
+    env:
+      CLIENT_IMAGE: ${{ needs.registry-route.outputs.client-image }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     name: Critical Browser Smoke
@@ -664,8 +718,12 @@ jobs:
   # =============================================================================
   build-dev:
     # Only fires on push: main — branch protection + merge queue
-    # already gated this commit, so no needs: here.
+    # already gated this commit. Verify registry routing before promotion.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [registry-route]
+    env:
+      API_IMAGE: ${{ needs.registry-route.outputs.api-image }}
+      CLIENT_IMAGE: ${{ needs.registry-route.outputs.client-image }}
     runs-on: ubuntu-latest
     name: Promote Dev Images
     outputs:
@@ -807,12 +865,14 @@ jobs:
     # aggregate gate itself succeeds. Check every direct gate explicitly so a
     # real test failure still blocks publication.
     if: >-
-      always() &&
+      always() && needs.registry-route.result == 'success' &&
       startsWith(github.ref, 'refs/tags/v') &&
       needs.test-unit.result == 'success' &&
       needs.test-e2e-gate.result == 'success' &&
       needs.lint.result == 'success'
-    needs: [test-unit, test-e2e-gate, lint]
+    needs: [registry-route, test-unit, test-e2e-gate, lint]
+    env:
+      API_IMAGE: ${{ needs.registry-route.outputs.api-image }}
     runs-on: ubuntu-latest
     name: Build API Image
     outputs:
@@ -993,12 +1053,14 @@ jobs:
   # =============================================================================
   build-client:
     if: >-
-      always() &&
+      always() && needs.registry-route.result == 'success' &&
       startsWith(github.ref, 'refs/tags/v') &&
       needs.test-unit.result == 'success' &&
       needs.test-e2e-gate.result == 'success' &&
       needs.lint.result == 'success'
-    needs: [test-unit, test-e2e-gate, lint]
+    needs: [registry-route, test-unit, test-e2e-gate, lint]
+    env:
+      CLIENT_IMAGE: ${{ needs.registry-route.outputs.client-image }}
     runs-on: ubuntu-latest
     name: Build Client Image
     outputs:
@@ -1254,12 +1316,15 @@ jobs:
 
   promote-release-images:
     if: >-
-      always() &&
+      always() && needs.registry-route.result == 'success' &&
       startsWith(github.ref, 'refs/tags/v') &&
       needs.build-api.result == 'success' &&
       needs.build-client.result == 'success' &&
       needs.create-release.result == 'success'
-    needs: [build-api, build-client, create-release]
+    needs: [registry-route, build-api, build-client, create-release]
+    env:
+      API_IMAGE: ${{ needs.registry-route.outputs.api-image }}
+      CLIENT_IMAGE: ${{ needs.registry-route.outputs.client-image }}
     runs-on: ubuntu-latest
     name: Promote Release Images
     permissions:

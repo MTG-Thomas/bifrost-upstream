@@ -9,6 +9,7 @@ separately because they are GitHub repository configuration, not source code.
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -118,7 +119,7 @@ def test_full_suite_gates_exact_merge_candidate_before_dev_image() -> None:
     assert _normalized(build_dev["if"]) == (
         "github.event_name == 'push' && github.ref == 'refs/heads/main'"
     )
-    assert "needs" not in build_dev
+    assert build_dev["needs"] == ["registry-route"]
     verification = next(
         step
         for step in build_dev["steps"]
@@ -137,7 +138,7 @@ def test_critical_browser_smoke_strengthens_only_exact_candidate_events() -> Non
     assert "github.event_name == 'workflow_dispatch'" in condition
     assert "startsWith(github.ref, 'refs/tags/v')" in condition
     assert "pull_request" not in condition
-    assert smoke["needs"] == ["build-dev-client-candidate"]
+    assert set(smoke["needs"]) == {"registry-route", "build-dev-client-candidate"}
 
     run_steps = [step.get("run", "") for step in smoke["steps"]]
     assert any("./test.sh client smoke" in step for step in run_steps)
@@ -250,7 +251,7 @@ def test_dev_artifact_is_built_on_merge_candidate_and_promoted_without_rebuild()
         assert candidate["permissions"]["packages"] == "write"
         assert candidate["permissions"]["id-token"] == "write"
         assert candidate["permissions"]["attestations"] == "write"
-        assert "needs" not in candidate
+        assert candidate["needs"] == ["registry-route"]
     assert api_candidate["name"] == "Build API Dev Candidate"
     assert client_candidate["name"] == "Build Client Dev Candidate"
 
@@ -351,7 +352,7 @@ def test_docs_only_inverse_workflow_covers_the_same_paths_and_check_names() -> N
 
 def test_release_tags_still_require_the_complete_suite() -> None:
     jobs = _load_workflow(CI_WORKFLOW)["jobs"]
-    release_prerequisites = {"test-unit", "test-e2e-gate", "lint"}
+    release_prerequisites = {"registry-route", "test-unit", "test-e2e-gate", "lint"}
 
     assert set(jobs["build-api"]["needs"]) == release_prerequisites
     assert set(jobs["build-client"]["needs"]) == release_prerequisites
@@ -375,7 +376,7 @@ def test_release_remains_draft_until_assets_and_images_are_verified() -> None:
     jobs = _load_workflow(CI_WORKFLOW)["jobs"]
     stage = jobs["create-release"]
     create, verify = stage["steps"][-2:]
-    assert create["id"] == "release" and create["with"]["draft"] == "true"
+    assert create["id"] == "release" and ".draft = true" in create["run"]
     assert verify["env"]["RELEASE_ID"] == "${{ steps.release.outputs.id }}"
     promotion = jobs["promote-release-images"]
     assert "needs.create-release.result == 'success'" in _normalized(promotion["if"])
@@ -383,6 +384,71 @@ def test_release_remains_draft_until_assets_and_images_are_verified() -> None:
     assert promote["name"] == "Promote and verify the signed image digests"
     assert publish["env"]["RELEASE_ID"] == "${{ needs.create-release.outputs.release-id }}"
     assert "draft=false" in publish["run"]
+
+
+def test_ci_registry_writes_require_repository_routing() -> None:
+    workflow = _load_workflow(CI_WORKFLOW)
+    jobs = workflow["jobs"]
+    assert not re.search(r"(?:ghcr\.io/)?gobifrost/bifrost-(?:api|client)|ghcr\.io/gobifrost/", CI_WORKFLOW.read_text())
+    assert next(iter(jobs)) == "registry-route"
+    assert "needs" not in jobs["registry-route"]
+    assert "packages" not in jobs["registry-route"].get("permissions", {})
+    writers = {name for name, job in jobs.items() if job.get("permissions", {}).get("packages") == "write"}
+    assert writers == {"build-dev-api-candidate", "build-dev-client-candidate", "build-dev",
+                       "build-api", "build-client", "promote-release-images"}
+    for name in writers:
+        job = jobs[name]
+        assert "registry-route" in job["needs"]
+        if "always()" in job["if"]:
+            assert "needs.registry-route.result == 'success'" in job["if"]
+        for image in ("API_IMAGE", "CLIENT_IMAGE"):
+            if image in json.dumps(job["steps"]):
+                assert job["env"][image] == "${{ needs.registry-route.outputs." + image.lower().replace("_", "-") + " }}"
+
+
+_TRIAL_VARS = ("QUALIFIED_WORKERS_RUNTIME_URL", "QUALIFIED_WORKERS_METER_BOUNDS", "CONTAINERS_RELEASE_RATES")
+
+
+@pytest.mark.parametrize(
+    ("owner", "repository", "ref", "missing", "hardcoded", "error"),
+    [
+        ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112401", None, False, None),
+        ("gobifrost", "gobifrost/bifrost", "refs/tags/v2.0.0", "all", False, None),
+        ("MTG-Thomas", "gobifrost/bifrost", "refs/tags/v2.0.0-rc.2026112401", None, False, "mismatched"),
+        ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112401", None, True, "Hard-coded"),
+        *[
+            ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112401",
+             variable, False, f"Missing required release variable: {variable}")
+            for variable in _TRIAL_VARS
+        ],
+    ],
+)
+def test_registry_route_before_tag_publication(
+    tmp_path: Path, owner: str, repository: str, ref: str, missing: str | None, hardcoded: bool, error: str | None,
+) -> None:
+    route = _load_workflow(CI_WORKFLOW)["jobs"]["registry-route"]["steps"][1]
+    assert route["env"]["REPOSITORY_OWNER"] == "${{ github.repository_owner }}"
+    assert route["env"]["REPOSITORY"] == "${{ github.repository }}"
+    env = {**os.environ, "REPOSITORY_OWNER": owner, "REPOSITORY": repository, "GITHUB_REF": ref,
+           "REGISTRY": "ghcr.io", "GITHUB_OUTPUT": str(tmp_path / "output")}
+    for variable in _TRIAL_VARS:
+        assert route["env"][variable] == "${{ vars." + variable + " }}"
+        env[variable] = " " if missing in (variable, "all") else "test-input"
+    for path in (".github/workflows/ci.yml", ".github/actions/sign-image/action.yml",
+                 "deploy/capacity/cloudflare/build-containers.sh"):
+        fixture = tmp_path / path
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_text("ghcr.io/gobifrost/unexpected" if hardcoded else "")
+    result = subprocess.run(["bash", "-c", route["run"]], cwd=tmp_path, env=env, capture_output=True, text=True)
+    output = tmp_path / "output"
+    if error:
+        assert result.returncode != 0 and error in result.stdout
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert output.read_text().splitlines() == [
+            f"api-image={owner.lower()}/bifrost-api", f"client-image={owner.lower()}/bifrost-client",
+        ]
 
 
 def test_nightly_owns_full_browser_slow_and_clean_build_discovery() -> None:
