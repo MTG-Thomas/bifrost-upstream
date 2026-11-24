@@ -7852,6 +7852,8 @@ async def test_preflight_and_activation_share_one_enable_job(db_session, monkeyp
             assert token not in preview.text and ref not in preview.text
             plan = preview.json()
             assert datetime.fromisoformat(plan["expires_at"]) == datetime.fromisoformat(staged.json()["expires_at"])
+            assert plan["preview"]["estimated_usage_min_usd"] is not None
+            assert plan["preview"]["estimated_usage_max_usd"] is not None
             floor = Decimal(plan["preview"]["fleet_envelope_usd"])
             if containers:
                 assert plan["preview"]["containers_policy"]["enabled"] is True

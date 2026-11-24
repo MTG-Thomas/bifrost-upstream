@@ -169,15 +169,14 @@ async def preflight_cloudflare(
     container_policy = None
     if body.containers:
         container_policy = CONTAINERS_PILOT_POLICY
+        proposal = proposal.model_copy(update={"container_instance_hours": container_policy.monthly_instance_hours})
         hours = body.container_instance_hours or policy.container_instance_hours
         if hours is not None:
             container_policy = container_policy.model_copy(update={"monthly_instance_hours": hours})
         policy = policy.model_copy(update={"container_instance_hours": container_policy.monthly_instance_hours})
     actor = caller.principal.user_id
     bound_account, token, credential_expiry = await _credential(db, actor, body)
-    preset_b = policy.model_dump(exclude={"monthly_limit_usd", "container_instance_hours"}) == proposal.model_dump(
-        exclude={"monthly_limit_usd", "container_instance_hours"},
-    )
+    preset_b = policy.model_dump(exclude={"monthly_limit_usd"}) == proposal.model_dump(exclude={"monthly_limit_usd"})
     if bound_account and body.account_id not in (bound_account, None):
         raise CloudflarePreflightFieldError("account_id", "The staged credential is bound to a different Cloudflare account.")
 
