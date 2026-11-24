@@ -617,7 +617,7 @@ The seams staged in steps 1–2 have these first callers:
 | Seam | First production use |
 | --- | --- |
 | Release CI Linux image, baked wheel manifest and signature | Step 1 release packaging. Make the GHCR `…-cloudflare-linux` package public so the trusted runner can check the source anonymously before obtaining Cloudflare registry credentials. |
-| `verify_containers_release`, `ContainerRegistry.copy` and `ContainersRest.create_application` | Step 4 joint provisioning verifies the pinned release, copies the owned revision tag and inventories the application. |
+| `verify_containers_release`, `ContainerRegistry.copy` and `ContainersRest.create_application` | Step 3 Enable and Upgrade verify the pinned release, copy the owned revision tag and inventory the application before joint admission. |
 | `ScopeRegistry.reserve` | Step 3 authenticated capacity controller reserves before it requests an instance start. |
 | `reserve_container`, Linux review/source predicates and joint slot and spend accounting | Step 3 admission and bootstrap. Use the execution tenant for capacity and the workflow owner for approval and source scope. |
 
@@ -726,9 +726,11 @@ normalized headers, transport framing, and Cloudflare's intercepted
 traffic billing still require hosted measurement. Stop receipts keep
 `meterComplete` false until that qualification.
 
-The future Linux review writer must require platform-level permission to
-accept a Global Linux approval because the approval can authorize runs for
-every tenant. Provider-organization membership grants no such permission.
+Use the Containers (Linux) option in workflow approval or select
+`runtime=containers` when proposing and accepting through REST, CLI or MCP.
+Acceptance uses the existing platform-level human operator permission.
+A Global Linux approval can authorize runs for every tenant.
+Provider-organization membership grants no such permission.
 
 ## Owner decisions
 
