@@ -690,6 +690,9 @@ Options:
   --container-instance-hours INTEGER RANGE
                                   Monthly Container instance-hours.
                                   [1<=x<=1488]
+  --container-qualification-canaries INTEGER RANGE
+                                  Monthly Container qualification canaries.
+                                  [0<=x<=1000]
   --monthly-limit-usd TEXT        Confirmed monthly estimated usage limit in
                                   USD.  [required]
   --wait                          Wait for completion through the platform
@@ -763,6 +766,9 @@ Options:
   --container-instance-hours INTEGER RANGE
                                   Monthly Container instance-hours.
                                   [1<=x<=1488]
+  --container-qualification-canaries INTEGER RANGE
+                                  Monthly Container qualification canaries.
+                                  [0<=x<=1000]
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```

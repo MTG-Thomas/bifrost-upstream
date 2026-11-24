@@ -177,9 +177,13 @@ def workers_release_matches() -> ColumnElement[bool]:
         CloudflareInstallation.policy["bounds_release"].astext == release,
         or_(
             joint_container_readiness(CloudflareInstallation.admitted_revision),
-            func.coalesce(
-                CloudflareInstallation.deployment_evidence[QUALIFICATION_DEFERRED_KEY].as_integer()
-                == CloudflareInstallation.admitted_revision, False,
+            and_(
+                CloudflareInstallation.containers_policy["enabled"].as_boolean().is_(True),
+                CloudflareInstallation.containers_ready_revision.is_distinct_from(CloudflareInstallation.admitted_revision),
+                func.coalesce(
+                    CloudflareInstallation.deployment_evidence[QUALIFICATION_DEFERRED_KEY].as_integer()
+                    == CloudflareInstallation.admitted_revision, False,
+                ),
             ),
         ),
     )

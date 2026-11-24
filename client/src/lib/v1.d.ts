@@ -16664,6 +16664,8 @@ export interface components {
             containers_fleet_envelope_usd?: string | null;
             /** Containers Remaining Instance Hours */
             containers_remaining_instance_hours?: string | null;
+            /** Containers Remaining Qualification Canaries */
+            containers_remaining_qualification_canaries?: number | null;
         };
         /** CloudflareApprovalAccept */
         CloudflareApprovalAccept: {
@@ -16851,6 +16853,8 @@ export interface components {
             shared_managed_worker_cap?: number | null;
             /** Container Instance Hours */
             container_instance_hours?: number | null;
+            /** Container Qualification Canaries */
+            container_qualification_canaries?: number | null;
         };
         /** CloudflareCapacityPolicy */
         "CloudflareCapacityPolicy-Output": {
@@ -16870,6 +16874,8 @@ export interface components {
             shared_managed_worker_cap?: number | null;
             /** Container Instance Hours */
             container_instance_hours?: number | null;
+            /** Container Qualification Canaries */
+            container_qualification_canaries?: number | null;
         };
         /** CloudflareCapacityStatus */
         CloudflareCapacityStatus: {
@@ -16976,6 +16982,8 @@ export interface components {
             spend?: components["schemas"]["CloudflareSpendStatus"] | null;
             /** Containers Remaining Instance Hours */
             containers_remaining_instance_hours?: string | null;
+            /** Containers Remaining Qualification Canaries */
+            containers_remaining_qualification_canaries?: number | null;
             /** Containers Instance Budget Resets At */
             containers_instance_budget_resets_at?: string | null;
         };
@@ -17009,7 +17017,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "setup_required" | "workflow_review_required" | "waiting_for_demand" | "primary_has_capacity" | "primary_capacity_unverified" | "waiting_for_launch_gate" | "tenant_limit_reached" | "installation_slots_full" | "spend_guard_closed" | "cleanup_pending" | "cloudflare_capacity_unavailable" | "release_mismatch" | "connector_unavailable" | "eligible_for_overflow" | "primary_limited_by_cloudflare_cleanup" | "primary_limited_by_cloudflare_drain" | "container_readiness_unverified" | "container_egress_stale" | "container_allocation_cooldown" | "container_receipt_limit" | "container_instance_budget_exhausted" | "container_egress_refresh_failed";
+            code: "setup_required" | "workflow_review_required" | "waiting_for_demand" | "primary_has_capacity" | "primary_capacity_unverified" | "waiting_for_launch_gate" | "tenant_limit_reached" | "installation_slots_full" | "spend_guard_closed" | "cleanup_pending" | "cloudflare_capacity_unavailable" | "release_mismatch" | "connector_unavailable" | "eligible_for_overflow" | "primary_limited_by_cloudflare_cleanup" | "primary_limited_by_cloudflare_drain" | "container_readiness_unverified" | "container_egress_stale" | "container_allocation_cooldown" | "container_receipt_limit" | "container_instance_budget_exhausted" | "container_qualification_deferred" | "container_egress_refresh_failed";
             /** Label */
             label: string;
             /** Remedy */
@@ -17102,6 +17110,8 @@ export interface components {
             containers?: boolean | null;
             /** Container Instance Hours */
             container_instance_hours?: number | null;
+            /** Container Qualification Canaries */
+            container_qualification_canaries?: number | null;
         };
         /** CloudflareReconcileAction */
         CloudflareReconcileAction: {
@@ -17587,6 +17597,11 @@ export interface components {
              * @default 100
              */
             monthly_instance_hours: number;
+            /**
+             * Monthly Qualification Canaries
+             * @default 30
+             */
+            monthly_qualification_canaries: number;
             /** Start Timeout Seconds */
             start_timeout_seconds: number;
             /** Lifetime Seconds */

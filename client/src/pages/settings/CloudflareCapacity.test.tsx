@@ -85,13 +85,16 @@ it("shows the combined floor and allows editing the Container hours budget", asy
 	const user = userEvent.setup();
 	mocks.get.mockResolvedValue({ installation: {
 		...installation,
-		policy: { ...installation.policy, container_instance_hours: 100 },
+		policy: { ...installation.policy, container_instance_hours: 100, container_qualification_canaries: 30 },
 		fleet_envelope_usd: "44.40", workers_fleet_envelope_usd: "32.13", containers_fleet_envelope_usd: "12.27",
 		containers_remaining_instance_hours: "25", containers_instance_budget_resets_at: "2026-12-01T00:00:00Z",
+		containers_remaining_qualification_canaries: 4,
 	} });
 	renderCapacity();
 	expect(await screen.findByText("Remaining Container Instance-Hours")).toBeVisible();
 	expect(screen.getByText("25 of 100")).toBeVisible();
+	expect(screen.getByText("Remaining Container Qualification Canaries")).toBeVisible();
+	expect(screen.getByText("4 of 30")).toBeVisible();
 	expect(screen.getByText("Resets 2026-12-01 UTC")).toBeVisible();
 	expect(screen.getByText("32.13 USD Workers · 12.27 USD Containers")).toBeVisible();
 	await user.click(screen.getByRole("button", { name: "Edit Policy" }));
@@ -100,6 +103,7 @@ it("shows the combined floor and allows editing the Container hours budget", asy
 	await user.clear(field);
 	await user.type(field, "90");
 	expect(field).toHaveValue(90);
+	expect(screen.getByLabelText("Monthly Container Qualification Canaries")).toHaveValue(30);
 });
 
 it("displays scoped overflow, ledger and recovery evidence from status", async () => {
@@ -291,9 +295,10 @@ it("opts into Containers during preflight and accepts the combined fleet limit",
 			policy: { ...suggestedPolicy, container_instance_hours: 100 },
 			fleet_envelope_usd: "44.40", containers_fleet_envelope_usd: "12.27",
 			containers_remaining_instance_hours: "100",
+			containers_remaining_qualification_canaries: 12,
 			workers_paid_subscription_usd: "5",
 			containers_policy: { installation_instances: 2, instance_type: "standard-1", tenant_instances: 1,
-				workflow_slots: 1, idle_seconds: 120, monthly_instance_hours: 100 },
+				workflow_slots: 1, idle_seconds: 120, monthly_instance_hours: 100, monthly_qualification_canaries: 12 },
 		},
 		consent_version: "cloudflare-containers-pilot-v1",
 		consent_text: "I authorize Bifrost to provision paid Cloudflare Containers for approved Linux workflows.",
@@ -304,10 +309,12 @@ it("opts into Containers during preflight and accepts the combined fleet limit",
 	const optIn = screen.getByRole("checkbox", { name: "Include Paid Containers Pilot" });
 	expect(optIn).not.toBeChecked();
 	await user.click(optIn);
+	await user.type(screen.getByLabelText("Monthly Container Qualification Canaries"), "12");
 	await user.type(screen.getByLabelText("Cloudflare API Token"), "synthetic-management-token");
 	await user.click(screen.getByRole("button", { name: "Run Preflight" }));
 	expect(await screen.findByRole("heading", { name: "Containers Capacity Preview" })).toBeVisible();
-	expect(mocks.preflight).toHaveBeenCalledWith(expect.objectContaining({ containers: true }));
+	expect(mocks.preflight).toHaveBeenCalledWith(expect.objectContaining({ containers: true, container_qualification_canaries: 12 }));
+	expect(screen.getByText("12 of 12 qualification canaries available this month.")).toBeVisible();
 	expect(screen.getByLabelText("Monthly Estimated Usage Limit")).toHaveValue(75);
 	expect(screen.getByLabelText("Monthly Estimated Usage Limit")).toHaveAttribute("min", "44.4");
 	expect(screen.getByText(/provision paid Cloudflare Containers/)).toBeVisible();

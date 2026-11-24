@@ -484,7 +484,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Optional Container opt-in and budget fields preserve older requests.
     # Workflow approval accepts an optional runtime and defaults to Workers.
     # The CLI passes through response fields, so MIN_CLI_VERSION is unchanged.
-    "044666dfe459db87257e3e9aab51b5c451a023461f6d322f89d79b7ee8e1a444"
+    "d368c791e84141c41a7aa0dc4f257f889bd2f4f2449163aa9b269bdd33714855"
 )
 
 
