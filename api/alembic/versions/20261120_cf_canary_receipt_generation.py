@@ -11,6 +11,8 @@ existing operator applies a newly qualified release.
 import sqlalchemy as sa
 from alembic import op
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261120_cf_canary_gen"
 down_revision = "20261120_cf_usage_only_envelope"
 branch_labels = None
@@ -27,6 +29,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_worker_reservations")
     table = "cloudflare_worker_reservations"
     op.drop_constraint("ck_cf_canary_sdk_generation", table, type_="check")
     op.drop_column(table, "canary_sdk_generation")

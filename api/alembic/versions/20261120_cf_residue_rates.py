@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-from shared.migration_policy import refuse_populated_downgrade
+from migration_policy_v1 import refuse_populated_downgrade
 
 revision = "20261120_cf_residue_rates"
 down_revision = "20261120_cf_spend_observations"

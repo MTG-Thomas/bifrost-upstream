@@ -3,7 +3,7 @@
 import sqlalchemy as sa
 from alembic import op
 
-from shared.migration_policy import refuse_populated_downgrade
+from migration_policy_v1 import refuse_populated_downgrade
 
 revision = "20261120_cf_spend_observations"
 down_revision = "20261120_cf_prepare_usage"
@@ -53,7 +53,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     refuse_populated_downgrade(
-        "cloudflare_storage_residue", "cloudflare_usage_incarnations", "cloudflare_dispatch_meters",
+        "cloudflare_storage_residue", "cloudflare_dispatch_meters", "cloudflare_usage_incarnations",
     )
     op.drop_table("cloudflare_storage_residue")
     op.drop_index("ix_cf_usage_incarnation_deleted", table_name="cloudflare_usage_incarnations")

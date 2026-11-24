@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261120_cf_installation_retire"
 down_revision = "20261120_cf_capacity"
 branch_labels = None
@@ -41,6 +43,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_installations")
     table = "cloudflare_installations"
     # Downgrade refuses a second installation because the old schema cannot
     # retain more than one receipt.

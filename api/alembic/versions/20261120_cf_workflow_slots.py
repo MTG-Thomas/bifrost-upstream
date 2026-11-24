@@ -3,7 +3,7 @@
 import sqlalchemy as sa
 from alembic import op
 
-from shared.migration_policy import refuse_populated_downgrade
+from migration_policy_v1 import refuse_populated_downgrade
 
 revision = "20261120_cf_workflow_slots"
 down_revision = "20261120_cf_residue_rates"

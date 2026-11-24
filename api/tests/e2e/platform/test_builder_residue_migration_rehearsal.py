@@ -27,7 +27,7 @@ from shared.builtin_roles import (
     PLATFORM_OPERATOR_ROLE_ID,
     USER_ROLE_ID,
 )
-from shared.migration_policy import NON_ORM_TABLES
+from migration_policy_v1 import NON_ORM_TABLES
 from src.models.orm import Base
 from tests.e2e.platform.test_r2b_roles_migration_rehearsal import (
     _alembic_config,
@@ -231,7 +231,7 @@ def test_upgrade_over_builder_residue_removes_it_and_matches_the_orm() -> None:
             for table in Base.metadata.tables.values()
             for column in table.columns
         }
-        assert schema["tables"] - orm_tables == NON_ORM_TABLES
+        assert schema["tables"] - orm_tables == NON_ORM_TABLES | {"alembic_version"}
         orm_table_columns = {c for c in schema["columns"] if c[0] in orm_tables}
         assert orm_table_columns - orm_columns == NON_ORM_COLUMNS
         assert orm_columns - schema["columns"] == set()

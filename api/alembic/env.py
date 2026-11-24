@@ -14,7 +14,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from shared.migration_policy import include_object
+from migration_policy_v1 import include_object
 from src.config import get_settings
 from src.core.database import Base
 

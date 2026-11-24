@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261121_cf_queue_prewarm"
 down_revision = "20261121_cf_managed_tunnel"
 branch_labels = None
@@ -15,5 +17,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_workflow_slots")
     op.drop_constraint("uq_cf_workflow_slot_prewarm", "cloudflare_workflow_slots", type_="unique")
     op.drop_column("cloudflare_workflow_slots", "prewarm_fence")

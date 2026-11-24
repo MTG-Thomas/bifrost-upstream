@@ -8,6 +8,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261118_cloudflare_approvals"
 down_revision = "20261118_cloudflare_profile"
 branch_labels = None
@@ -34,4 +36,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_workflow_approvals")
     op.drop_table("cloudflare_workflow_approvals")

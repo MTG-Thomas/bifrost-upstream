@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261120_cf_control_root"
 down_revision = "20261120_cf_scope_writer_fence"
 branch_labels = None
@@ -36,6 +38,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_worker_reservations", "cloudflare_installations")
     op.drop_constraint("ck_cf_reservation_has_root", "cloudflare_worker_reservations", type_="check")
     for table, name in (
         ("cloudflare_worker_reservations", "reservation"),

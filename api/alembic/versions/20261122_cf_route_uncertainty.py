@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261122_cf_route_uncertainty"
 down_revision = "20261122_cf_workers_deadline"
 branch_labels = None
@@ -16,11 +18,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("""
-        UPDATE cloudflare_usage_incarnations i SET meter_uncertain = true
-        WHERE EXISTS (
-            SELECT 1 FROM cloudflare_dispatch_meters d
-            WHERE d.worker_id = i.worker_id AND d.attempt_uncertain
-        )
-    """)
+    refuse_populated_downgrade("cloudflare_dispatch_meters")
     op.drop_column("cloudflare_dispatch_meters", "attempt_uncertain")

@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261122_cf_workers_deadline"
 down_revision = "20261122_cf_overflow_timing"
 branch_labels = None
@@ -33,6 +35,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_worker_reservations")
     op.drop_column("cloudflare_worker_reservations", "workers_deadline_wire")
     op.drop_column("cloudflare_worker_reservations", "workers_deadline_at")
     op.drop_column("cloudflare_worker_reservations", "workers_lifetime_seconds")

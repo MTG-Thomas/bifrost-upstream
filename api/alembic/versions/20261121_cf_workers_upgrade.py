@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261121_cf_workers_upgrade"
 down_revision = "20261121_cf_queue_prewarm"
 branch_labels = None
@@ -42,6 +44,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_installations")
     op.drop_constraint("ck_cf_workers_release_identity", "cloudflare_installations", type_="check")
     op.drop_constraint("ck_cf_upgrade_checkpoint", "cloudflare_installations", type_="check")
     op.drop_column("cloudflare_installations", "drain_required")

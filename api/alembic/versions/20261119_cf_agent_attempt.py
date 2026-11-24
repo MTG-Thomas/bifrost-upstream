@@ -5,6 +5,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261119_cf_agent_attempt"
 down_revision = "20261118_cf_solution_source"
 branch_labels = None
@@ -22,4 +24,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_agent_attempts")
     op.drop_table("cloudflare_agent_attempts")

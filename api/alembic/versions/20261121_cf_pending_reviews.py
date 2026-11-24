@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261121_cf_pending_reviews"
 down_revision = "20261121_cf_containers"
 branch_labels = None
@@ -19,7 +21,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(sa.text(f"DELETE FROM {_TABLE} WHERE is_review"))
+    # Pending reviews and past approvals are audit records.
+    refuse_populated_downgrade(_TABLE)
     op.drop_index("uq_cloudflare_pending_review", table_name=_TABLE)
     op.drop_constraint("ck_cloudflare_review_inactive", _TABLE, type_="check")
     op.alter_column(_TABLE, "accepted_by", nullable=False)

@@ -4,6 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261120_cf_runtime_canary"
 down_revision = "20261120_cf_scope_generations"
 branch_labels = None
@@ -26,6 +28,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_owned_resources", "cloudflare_worker_reservations")
     table = "cloudflare_worker_reservations"
     op.drop_constraint("ck_cf_canary_binding", table, type_="check")
     op.drop_column("cloudflare_owned_resources", "namespace_ids")

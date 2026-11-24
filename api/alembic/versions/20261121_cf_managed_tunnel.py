@@ -4,6 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261121_cf_managed_tunnel"
 down_revision = "20261121_cf_cleanup_window"
 branch_labels = None
@@ -37,13 +39,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("""
-        DO $$ BEGIN
-            IF EXISTS (SELECT 1 FROM cloudflare_installations WHERE reachability_mode = 'managed_tunnel') THEN
-                RAISE EXCEPTION 'Managed Tunnel inventory requires this schema';
-            END IF;
-        END $$
-    """)
+    refuse_populated_downgrade("cloudflare_owned_resources", "cloudflare_installations")
     op.drop_constraint("ck_cf_credential_scope", "cloudflare_capacity_credentials", type_="check")
     op.create_check_constraint(
         "ck_cf_credential_scope", "cloudflare_capacity_credentials",

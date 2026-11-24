@@ -8,6 +8,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261118_cloudflare_reapproval"
 down_revision = "20261118_cloudflare_approvals"
 branch_labels = None
@@ -24,6 +26,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_workflow_approvals")
     op.drop_constraint("fk_cloudflare_approval_parent", "cloudflare_workflow_approvals", type_="foreignkey")
     op.drop_column("cloudflare_workflow_approvals", "pin_diff")
     op.drop_column("cloudflare_workflow_approvals", "derived_from")

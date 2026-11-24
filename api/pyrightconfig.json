@@ -15,7 +15,8 @@
     "venvPath": "..",
     "venv": ".venv",
     "extraPaths": [
-        "scripts/skill-truth"
+        "scripts/skill-truth",
+        "alembic"
     ],
     "pythonVersion": "3.12",
     "pythonPlatform": "Linux",

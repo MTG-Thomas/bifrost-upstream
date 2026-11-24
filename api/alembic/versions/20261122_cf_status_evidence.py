@@ -4,6 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261122_cf_status_evidence"
 down_revision = "20261122_cf_route_uncertainty"
 branch_labels = None
@@ -15,4 +17,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_installations")
     op.drop_column("cloudflare_installations", "deployment_evidence")

@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-from shared.migration_policy import refuse_populated_downgrade
+from migration_policy_v1 import refuse_populated_downgrade
 
 revision = "20261120_cf_self_meter"
 down_revision = "20261120_cf_runtime_canary"
@@ -131,8 +131,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     refuse_populated_downgrade(
-        "cloudflare_usage_activity", "cloudflare_usage_incarnations",
-        non_null=("cloudflare_installations", "usage_advisory"),
+        "cloudflare_usage_activity", "cloudflare_usage_incarnations", "cloudflare_installations",
     )
     op.execute("DROP FUNCTION cloudflare_usage_totals(uuid, timestamptz)")
     for trigger, table in (

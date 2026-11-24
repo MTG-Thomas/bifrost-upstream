@@ -4,6 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
+from migration_policy_v1 import refuse_populated_downgrade
+
 revision = "20261121_cf_containers"
 down_revision = "20261121_cf_workers_upgrade"
 branch_labels = None
@@ -102,14 +104,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Dropping this revision with reserved instances would lose their physical and spend fences.
-    op.execute("""
-        DO $$ BEGIN
-            IF EXISTS (SELECT 1 FROM cloudflare_worker_reservations WHERE container_reserved_at IS NOT NULL) THEN
-                RAISE EXCEPTION 'Container reservation history must be retained';
-            END IF;
-        END $$
-    """)
+    refuse_populated_downgrade("cloudflare_worker_reservations", "cloudflare_installations")
     _workers_usage(contain_linux=False)
     op.drop_index("ix_cf_container_reservations", table_name="cloudflare_worker_reservations")
     op.drop_constraint("ck_cf_container_reservation", "cloudflare_worker_reservations", type_="check")

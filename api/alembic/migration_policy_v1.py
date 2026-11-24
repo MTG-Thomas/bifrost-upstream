@@ -1,11 +1,14 @@
-"""Protect migration-owned records during downgrade and autogenerate."""
+"""Protect migration-owned records during downgrade and autogenerate.
+
+Cloudflare approvals and pending reviews are audit records. Preserve them
+along with the execution attempt and chat delivery journals on downgrade.
+"""
 
 from alembic import op
 from sqlalchemy.sql.schema import SchemaItem
 
 
 NON_ORM_TABLES = frozenset({
-    "alembic_version",  # Alembic bookkeeping
     "schedules",  # Workflow schedules
     "solution_file_jobs",  # Solution file jobs
     "cloudflare_capacity_usage",  # Retained historical receipts
@@ -25,6 +28,9 @@ def include_object(
 
 def refuse_populated_downgrade(*tables: str, non_null: tuple[str, str] | None = None) -> None:
     """Fence concurrent writes, then refuse to discard protected data.
+
+    Keep this v1 contract for historical revisions. Future policies belong in
+    a separately versioned helper.
 
     Identifiers come from the revision's schema literals. Emit SQL through
     Alembic so these checks also run when an offline downgrade script is applied.
