@@ -71,6 +71,10 @@ Use Node 26 and Buildx 0.21.3. Confirm the host is idle and has at least
 named `bifrost-test-containers-*` and run the driver on the Docker host with
 `nsenter` and `iptables` available.
 
+Set `REHEARSAL_PYODIDE_CACHE_DIR` to the read-only offline cache used by the
+combined Workers rehearsal. The combined provider validates it before
+starting Miniflare.
+
 Build the Linux child from the same local API image and label it with
 the source revision in that image's Workers release manifest. The pinned
 outbound proxy image must be present in the local Docker daemon.

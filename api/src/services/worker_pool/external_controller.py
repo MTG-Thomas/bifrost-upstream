@@ -36,6 +36,7 @@ from src.services.worker_pool.cloudflare_spend import (
 )
 from src.services.worker_pool.cloudflare_timing import record_transport_timing
 from src.services.worker_pool.controller import (
+    LIVE_STATES,
     RECONCILE_SECONDS,
     SWEEP_SECONDS,
     LiveControllers,
@@ -67,7 +68,12 @@ logger = logging.getLogger(__name__)
 
 # Allow bounded in-flight PUTs and provider work to finish before accepting
 # absence for a terminal incarnation whose UID was never bound.
-UNBOUND_PREPARE_GRACE = timedelta(minutes=1)
+UNBOUND_LOSS_CLEANUP_GRACE = timedelta(minutes=1)
+
+
+class _ProfileRefreshRequired(Exception):
+    """Unwind the admission transaction before refreshing the provider."""
+
 
 class ExternalWorkerPoolController(WorkerCapacityController):
     def __init__(self, client: ExternalCapacityClient, settings: Settings, profile: WorkerCapacityProfile) -> None:
@@ -79,6 +85,8 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         self.cleanup_states = ("lost", "retired")
         self.runtime_profile = profile.runtime_profile
         self.burst_launch_allowed = True
+        # Whether this pass has read the provider's capabilities.
+        self._profile_read = False
 
     async def _reserve_managed_cleanup(self, worker_id: UUID) -> bool:
         async with get_db_context() as db:
@@ -96,16 +104,6 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             pin.cleanup_attempts += 1
             await record_capacity_cleanup_do_requests(db, pin.installation_id)
         return True
-
-    async def launch_for_demand(self, policy: KubernetesPolicy) -> list[UUID]:
-        if not self.burst_launch_allowed:
-            return []
-        if self.managed_cloudflare_scope is not None:
-            return await super().launch_for_demand(replace(
-                policy, max_workers=self.profile.max_workers, warm_workers=0,
-                reserved_fast_path_workers=0,
-            ))
-        return await super().launch_for_demand(policy)
 
     @property
     def profile(self) -> WorkerCapacityProfile:
@@ -138,6 +136,8 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         )
 
     def _binding_fields(self, worker_id: UUID) -> dict[str, Any]:
+        if self.managed_cloudflare_scope is None and not self._profile_read:
+            raise _ProfileRefreshRequired
         fields = {"capacity_scope": self.profile.scope, "version": self.profile.worker_version}
         if self.profile.protocol_version == 2:
             fields["capacity_resource_uid"] = uuid4().hex
@@ -155,6 +155,21 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         return super()._sizing(policy, workers)
 
     async def reconcile(self) -> None:
+        self._profile_read = False
+        if self.managed_cloudflare_scope is not None:
+            await self._read_profile()
+        else:
+            # Keep request-scaled external providers idle until they hold a
+            # resource or the planner tries to reserve one.
+            async with get_db_context() as db:
+                held = await db.scalar(select(ExecutionWorker.id).where(
+                    self._managed_scope(), ExecutionWorker.state.in_(LIVE_STATES) | self._cleanup_scope(),
+                ).limit(1))
+            if held is not None:
+                await self._read_profile()
+        await super().reconcile()
+
+    async def _read_profile(self) -> None:
         current = await self.client.profile()
         if self.managed_cloudflare_scope is not None and current != self.profile:
             raise CapacityProtocolError("Managed Cloudflare deployment capabilities changed")
@@ -167,7 +182,26 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         if (self.managed_cloudflare_scope is None and self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
                 and not self.settings.cloudflare_worker_hello_enabled):
             raise CapacityProtocolError("Cloudflare capacity requires Cloudflare hello opt-in")
-        await super().reconcile()
+        self._profile_read = True
+
+    async def launch_for_demand(self, policy: KubernetesPolicy) -> list[UUID]:
+        if not self.burst_launch_allowed:
+            return []
+        if self.managed_cloudflare_scope is not None:
+            return await super().launch_for_demand(replace(
+                policy, max_workers=self.profile.max_workers, warm_workers=0,
+                reserved_fast_path_workers=0,
+            ))
+        if self._profile_read:
+            return await super().launch_for_demand(policy)
+        # Plan with cached capabilities, but unwind the transaction at the
+        # first reservation. Provider I/O happens only after releasing the
+        # admission lock, then the normal planner rechecks demand and limits.
+        try:
+            return await super().launch_for_demand(policy)
+        except (_ProfileRefreshRequired, CapacityProtocolError):
+            await self._read_profile()
+            return await super().launch_for_demand(policy)
 
     async def _start_prepared(self, worker_id: UUID, uid: str) -> None:
         scope = self.managed_cloudflare_scope
@@ -282,13 +316,12 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                     ).exists()))
                 if may_be_running:
                     return  # A missing ledger is not a stop receipt.
-            if resource is None and (uid is None or self.profile.protocol_version == 2) and (
-                not bounded_prepare
-                or ended_at is None or _now() - ended_at < UNBOUND_PREPARE_GRACE
-            ):
-                # Another controller may still prepare this unbound incarnation.
-                # Absence does not fence that delayed mutation; retain cleanup.
-                return
+            if resource is None and (uid is None or self.profile.protocol_version == 2):
+                # Absence cannot fence delayed preparation before the grace expires.
+                if ended_at is None or _now() - ended_at < UNBOUND_LOSS_CLEANUP_GRACE:
+                    return
+                if not bounded_prepare and (uid is not None or state != "lost"):
+                    return
             if resource is not None and resource.state != "deleted":
                 if self.managed_cloudflare_scope is not None and not await self._reserve_managed_cleanup(worker_id):
                     return

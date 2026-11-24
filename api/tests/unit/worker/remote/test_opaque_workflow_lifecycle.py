@@ -516,7 +516,7 @@ async def test_definitively_unsent_workflow_is_handed_back(
     async def issue_credentials(*args, **kwargs):
         if refusal == "reconnect-before-send":
             await reconnect()
-        return tokens.RunCredentials("test-access", None, datetime.now(UTC), 1)
+        return tokens.RunCredentials("test-access", None, datetime.now(UTC), 1, None)
 
     async def refuse(frame):
         command = ControlEnvelope.from_json(frame)

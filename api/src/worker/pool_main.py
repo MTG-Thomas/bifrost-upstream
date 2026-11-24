@@ -27,6 +27,7 @@ import os
 import socket
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Protocol
 from uuid import UUID
 
@@ -632,59 +633,102 @@ class PoolWorker:
 
     async def _run_claim(self, claim: PoolClaim) -> None:
         assert self.admission is not None
-        handed_back = False
-        try:
-            # Workflow runs return once routed to a child (then counted by the
-            # pool); agent runs return when finished.
-            if claim.handler == "workflow.execute":
-                assert self._workflow_consumer is not None
-                opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE
-                try:
-                    await self._workflow_consumer.process_message(
-                        claim.message,
-                        PendingExecution(**claim.claimed)  # type: ignore[typeddict-item]
-                        if claim.claimed is not None
-                        else None,
-                        **({
-                            "cloudflare_revision": claim.cloudflare_revision,
-                            "cloudflare_tenant_id": claim.tenant_id,
-                        } if opaque else {}),
-                        **({"workflow_slot": claim.workflow_slot} if claim.workflow_slot is not None else {}),
-                    )
-                except (MemoryError, OpaqueWorkflowNotStarted) as exc:
-                    # A refused fork or an opaque dispatch that never started
-                    # can go back to waiting for an executor.
-                    from src.services.execution.workflow_dispatch import (
-                        release_workflow_run,
-                    )
+        from src.core.telemetry import extract_context, is_enabled, run_span
 
-                    if not opaque or claim.claimed is None:
-                        self._release_claim_reservation(claim)
-                    handed_back = True
-                    if claim.claimed is None:
-                        logger.error(
-                            "Pool cannot hand back workflow run without payload",
-                            extra={"dispatch_id": str(claim.dispatch_id)},
+        # Consumer span for the queue hop: the run span below is its child,
+        # so one trace shows request -> publish -> process -> run. Nothing
+        # when telemetry is off. Attributes are IDs and fixed names only.
+        if is_enabled():
+            from opentelemetry import trace
+            from opentelemetry.trace import SpanKind
+
+            messaging = trace.get_tracer(__name__).start_as_current_span(
+                f"{claim.handler} process",
+                context=extract_context(claim.message),
+                kind=SpanKind.CONSUMER,
+                attributes={
+                    "messaging.system": "postgresql",
+                    "messaging.operation": "process",
+                    "messaging.destination.name": claim.handler,
+                    "messaging.message.id": str(claim.dispatch_id),
+                },
+                record_exception=False,
+                set_status_on_exception=False,
+            )
+        else:
+            messaging = contextlib.nullcontext()
+
+        handed_back = False
+        # Queue wait is a bounded, content-free number the infra contract
+        # expects on the consume path (claim time minus enqueue time).
+        queue_wait_s = max(
+            0.0, (datetime.now(timezone.utc) - claim.queued_at).total_seconds()
+        )
+        workflow_id = claim.message.get("workflow_id")
+        # The log-and-swallow wrapper sits outside run_span, so a consumer
+        # failure still marks the span ERROR and increments dispatch.failed
+        # instead of ending the dispatch as a success.
+        try:
+            with messaging, run_span(
+                handler=claim.handler,
+                run_id=str(claim.subject_id),
+                # The extracted context is this consumer span; the run span is
+                # its child, not a second child of the producer.
+                message=None,
+                workflow_id=str(workflow_id) if workflow_id else None,
+                queue_wait_s=queue_wait_s,
+            ):
+                # Workflow runs return once routed to a child (then counted by the
+                # pool); agent runs return when finished.
+                if claim.handler == "workflow.execute":
+                    assert self._workflow_consumer is not None
+                    opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE
+                    try:
+                        await self._workflow_consumer.process_message(
+                            claim.message,
+                            PendingExecution(**claim.claimed)  # type: ignore[typeddict-item]
+                            if claim.claimed is not None
+                            else None,
+                            **({
+                                "cloudflare_revision": claim.cloudflare_revision,
+                                "cloudflare_tenant_id": claim.tenant_id,
+                            } if opaque else {}),
+                            **({"workflow_slot": claim.workflow_slot} if claim.workflow_slot is not None else {}),
                         )
-                        return
-                    await release_workflow_run(
-                        worker_id=self.incarnation_id,
-                        message=claim.message,
-                        payload=claim.claimed,
-                        memory_request_bytes=claim.memory_request_bytes,
-                        queued_at=claim.queued_at,
-                        cloudflare_revision=(
-                            None if isinstance(exc, CloudflareRevisionRejected) else claim.cloudflare_revision
-                        ),
-                        release_opaque_reservation=(
-                            (lambda: self._release_claim_reservation(claim)) if opaque else None
-                        ),
-                        **({"workflow_slot": claim.workflow_slot} if claim.workflow_slot is not None else {}),
-                    )
-            elif claim.handler == "agent.run":
-                await self._execute_agent(claim)
-            else:
-                await self._execute_summary(claim)
+                    except (MemoryError, OpaqueWorkflowNotStarted) as exc:
+                        # A refused fork or an opaque dispatch that never started
+                        # can go back to waiting for an executor.
+                        from src.services.execution.workflow_dispatch import (
+                            release_workflow_run,
+                        )
+
+                        if not opaque or claim.claimed is None:
+                            self._release_claim_reservation(claim)
+                        handed_back = True
+                        if claim.claimed is None:
+                            logger.error(
+                                "Pool cannot hand back workflow run without payload",
+                                extra={"dispatch_id": str(claim.dispatch_id)},
+                            )
+                            return
+                        await release_workflow_run(
+                            worker_id=self.incarnation_id,
+                            message=claim.message,
+                            payload=claim.claimed,
+                            memory_request_bytes=claim.memory_request_bytes,
+                            queued_at=claim.queued_at,
+                            cloudflare_revision=(
+                                None if isinstance(exc, CloudflareRevisionRejected) else claim.cloudflare_revision
+                            ),
+                            release_opaque_reservation=(
+                                (lambda: self._release_claim_reservation(claim)) if opaque else None
+                            ),
+                            **({"workflow_slot": claim.workflow_slot} if claim.workflow_slot is not None else {}),
+                        )
+                elif claim.handler == "agent.run":
+                    await self._execute_agent(claim)
+                else:
+                    await self._execute_summary(claim)
         except AssertionError:
             raise
         except Exception:

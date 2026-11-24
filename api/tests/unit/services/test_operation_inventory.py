@@ -14,12 +14,12 @@ REPO_ROOT = API_ROOT.parent
 
 def test_every_observed_surface_is_classified_with_a_reason() -> None:
     inventory = build_operation_inventory(app, REPO_ROOT)
-    # Count both Cloudflare workflow approval and platform capacity operations.
+    # Includes Cloudflare workflow approval, platform capacity, and identity providers.
     assert inventory["counts"] == {
-        "cli": 200,
+        "cli": 201,
         "manifest": 16,
-        "mcp": 116,
-        "rest": 739,
+        "mcp": 117,
+        "rest": 771,
         "sdk": 21,
     }
     for surface, rows in inventory["uncataloged"].items():

@@ -588,30 +588,39 @@ class Launcher:
                     raise ValueError("Duplicate route")
                 if generation != self.session_generation:
                     return
-                async with self._template_lock:
-                    if generation != self.session_generation:
-                        return
-                    if self.container_release is not None:
-                        if self.container_guest is None:
-                            raise MemoryError("Container workflow isolation is unavailable")
-                        pid, work, result = self.container_guest.take()
-                    else:
-                        pid, work, result = await asyncio.to_thread(
-                            self.template.fork, worker_id=route_id, sdk_socket_path=None,
-                        )
-                self._idle_since = time.monotonic()
-                context = payload["context"]
-                timeout = context.get("timeout_seconds", 300) if action == "workflow" else 0
-                child = Child(route_id, payload["execution_id"], pid, work, result,
-                              time.monotonic(), timeout,
-                              service=payload.get("service"),
-                              memory_kill_growth_bytes=payload.get("memory_kill_growth_bytes", 0),
-                              grace=payload.get("graceful_shutdown_seconds", 5),
-                              active_execution=payload.get("active_execution"),
-                              started_at=payload.get("started_at"),
-                              memory_request_bytes=payload.get("memory_request_bytes"))
-                self.track_child(child)
-                work.put_nowait((child.execution_id, context))
+
+                from src.core.telemetry import launch_span
+
+                # Trace Linux forks. A Container first needs to take its
+                # one-shot guest, which can refuse before reading the payload.
+                with (
+                    contextlib.nullcontext() if self.container_release is not None
+                    else launch_span(payload["execution_id"], payload["context"])
+                ):
+                    async with self._template_lock:
+                        if generation != self.session_generation:
+                            return
+                        if self.container_release is not None:
+                            if self.container_guest is None:
+                                raise MemoryError("Container workflow isolation is unavailable")
+                            pid, work, result = self.container_guest.take()
+                        else:
+                            pid, work, result = await asyncio.to_thread(
+                                self.template.fork, worker_id=route_id, sdk_socket_path=None,
+                            )
+                    self._idle_since = time.monotonic()
+                    context = payload["context"]
+                    timeout = context.get("timeout_seconds", 300) if action == "workflow" else 0
+                    child = Child(route_id, payload["execution_id"], pid, work, result,
+                                  time.monotonic(), timeout,
+                                  service=payload.get("service"),
+                                  memory_kill_growth_bytes=payload.get("memory_kill_growth_bytes", 0),
+                                  grace=payload.get("graceful_shutdown_seconds", 5),
+                                  active_execution=payload.get("active_execution"),
+                                  started_at=payload.get("started_at"),
+                                  memory_request_bytes=payload.get("memory_request_bytes"))
+                    self.track_child(child)
+                    work.put_nowait((child.execution_id, context))
                 response["pid"] = pid
             elif action in ("agent_run", "agent_summary"):
                 agent_template = self.agent_template
@@ -838,6 +847,11 @@ class Launcher:
                 "duration_ms": int((time.monotonic() - child.started) * 1000)}
 
     async def finish(self, child: Child, result: dict[str, Any], *, guest_grace: float = 0) -> None:
+        # A traced child returns its spans with the result. Export them here
+        # so they never cross the route socket.
+        from src.core.telemetry import CHILD_SPANS_KEY, relay_child_spans
+
+        relay_child_spans(result.pop(CHILD_SPANS_KEY, None))
         if self.children.pop(child.route_id, None) is None:
             return
         asyncio.get_running_loop().remove_reader(child.result.fileno())
@@ -1073,12 +1087,17 @@ async def run_launcher(
 ) -> int:
     """Keep optional private networking alive through physical worker drain."""
     from src.core.storage import close_shared_storage_clients
+    from src.core.telemetry import init_telemetry, shutdown_telemetry
     from src.worker.network import worker_network
 
+    # Operator telemetry for the launcher process (spans, run metrics).
+    # No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
+    init_telemetry(role="worker")
     try:
         async with worker_network():
             return await _run_launcher(on_ready=on_ready, on_stop=on_stop)
     finally:
+        shutdown_telemetry()
         await close_shared_storage_clients()
 
 
