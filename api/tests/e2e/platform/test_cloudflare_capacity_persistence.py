@@ -1326,14 +1326,18 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
     if canary_result == "hours-exhausted":
         start, _ = usage_period(datetime.now(UTC))
-        prior = ExecutionWorker(id=uuid4(), form="external", state="retired", capacity_scope="containers")
+        stopped_at = start + timedelta(hours=100)
+        prior = ExecutionWorker(
+            id=uuid4(), form="external", state="retired", capacity_scope="containers",
+            ended_at=stopped_at, capacity_resource_deleted_at=stopped_at,
+        )
         db_session.add(prior)
         await db_session.flush()
         db_session.add(CloudflareWorkerReservation(
             worker_id=prior.id, installation_id=installation.id, scope="containers",
             deployment_revision=1, control_root_version=installation.control_root_version,
             container_tenant="prior", container_release=container.digest,
-            container_reserved_at=start, container_stopped_at=start + timedelta(hours=100),
+            container_reserved_at=start, container_stopped_at=stopped_at,
             container_envelope={"seconds": 360_000, "second_usd": "0.00002056", "fixed_usd": "0.0000135"},
         ))
     await db_session.flush()
@@ -1346,6 +1350,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
         "container-registry.mjs": container.launcher_module,
     }
     digest = sha256(assets["manifest.json"]).hexdigest()
+    container = replace(container, digest=digest)
     name = f"bifrost-{installation.id.hex}-r{revision}"
     namespace = "a" * 32
     version = str(uuid4())
@@ -1661,6 +1666,19 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             job_id=context.job_id, lease_token=context.lease_token, refresh_primary=primary,
         )
         assert refresh == refused
+        binding = ManagedCloudflareScope(installation.id, "containers", revision)
+        observed = AsyncMock()
+        monkeypatch.setattr(cloudflare_supervisor, "get_db_context", transaction)
+        monkeypatch.setattr(cloudflare_supervisor, "read_primary_pool", AsyncMock(return_value=(primary, None)))
+        monkeypatch.setattr(cloudflare_supervisor, "record_controller_observation", observed)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+            await cloudflare_supervisor._reconcile_containers(
+                binding, Settings(), http, context.job_id, {binding: container}, kubernetes=False,
+            )
+        observed.assert_awaited_once_with(
+            binding, primary=primary, cause=None, next_eligible_at=refused.retry_at,
+            placement_code="container_instance_budget_exhausted",
+        )
         capacity = await get_cloudflare_capacity_status(db_session, _platform_operator())
         assert capacity.installation is not None and capacity.installation.containers_remaining_instance_hours == 0
         lanes = {lane.lane: {reason.code for reason in lane.reasons} for lane in capacity.lanes}
@@ -7737,11 +7755,21 @@ async def test_container_policy_save_checks_the_signed_hours_envelope(db_session
     from dataclasses import replace
 
     release, _, _ = make_release()
-    installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
+    installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(
+        mode="json", exclude={"monthly_instance_hours"},
+    )
+    installation.policy = {
+        **installation.policy, "limits": {**installation.policy["limits"], "monthly_limit_usd": "75"},
+    }
     await db_session.flush()
     zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
     bounds = WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000, TEST_ORDER)
     release = replace(release, manifest=release.manifest.model_copy(update={"workers_release_digest": bounds.release}))
+    legacy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
+    assert await save_cloudflare_policy(
+        db_session, installation_id=installation.id, expected_revision=1, policy=legacy,
+        bounds=bounds, containers_release=release,
+    ) == 1
     policy = CloudflareCapacityPolicy.model_validate({
         **installation.policy["limits"], "monthly_limit_usd": "75", "container_instance_hours": 1488,
     })
@@ -7751,12 +7779,12 @@ async def test_container_policy_save_checks_the_signed_hours_envelope(db_session
             bounds=bounds, containers_release=release,
         )
     assert installation.desired_revision == 1
-    policy.container_instance_hours = 100
+    policy.container_instance_hours = 90
     assert await save_cloudflare_policy(
         db_session, installation_id=installation.id, expected_revision=1, policy=policy,
         bounds=bounds, containers_release=release,
     ) == 2
-    assert installation.containers_policy["monthly_instance_hours"] == 100
+    assert installation.containers_policy["monthly_instance_hours"] == 90
 
 
 @pytest.mark.asyncio
