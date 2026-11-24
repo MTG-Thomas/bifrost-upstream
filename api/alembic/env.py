@@ -96,14 +96,12 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection: Connection) -> None:
     """Run migrations using provided connection."""
     context.configure(connection=connection, target_metadata=target_metadata)
-    # The revision this upgrade run started from, recorded before any
-    # migration executes. None means the run began on an empty schema (a
-    # fresh install: no tokens, runs or pods can exist yet); migrations read
-    # it from config.attributes. Read after configure(), which must see the
-    # connection outside a transaction to own the migration transaction.
-    config.attributes["bifrost_starting_revision"] = MigrationContext.configure(
-        connection
-    ).get_current_revision()
+    # Record the starting heads before any migration executes. None means
+    # a fresh install. A partial rollback across a merge can leave several
+    # heads, which is still an existing schema. Read after configure() so
+    # Alembic can own the transaction.
+    starting_heads = MigrationContext.configure(connection).get_current_heads()
+    config.attributes["bifrost_starting_revision"] = starting_heads or None
 
     with context.begin_transaction():
         context.run_migrations()

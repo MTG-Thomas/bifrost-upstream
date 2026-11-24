@@ -1,6 +1,7 @@
 """Installation-local desired state and Cloudflare resource journal."""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -13,6 +14,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
     SmallInteger,
     String,
     Text,
@@ -351,6 +353,32 @@ class CloudflareDispatchMeter(Base):
     tenant_id: Mapped[str] = mapped_column(String(32))
     workflow_cpu_ms: Mapped[int | None]
     attempt_uncertain: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+
+
+class CloudflareCapacityUsage(Base):
+    """Historical provider-attributed receipts retained for audit."""
+
+    __tablename__ = "cloudflare_capacity_usage"
+    __table_args__ = (
+        CheckConstraint("deployment_revision > 0", name="ck_cf_usage_revision"),
+        CheckConstraint("period_start <= measured_at AND measured_at < period_end", name="ck_cf_usage_period"),
+        CheckConstraint("attributed_usd >= 0 AND attributed_usd < 'Infinity'::numeric", name="ck_cf_usage_amount"),
+        ForeignKeyConstraint(
+            ["installation_id", "account_id"],
+            ["cloudflare_installations.id", "cloudflare_installations.account_id"],
+            ondelete="RESTRICT",
+        ),
+    )
+
+    installation_id: Mapped[UUID] = mapped_column(primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(32))
+    deployment_revision: Mapped[int]
+    rate_table_version: Mapped[str] = mapped_column(String(64))
+    bounds_digest: Mapped[str] = mapped_column(String(64))
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attributed_usd: Mapped[Decimal] = mapped_column(Numeric(20, 6))
 
 
 class CloudflareUsageActivity(Base):

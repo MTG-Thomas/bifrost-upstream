@@ -60,7 +60,7 @@ async def _relay(downstream, client, api_host, upstream_port):
 
 
 async def test_worker_ingress_over_tls(
-    async_engine, async_session_factory, e2e_api_url, org1_user, tmp_path, monkeypatch,
+    async_engine, async_session_factory, e2e_api_url, tmp_path, monkeypatch,
 ):
     origin = f"https://{_HOST}"
     api = urlsplit(e2e_api_url)
@@ -140,12 +140,25 @@ async def test_worker_ingress_over_tls(
                     }))
                     welcome = json.loads(await asyncio.wait_for(ws.recv(), 5))
                 assert welcome["event"] == "welcome"
-                async with httpx.AsyncClient(verify=trust, trust_env=False) as client:
-                    response = await client.get(
-                        f"https://127.0.0.1:{port}/api/sdk/context",
-                        headers={**org1_user.headers, "Host": _HOST},
-                        extensions={"sni_hostname": _HOST},
-                    )
+                # The real canary mints run credentials through the ingress.
+                # A session user's bearer can expire during a long E2E shard.
+                async with committed_world(async_engine) as world:
+                    org = await world.organization()
+                    user = await world.person(org)
+                    run = await world.execution(run_user=user, organization=org)
+                    await world.session.commit()
+                    async with httpx.AsyncClient(
+                        base_url=f"https://127.0.0.1:{port}", verify=trust, trust_env=False, headers={"Host": _HOST},
+                    ) as client:
+                        minted = await client.post(
+                            "/auth/refresh", extensions={"sni_hostname": _HOST},
+                            json={"refresh_token": issue_run_refresh_token(RuntimeSubject("workflow_execution", run.id))},
+                        )
+                        assert minted.status_code == 200, minted.text
+                        response = await client.get(
+                            "/api/sdk/context", extensions={"sni_hostname": _HOST},
+                            headers={"Authorization": f"Bearer {minted.json()['access_token']}"},
+                        )
                 assert response.status_code == 200, response.text
                 return probes.RuntimeCanary(signed_hello=True, scoped_sdk=True)
 

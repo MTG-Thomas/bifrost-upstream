@@ -759,6 +759,9 @@ class TestCLIDownload:
         # to import from ``src.models.contracts.*`` — which is not shipped
         # in the download tarball, producing a broken CLI on fresh installs.
         # The import below catches any regression of that class loud-fail.
+        from bifrost.commands import ENTITY_GROUPS
+
+        expected_groups = sorted(ENTITY_GROUPS)
         test_script = f"""
 import sys
 sys.path.insert(0, '{tmp_path}')
@@ -778,8 +781,8 @@ assert isinstance(WorkflowMetadata, type)
 # from ``bifrost.contracts``). If the tarball ever drops a file that
 # the commands depend on, this import explodes.
 from bifrost.commands import ENTITY_GROUPS
-assert len(ENTITY_GROUPS) == 20, f"expected 20 entity groups, got {{len(ENTITY_GROUPS)}}"
-assert "claims" in ENTITY_GROUPS
+assert sorted(ENTITY_GROUPS) == {expected_groups!r}, sorted(ENTITY_GROUPS)
+assert {{"claims", "capacity"}} <= ENTITY_GROUPS.keys()
 
 # And the mirrored DTO package must itself be importable.
 from bifrost import contracts as _contracts

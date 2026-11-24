@@ -128,4 +128,31 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise NotImplementedError("Self-metering receipts must survive rollback. Restore a database backup to reverse this migration.")
+    op.execute(
+        "LOCK TABLE cloudflare_installations, cloudflare_usage_incarnations, cloudflare_usage_activity "
+        "IN ACCESS EXCLUSIVE MODE"
+    )
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM cloudflare_usage_incarnations)
+               OR EXISTS (SELECT 1 FROM cloudflare_usage_activity)
+               OR EXISTS (SELECT 1 FROM cloudflare_installations WHERE usage_advisory IS NOT NULL)
+            THEN
+                RAISE EXCEPTION 'Self-metering receipts must survive rollback'
+                    USING ERRCODE = 'object_not_in_prerequisite_state';
+            END IF;
+        END $$;
+    """)
+    op.execute("DROP FUNCTION cloudflare_usage_totals(uuid, timestamptz)")
+    for trigger, table in (
+        ("record_cf_usage_dispatch", "execution_worker_claims"),
+        ("settle_cf_usage_incarnation", "execution_workers"),
+        ("record_cf_usage_incarnation", "cloudflare_worker_reservations"),
+    ):
+        op.execute(f"DROP TRIGGER {trigger} ON {table}")
+        op.execute(f"DROP FUNCTION {trigger}()")
+    op.drop_table("cloudflare_usage_activity")
+    op.drop_table("cloudflare_usage_incarnations")
+    op.drop_column("cloudflare_installations", "usage_incomplete_until")
+    op.drop_column("cloudflare_installations", "usage_advisory")

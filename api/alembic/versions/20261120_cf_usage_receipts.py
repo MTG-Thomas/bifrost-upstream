@@ -33,4 +33,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("LOCK TABLE cloudflare_capacity_usage IN ACCESS EXCLUSIVE MODE")
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM cloudflare_capacity_usage) THEN
+                RAISE EXCEPTION 'Legacy capacity receipts must survive rollback'
+                    USING ERRCODE = 'object_not_in_prerequisite_state';
+            END IF;
+        END $$;
+    """)
     op.drop_table("cloudflare_capacity_usage")
