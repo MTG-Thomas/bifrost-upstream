@@ -35,6 +35,8 @@ const workers = new Map();
 const runtimes = new Map();
 const applications = new Map();
 const images = new Map();
+const foreignImages = new Set();
+const unattachedNamespaces = [];
 const placements = new Map();
 const sockets = new Map();
 const sdkCalls = new Map();
@@ -196,6 +198,7 @@ function runtime(capacity) {
 }
 
 function placementInventory(application) {
+  if (application.foreign) return [{status: {state: 'active'}}];
   const records = [...placements.values()].filter((entry) => entry.application === application.id);
   if (!records.length) return [];
   const ids = execFileSync('docker', ['ps', '-aq', '--filter', 'ancestor=' + config.containers.imageId],
@@ -452,6 +455,36 @@ async function provider(req, res) {
   if (relative === '/workers/subdomain') return ok({subdomain: 'rehearsal'});
   if (relative === '/workers/scripts') return ok([...workers.keys()].map((id) => ({id})));
   if (config.containers) {
+    if (path === '/local/foreign-inventory' && method === 'POST') {
+      const {scripts, application, mixed} = await json();
+      assert.ok(scripts.length === 4 && workers.size === 0 && applications.size === 0 && images.size === 0);
+      const script = scripts[0] + '-other';
+      workers.set(script, {foreign: true, meta: {bindings: []}, namespaces: [
+        {id: randomBytes(16).toString('hex'), name: script, script, class: 'ScopeRegistry'},
+      ]});
+      if (mixed) unattachedNamespaces.push({
+        id: randomBytes(16).toString('hex'), name: script + '-detached', class: 'ScopeRegistry',
+      });
+      const id = randomBytes(16).toString('hex');
+      applications.set(id, {id, account_id: account, name: application + '0', script, foreign: true});
+      images.set(application + '0', config.containers.digest);
+      foreignImages.add(application + '0');
+      return ok(null);
+    }
+    if (path === '/local/trial-script-collision') {
+      const {script} = await json();
+      if (method === 'POST') {
+        assert.ok(!workers.has(script));
+        workers.set(script, {foreign: true, collision: true, meta: {bindings: []}, namespaces: []});
+      } else if (method === 'DELETE') {
+        assert.ok(!foreignImages.has(repository), 'Foreign registry mutation');
+        assert.ok(workers.get(script)?.collision);
+        workers.delete(script);
+      } else {
+        return missing();
+      }
+      return ok(null);
+    }
     const name = 'bifrost-[0-9a-f]{32}-r[1-9][0-9]*';
     const image = path.match(new RegExp('^/local/containers-registry/(' + name + ')$'));
     if (path === '/local/containers-registry' && method === 'GET') {
@@ -486,14 +519,19 @@ async function provider(req, res) {
       return ok({image: digestReference, status: 'ready'});
     }
     const inventory = (entry) => {
-      const {script, ...app} = entry;
+      const {script, foreign, ...app} = entry;
       const active = placementInventory(entry).filter(({status}) => status.state === 'active');
       return {...app, health: {instances: {active: active.length, starting: 0}}};
     };
     if (relative === '/containers/applications') {
       if (method === 'GET') {
         const filter = url.searchParams.get('name');
-        return ok([...applications.values()].filter((entry) => filter === null || filter === entry.name).map(inventory));
+        const rows = [...applications.values()].filter((entry) => filter === null || entry.name.startsWith(filter));
+        if (!config.foreignInventory) return ok(rows.map(inventory));
+        const offset = Number(url.searchParams.get('page_token') ?? 0);
+        const next = offset + 1 < rows.length ? String(offset + 1) : undefined;
+        return send(200, {success: true, result: rows.slice(offset, offset + 1).map(inventory),
+          result_info: {per_page: Number(url.searchParams.get('per_page') ?? 100), next_page_token: next}});
       }
       if (method === 'POST') {
         const body = await json();
@@ -515,6 +553,7 @@ async function provider(req, res) {
       const [, id, instances, actor] = application;
       const app = applications.get(id);
       if (!app) return missing();
+      assert.ok(!app.foreign || method === 'GET', 'Foreign application mutation');
       if (instances) {
         const observed = placementInventory(app);
         if (actor) {
@@ -533,7 +572,7 @@ async function provider(req, res) {
       return ok(inventory(app));
     }
   }
-  const namespaces = [...workers.values()].flatMap((item) => item.namespaces);
+  const namespaces = [...workers.values()].flatMap((item) => item.namespaces).concat(unattachedNamespaces);
   if (relative === '/workers/durable_objects/namespaces') {
     if (lagNamespace) {
       const elapsedMs = Math.floor(performance.now() - lagNamespace.uploadedAt);
@@ -556,6 +595,7 @@ async function provider(req, res) {
   if (script) {
     const [, name, child] = script;
     const item = workers.get(name);
+    assert.ok(!item?.foreign || method === 'GET', 'Foreign Worker mutation');
     if (method === 'PUT' && !child) {
       assert.ok(!item, 'Unexpected duplicate upload');
       const form = await new Request(url, {method, headers: req.headers, body: await buffer(req)}).formData();

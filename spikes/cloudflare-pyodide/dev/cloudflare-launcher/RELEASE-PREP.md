@@ -137,9 +137,12 @@ Use a fresh, dedicated Compose installation with the approved images pinned
 by digest, normal provider adapters, no host-published API or worker ports,
 and an empty opening ledger. Prepare separate hosted Compose files with
 names matching the private config.
-Use the previously approved account and zone. The runner requires empty
-Workers script, Durable Object namespace and Containers application inventories.
-Stop if occupied. For Existing HTTPS the zone is operator metadata and the
+Use the previously approved shared account and zone. Check the exact
+trial script names, script attribution on namespaces, application name and
+registry repository for collisions before activation. Save the foreign
+inventory and verify it is unchanged after Disconnect. For the pinned
+`85e761039` API, confirm that every namespace row reports a script.
+For Existing HTTPS the zone is operator metadata and the
 runner does not send it or mutate DNS. The `.env` operator credentials and
 the runner config stay private. Set the config mode to `0600`.
 
@@ -158,10 +161,11 @@ the runner config stay private. Set the config mode to `0600`.
 }
 ```
 
-From the prepared checkout and Compose project directory, with the approved
-private config:
+From the prepared Compose project directory for `85e761039`, with the approved
+private config, call the runner from the separate shared-account harness checkout.
+The Compose services continue to use the approved release digests.
 
 ```sh
-python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py \
+python3 /absolute/shared-account-harness/spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py \
   --containers-hosted-shape --hosted-containers-config /absolute/private/containers-trial.json
 ```

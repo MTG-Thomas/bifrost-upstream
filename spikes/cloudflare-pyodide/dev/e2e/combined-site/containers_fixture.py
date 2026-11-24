@@ -20,11 +20,11 @@ BASE = f"http://{PROVIDER['address']}:{PROVIDER['providerPort']}"
 async def registry(method, repository, body=None):
     import httpx
 
-    if re.fullmatch(REPOSITORY, repository) is None:
+    if repository and re.fullmatch(REPOSITORY, repository) is None:
         raise ValueError("Unexpected rehearsal image repository")
     async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as http:
         response = await http.request(
-            method, f"{BASE}/local/containers-registry/{repository}", json=body,
+            method, f"{BASE}/local/containers-registry" + (f"/{repository}" if repository else ""), json=body,
             headers={"Authorization": f"Bearer {MANAGEMENT_TOKEN}"},
         )
     response.raise_for_status()
@@ -67,6 +67,10 @@ def configure_release(module):
                 if exact == prefix + name + "$" and env and env["CLOUDFLARE_ACCOUNT_ID"] == ACCOUNT:
                     present = await registry("GET", name)
                     return json.dumps([{"name": name, "tags": ["release"]}] if present else []).encode()
+            case "cf", ("containers", "images", "list"):
+                if env == {"CLOUDFLARE_ACCOUNT_ID": ACCOUNT, "CLOUDFLARE_API_TOKEN": MANAGEMENT_TOKEN}:
+                    return json.dumps([{"name": row["repository"], "tags": ["release"]}
+                                       for row in await registry("GET", "")]).encode()
             case "cf", ("containers", "images", "delete", tag, "--force") if tag.endswith(":release"):
                 if env == {"CLOUDFLARE_ACCOUNT_ID": ACCOUNT, "CLOUDFLARE_API_TOKEN": MANAGEMENT_TOKEN}:
                     await registry("DELETE", tag.removesuffix(":release"))

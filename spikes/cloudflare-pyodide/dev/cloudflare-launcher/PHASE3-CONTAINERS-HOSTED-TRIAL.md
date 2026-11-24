@@ -1,14 +1,15 @@
 # Hosted Containers Trial Plan
 
 This trial uses the same Cloudflare account and zone as the earlier Workers
-trials and a dedicated Bifrost installation using Existing HTTPS. The sequence passed
-the [CT128 hosted-shaped rehearsal](../e2e/README.md) using
-`combined-rehearsal.py --containers-hosted-shape` with an empty provider stub,
+trials and a dedicated Bifrost installation using Existing HTTPS. The
+[CT128 hosted-shaped rehearsal](../e2e/README.md) uses a provider stub,
 pinned Miniflare and the paired Docker guest. The hosted trial uses the
-normal signed release verifier and provider adapters. From the trial checkout, run:
+normal signed release verifier and provider adapters from the approved
+`85e761039` images. Keep the working directory at the prepared Compose
+checkout and invoke the runner from the shared-account harness checkout.
 
 ```sh
-python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py \
+python3 /absolute/shared-account-harness/spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py \
   --containers-hosted-shape --hosted-containers-config /absolute/private/containers-trial.json
 ```
 
@@ -21,8 +22,14 @@ provider reads target the public Cloudflare API.
 ## Account and token
 
 Confirm Workers Paid and active Workers and Containers entitlements on the
-previously used account. The runner requires empty Workers script, Durable Object
-namespace, and Containers application inventories. Stop if any are occupied.
+previously used account. The runner derives the exact targets from the
+activation receipt and the naming code in the running API image. Stop on an
+existing exact script, namespace attributed to a trial script, application
+name, or tagged image in the intended registry repository. Save the opening
+foreign inventory counts and ID fingerprints. Leave other account changes
+paused until the closing comparison. The pinned release requires every
+namespace inventory row to have a script during initial deployment readback.
+Confirm this with the read-only namespace list before using that release.
 Create a dedicated, expiring management token scoped to that
 account with **Account Settings Read**, **Workers Scripts Write**, and
 **Workers Containers Write**. Add **Account Analytics Read** only if the trial
@@ -81,7 +88,7 @@ See [Release Readiness](RELEASE-PREP.md).
 
 | Step | Action and evidence to retain | Hosted question |
 | --- | --- | --- |
-| 1. Preflight | Pin the API image and paired public GHCR Linux image to their release digests. Record the release repository, source revision and expected signer from the API image. Check the exact trial inventories are empty and capture the opening Bifrost ledger and provider usage baseline. Review Existing HTTPS activation with Containers opted in, `standard-1`, two instances total, one per tenant, one workflow per instance, 120 s idle, 20 s start window, 300 s workflow-instance lifetime and 250,000 bytes per direction. Record the calculated monthly fleet floor and obtain separate approval for that policy. | Real release inputs and attributable billing baseline. |
+| 1. Preflight | Pin the API image and paired public GHCR Linux image to their release digests. Record the release repository, source revision and expected signer from the API image. Check the exact trial targets are unoccupied and capture foreign inventory IDs, the opening Bifrost ledger and provider usage baseline. Review Existing HTTPS activation with Containers opted in, `standard-1`, two instances total, one per tenant, one workflow per instance, 120 s idle, 20 s start window, 300 s workflow-instance lifetime and 250,000 bytes per direction. Record the calculated monthly fleet floor and obtain separate approval for that policy. | Real release inputs and attributable billing baseline. |
 | 2. Activate and Enable | Submit Activate once and follow its Enable job. Save the real signature verification result, prepared digest, application and script/namespace receipts, and the settled canary. Require joint admission for that exact revision only after the canary passes. The canary must use the verified ingress, reject the wrong host, disallowed route and redirect, and witness the non-intercepted TCP denials on 2053 and 8443. Record how the alternate peer resolves and that the API can reach it before counting the guest connection failures as evidence. | Real release signatures, hosted Durable Object scheduling, DNS and TCP enforcement without local guest firewall rules, and independent placement readback. |
 | 3. Run one overflow workflow | Propose and accept the Linux review through the public workflow approval API. Hold the primary at 24 MiB free and submit one 96 MiB, 30 s workflow with a native import, child process and two SDK calls. Require a successful result and a single Container claim in the scheduler ledger. | Hosted scheduling for real work and placement identity continuity. The API handoff remains a local-only test. |
 | 4. Observe idle stop | The single-use guest starts draining after it reports the result. Wait up to 150 s for stop and settlement on that same incarnation. Confirm stopped placement through the exact actor read, then revoke the Linux approval. | A busy guest survives the exercised workflow and retires after the result. Unused-instance idle timing and a longer busy-work inactivity test remain open. |
@@ -166,6 +173,8 @@ application, registry tag, four scripts and six namespaces, a retired
 installation, and no live incarnations, held seats, unresolved effects or
 retained credentials. Verify removal of any trial-owned token, ingress
 resources and local stack using the [Workers teardown procedure](PHASE1-PILOT.md).
+Compare the final script, namespace, application and registry inventories
+to the opening baseline and require the same foreign IDs and tags.
 Retain the release, public assets and GHCR image after Cloudflare teardown.
 The public Rekor records remain permanent.
 Keep sanitized timestamps, digests, usage and absence receipts. If a read

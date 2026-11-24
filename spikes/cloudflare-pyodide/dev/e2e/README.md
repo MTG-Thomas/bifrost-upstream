@@ -134,6 +134,13 @@ On a separate fresh stack, pass `--containers-hosted-shape` to
 `combined-stack.py` alongside `--containers-image` to keep SDK reads
 uninterrupted. Run
 `python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py --containers-hosted-shape`.
+Add `--foreign-inventory attributed` to stack preparation for the published
+`85e761039` images, or `--foreign-inventory mixed` with the namespace discovery
+fix. The fixture adds near-miss resources, proves an exact script collision
+stops the runner before activation, then removes that collision and runs
+with the foreign inventory intact. Both variants exercise a paginated
+Containers application list, a foreign active placement and a foreign
+registry tag.
 The local harness binds the private ingress and the raw TCP test boundary.
 The same runner used with `--containers-hosted-shape --hosted-containers-config` then drives public Bifrost
 routes, scheduler and claim readback, and provider inventory GETs. It

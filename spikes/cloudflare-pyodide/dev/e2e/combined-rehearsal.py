@@ -13,6 +13,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.error import HTTPError
@@ -1157,7 +1158,7 @@ async def qualification_container(case: str, hold: int):
 
 
 class HostedContainers(ContainerRehearsal):
-    """Drive Containers through the public surfaces on a dedicated trial account."""
+    """Drive Containers through the public surfaces with a fenced account inventory."""
 
     def __init__(self, config):
         if config.stat().st_mode & 0o077:
@@ -1201,24 +1202,107 @@ class HostedContainers(ContainerRehearsal):
 
     def provider(self, path, method="GET", payload=None, *, status=200):
         assert path.startswith("/client/v4/accounts/" + self.account + "/") and method == "GET" and payload is None
-        if path.endswith(("/workers/durable_objects/namespaces", "/workers/scripts")):
-            assert status == 200
-            inventory = []
-            for page in range(1, 101):
-                code, data = request_json(
-                    self.provider_origin + path + f"?page={page}&per_page=100", "GET",
-                    token=self.cfg["managementToken"],
-                )
-                assert code == 200 and data["success"]
-                rows = data["result"]
-                inventory.extend(rows)
-                if len(rows) < 100:
-                    return inventory
-            raise RuntimeError("Worker inventory did not settle")
         code, data = request_json(self.provider_origin + path, "GET", token=self.cfg["managementToken"])
         if code != status or (status == 200 and not data["success"]):
             raise RuntimeError(f"Expected provider read HTTP {status}, received {code}")
         return data["result"] if status == 200 else None
+
+    def inventory_page(self, path, params):
+        code, body = request_json(self.provider_origin + path + "?" + urlencode(params), "GET",
+                                  token=self.cfg["managementToken"])
+        assert code == 200 and body["success"] and isinstance(body["result"], list)
+        return body["result"], body.get("result_info", {})
+
+    def inventory(self, path, *, cursor=False):
+        inventory, seen, tokens = [], set(), set()
+        params = {"per_page": 100} if cursor else {"per_page": 100, "page": 1}
+        total = pages = None
+        for page in range(1, 101):
+            rows, info = self.inventory_page(path, params)
+            ids = {row["id"] for row in rows}
+            assert all(isinstance(identity, str) and identity for identity in ids)
+            assert len(ids) == len(rows) and not seen.intersection(ids), "Provider inventory repeated an ID"
+            assert info.get("count", len(rows)) == len(rows)
+            seen.update(ids)
+            inventory.extend(rows)
+            if cursor:
+                token = info.get("next_page_token")
+                if not token:
+                    return inventory
+                assert rows and isinstance(token, str) and token not in tokens
+                tokens.add(token)
+                params["page_token"] = token
+            else:
+                assert info.get("page", page) == page
+                next_total, next_pages = info.get("total_count", total), info.get("total_pages", pages)
+                assert next_total is None or (type(next_total) is int and next_total >= len(inventory))
+                assert next_pages is None or (type(next_pages) is int and next_pages >= 0)
+                assert total in (None, next_total) and pages in (None, next_pages)
+                total, pages = next_total, next_pages
+                more = (pages is not None and page < pages) or (total is not None and len(inventory) < total)
+                if not more and (pages is not None or total is not None or len(rows) < info.get("per_page", 100)):
+                    return inventory
+                assert rows
+                params["page"] = page + 1
+        raise RuntimeError("Provider inventory exceeded its pagination bound")
+
+    @property
+    def account_root(self):
+        return f"/client/v4/accounts/{self.account}"
+
+    def provider_snapshot(self):
+        # Worker Scripts is a single-page endpoint. DO namespaces use page
+        # numbers and Containers applications use opaque page tokens.
+        scripts = self.provider(self.account_root + "/workers/scripts")
+        namespaces = self.inventory(self.account_root + "/workers/durable_objects/namespaces")
+        applications = self.inventory(self.account_root + "/containers/applications", cursor=True)
+        registry = self.image_probe({"account": self.account, "token": self.cfg["managementToken"]})
+        assert all(isinstance(row["name"], str) and row["name"] and isinstance(row["tags"], list)
+                   and all(isinstance(tag, str) and tag for tag in row["tags"]) for row in registry)
+        snapshot = {
+            "scripts": {row["id"]: row.get("etag") for row in scripts},
+            "namespaces": {row["id"]: (row.get("script"), row.get("name"), row.get("class")) for row in namespaces},
+            "applications": {row["id"]: row["name"] for row in applications},
+            "registry": {row["name"].removeprefix(self.account + "/"): frozenset(row["tags"]) for row in registry},
+        }
+        assert tuple(map(len, snapshot.values())) == tuple(map(len, (scripts, namespaces, applications, registry)))
+        return snapshot
+
+    @staticmethod
+    def inventory_evidence(snapshot):
+        return {kind: {"count": len(rows), "ids_sha256": sha256(json.dumps(sorted(rows)).encode()).hexdigest()}
+                for kind, rows in snapshot.items()}
+
+    def image_probe(self, inputs):
+        # Execute the probe inside the exact running API image. Secrets stay
+        # on stdin, and the trial checkout contributes no product Python code.
+        return json.loads(subprocess.check_output([
+            "docker", "exec", "-i", self.api_container, "/usr/local/bin/python", "-c",
+            (HERE / "container-trial-planner.py").read_text(),
+        ], input=json.dumps(inputs), text=True, timeout=75))
+
+    def plan_activation(self):
+        assert self.canaries() == 0
+        self.review_activation("existing", containers=True)
+        plan = self.image_probe({"receipt": self.activation_request["preflight_receipt"]})
+        assert plan["account"] == self.account
+        return plan
+
+    def opening_inventory(self, plan):
+        baseline = self.provider_snapshot()
+        scripts = set(plan["scripts"])
+        collisions = {
+            "scripts": scripts.intersection(baseline["scripts"]),
+            "namespaces": {identity for identity, (script, _, _) in baseline["namespaces"].items() if script in scripts},
+            "applications": {identity for identity, name in baseline["applications"].items()
+                             if name == plan["application"]},
+            "registry": baseline["registry"].get(plan["registry_repository"], frozenset()),
+        }
+        occupied = sorted(kind for kind, match in collisions.items() if match)
+        if occupied:
+            raise RuntimeError("Trial ownership collision: " + ", ".join(occupied))
+        evidence("foreign-inventory-baseline", self.inventory_evidence(baseline))
+        return baseline
 
     def canaries(self, *, job=None, settled=False):
         filters = (" AND container_stopped_at IS NOT NULL" if settled else "")
@@ -1287,27 +1371,29 @@ class HostedContainers(ContainerRehearsal):
         assert self.canaries() == before + 1
         assert self.canaries(settled=True) == before + 1
 
-    def run(self):
-        root = f"/client/v4/accounts/{self.account}/containers/applications"
-        namespace_path = f"/client/v4/accounts/{self.account}/workers/durable_objects/namespaces"
+    def run(self, plan=None):
+        if plan is None:
+            plan = self.plan_activation()
+        baseline = self.opening_inventory(plan)
+        root = self.account_root + "/containers/applications"
+        namespace_path = self.account_root + "/workers/durable_objects/namespaces"
+        scripts = set(plan["scripts"])
 
-        def owned_namespaces(scripts):
-            return {row["id"] for row in self.provider(namespace_path) if row.get("script") in scripts}
+        def owned_namespaces():
+            return {row["id"] for row in self.inventory(namespace_path) if row.get("script") in scripts}
 
         app_path = None
-        assert not self.scripts() and self.provider(root) == [] and self.provider(namespace_path) == [] and self.canaries() == 0
-        self.review_activation("existing", containers=True)
         try:
             self.enable()
             self.preflight()
             self.observe_scheduler("enabled", settled=True)
             installation = self.install()
+            assert str(UUID(installation["installation_id"])) == plan["installation"]
             revision = installation["desired_revision"]
-            app, = self.provider(root)
+            app, = [row for row in self.inventory(root, cursor=True) if row["name"] == plan["application"]]
             app_path = f"{root}/{app['id']}"
-            scripts = self.scripts()
-            assert len(scripts) == 4
-            namespaces = owned_namespaces(scripts)
+            assert len(scripts) == 4 and scripts <= self.scripts()
+            namespaces = owned_namespaces()
             assert len(namespaces) == 6
             approval = self.approve_container_workflow(str(UUID(installation["installation_id"])))
             self.primary_hold()
@@ -1334,13 +1420,13 @@ class HostedContainers(ContainerRehearsal):
             assert revoked["current_revision"] is None
             self.observe_scheduler("idle-stop", settled=True)
             self.completed(self.job("scale-in"), "scaled_in")
-            assert not self.install()["admission_open"] and self.scripts() == scripts
-            assert owned_namespaces(scripts) == namespaces
+            assert not self.install()["admission_open"] and scripts <= self.scripts()
+            assert owned_namespaces() == namespaces
             assert self.provider(app_path)["health"]["instances"] == {"active": 0, "starting": 0}
             self.observe_scheduler("scale-in", settled=True)
             self.enable()
-            assert self.install()["desired_revision"] == revision and self.scripts() == scripts
-            assert owned_namespaces(scripts) == namespaces
+            assert self.install()["desired_revision"] == revision and scripts <= self.scripts()
+            assert owned_namespaces() == namespaces
             assert self.provider(app_path)["id"] == app["id"] and self.canaries() == 2
             self.observe_scheduler("scale-out", settled=True)
         finally:
@@ -1349,9 +1435,11 @@ class HostedContainers(ContainerRehearsal):
             finally:
                 if self.install() is not None:
                     self.disconnect()
-        assert self.provider(root) == [] and self.provider(namespace_path) == [] and not self.scripts()
-        if app_path is not None:
-            self.provider(app_path, status=404)
+            after = self.provider_snapshot()
+            assert after == baseline, "Provider inventory changed across the trial"
+            if app_path is not None:
+                self.provider(app_path, status=404)
+            evidence("foreign-inventory-unchanged", self.inventory_evidence(after))
 
 
 class HostedUpgrade(Rehearsal):
@@ -1498,7 +1586,26 @@ def main():
                 "live_target_usd": "0.03", "live_abort_usd": "0.05", "settled_cap_usd": "0.02",
             }))
             trial = HostedContainers(config)
-            trial.run()
+            if fixture.cfg.get("foreignInventory"):
+                plan = trial.plan_activation()
+                fixture.provider("/local/foreign-inventory", "POST", {
+                    **plan, "mixed": fixture.cfg["foreignInventory"] == "mixed",
+                })
+                collision = {"script": plan["scripts"][0]}
+                fixture.provider("/local/trial-script-collision", "POST", collision)
+                try:
+                    trial.opening_inventory(plan)
+                except RuntimeError as exc:
+                    assert str(exc) == "Trial ownership collision: scripts"
+                    assert trial.install() is None and trial.canaries() == 0
+                    evidence("exact-collision-refused-before-activation", {"kind": "scripts"})
+                else:
+                    raise AssertionError("The trial accepted an occupied script name")
+                finally:
+                    fixture.provider("/local/trial-script-collision", "DELETE", collision)
+                trial.run(plan)
+            else:
+                trial.run()
             if fixture.cfg["workerNamespaceLagMs"]:
                 assert trial.enable_attempts[0] > 1
         return

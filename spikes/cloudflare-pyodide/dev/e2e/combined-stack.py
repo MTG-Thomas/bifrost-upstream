@@ -55,7 +55,7 @@ def container_fixture(image):
 
 
 def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace, containers_image,
-            hold_second_sdk_read, provider_cache=None):
+            hold_second_sdk_read, provider_cache=None, foreign_inventory=None):
     containers = container_fixture(containers_image) if containers_image is not None else None
     fixture = root / ".rehearsal"
     fixture.mkdir(mode=0o755)
@@ -96,6 +96,7 @@ def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace
         "ready": str(fixture / "ready"), "project": project, "image": image, "network": network,
         "initialTunnelConfig": initial_tunnel_config,
         "workerNamespaceLagMs": 10_000 if lag_worker_namespace else 0,
+        "foreignInventory": foreign_inventory,
     }
     if containers is not None:
         proxy_alias = project + "-containers-proxy:local"
@@ -216,6 +217,8 @@ if __name__ == "__main__":
     parser.add_argument("--containers-image", help="Use a locally built, matched Dockerfile.containers image")
     parser.add_argument("--containers-hosted-shape", action="store_true", help="Keep SDK reads uninterrupted for the hosted-shaped run")
     parser.add_argument("--lag-worker-namespace", action="store_true")
+    parser.add_argument("--foreign-inventory", choices=("attributed", "mixed"),
+                        help="Seed the hosted-shaped stub with foreign resources")
     parser.add_argument("--provider-cache", type=Path, help="Attach a Workers-only fixture to the isolated bridge")
     variants = parser.add_mutually_exclusive_group()
     variants.add_argument("--missing-tunnel-config", dest="initial_tunnel_config", action="store_const", const="http_404",
@@ -229,9 +232,12 @@ if __name__ == "__main__":
         parser.error("Use a fresh private combined-local-* archive")
     if args.containers_hosted_shape and not args.containers_image:
         parser.error("--containers-hosted-shape requires --containers-image")
+    if args.foreign_inventory and not args.containers_hosted_shape:
+        parser.error("--foreign-inventory requires --containers-hosted-shape")
     if args.provider_cache is not None and (args.containers_image or not args.provider_cache.is_dir()):
         parser.error("--provider-cache requires an existing cache directory and Workers-only rehearsal")
     prepare(root, args.project, args.image, initial_tunnel_config=args.initial_tunnel_config,
             lag_worker_namespace=args.lag_worker_namespace, containers_image=args.containers_image,
             hold_second_sdk_read=not args.containers_hosted_shape,
+            foreign_inventory=args.foreign_inventory,
             provider_cache=args.provider_cache.resolve() if args.provider_cache else None)
