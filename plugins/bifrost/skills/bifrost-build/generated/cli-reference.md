@@ -685,6 +685,14 @@ Options:
   --worker-ingress-origin TEXT
   --credential-ref UUID
   --policy FILENAME               Advanced capacity policy JSON file.
+  --containers                    Include the paid Containers pilot in the
+                                  preflight.
+  --container-instance-hours INTEGER RANGE
+                                  Monthly Container instance-hours.
+                                  [1<=x<=1488]
+  --container-qualification-canaries INTEGER RANGE
+                                  Monthly Container qualification canaries.
+                                  [0<=x<=1000]
   --monthly-limit-usd TEXT        Confirmed monthly estimated usage limit in
                                   USD.  [required]
   --wait                          Wait for completion through the platform
@@ -731,12 +739,14 @@ Usage: capacity cloudflare policy [OPTIONS]
   Update the current Cloudflare capacity policy.
 
 Options:
-  --installation-id TEXT       installation_id (UUID).  [required]
-  --expected-revision INTEGER  expected_revision  [required]
-  --policy FILENAME            Cloudflare capacity policy JSON file.
-                               [required]
-  --json                       Emit JSON instead of human-readable output.
-  --help                       Show this message and exit.
+  --installation-id TEXT          installation_id (UUID).  [required]
+  --expected-revision INTEGER     expected_revision  [required]
+  --expected-policy-version INTEGER
+                                  expected_policy_version  [required]
+  --policy FILENAME               Cloudflare capacity policy JSON file.
+                                  [required]
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
 ```
 
 #### `capacity cloudflare preflight`
@@ -753,6 +763,14 @@ Options:
   --worker-ingress-origin TEXT
   --credential-ref UUID
   --policy FILENAME               Advanced capacity policy JSON file.
+  --containers                    Include the paid Containers pilot in the
+                                  preflight.
+  --container-instance-hours INTEGER RANGE
+                                  Monthly Container instance-hours.
+                                  [1<=x<=1488]
+  --container-qualification-canaries INTEGER RANGE
+                                  Monthly Container qualification canaries.
+                                  [0<=x<=1000]
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```
@@ -3704,6 +3722,7 @@ Options:
   --cpu-budget-ms INTEGER         cpu_budget_ms  [required]
   --https-hosts TEXT              https_hosts (repeat for multiple).
   --review-sha256 TEXT            review_sha256  [required]
+  --runtime [workers|containers]  runtime
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```
@@ -3731,6 +3750,7 @@ Options:
   --subrequest-allowance INTEGER  subrequest_allowance
   --cpu-budget-ms INTEGER         cpu_budget_ms
   --https-hosts TEXT              https_hosts (repeat for multiple).
+  --runtime [workers|containers]  runtime
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```
