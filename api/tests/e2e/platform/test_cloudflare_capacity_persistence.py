@@ -1647,6 +1647,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     assert installation.admitted_revision == installation.containers_ready_revision == (revision if canary_ready else None)
     assert installation.containers_release_digest == (digest if canary_ready else None)
     if canary_result == "hours-exhausted":
+        from src.models.orm.workflows import Workflow
         from src.services.worker_pool.cloudflare_containers_admission import ContainerAdmissionRefused, reserve_container
         from src.services.worker_pool.cloudflare_containers_egress import read_verified_egress
         from src.services.worker_pool.cloudflare_containers_policy import container_account_usage
@@ -1684,6 +1685,32 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
         lanes = {lane.lane: {reason.code for reason in lane.reasons} for lane in capacity.lanes}
         assert "container_instance_budget_exhausted" in lanes["containers"]
         assert "container_instance_budget_exhausted" not in lanes["workers"]
+
+        workers_scope = ManagedCloudflareScope(installation.id, "workers", revision)
+        worker_id, execution_id = uuid4(), uuid4()
+        memory = 128 * 2**20
+        workflow = Workflow(
+            id=uuid4(), name="Workers budget fixture", function_name="run", path="workflows/workers_budget.py",
+            timeout_seconds=30,
+        )
+        db_session.add_all([workflow, ExecutionWorker(
+            id=worker_id, form="external", state="ready", capacity_scope=workers_scope.name,
+            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, memory_limit_bytes=memory,
+        )])
+        await db_session.flush()
+        db_session.add_all([
+            workers_scope.pin(worker_id, installation.control_root_version, reserved_at=now, lifetime=3600, deadline_wire=True),
+            Execution(id=execution_id, workflow_id=workflow.id, workflow_name=workflow.name, executed_by_name="fixture"),
+        ])
+        stage_dispatch(
+            db_session, family=WAKE_WORKFLOW, subject_id=execution_id, handler="workflow.execute", handler_version=1,
+            payload={"execution_id": str(execution_id)}, message={"dispatch_metadata": {"timeout_seconds": 30}},
+            memory_request_bytes=1, cloudflare_revision="a" * 64,
+        )
+        await db_session.flush()
+        monkeypatch.setattr(claim_service, "get_db_context", transaction)
+        claimed = await claim_next(worker_id, fits_bytes=memory, budget_bytes=memory)
+        assert claimed is not None and claimed.subject_id == execution_id and claimed.workflow_slot is not None
 
 
 @pytest.mark.asyncio
