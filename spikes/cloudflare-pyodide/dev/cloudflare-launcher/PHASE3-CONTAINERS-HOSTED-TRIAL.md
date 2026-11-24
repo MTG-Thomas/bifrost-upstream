@@ -174,7 +174,12 @@ installation, and no live incarnations, held seats, unresolved effects or
 retained credentials. Verify removal of any trial-owned token, ingress
 resources and local stack using the [Workers teardown procedure](PHASE1-PILOT.md).
 Compare the final script, namespace, application and registry inventories
-to the opening baseline and require the same foreign IDs and tags.
+to the opening baseline even when teardown fails. The runner reports added,
+removed and changed IDs, flags exact trial matches, and checks planned
+targets separately for absence. It reports unrelated changes as foreign
+drift for the operator's record. If Activate fails without leaving an
+installation row, there is no installation to Disconnect. Any partial
+provider resources surface only in the closing snapshot comparison.
 Retain the release, public assets and GHCR image after Cloudflare teardown.
 The public Rekor records remain permanent.
 Keep sanitized timestamps, digests, usage and absence receipts. If a read

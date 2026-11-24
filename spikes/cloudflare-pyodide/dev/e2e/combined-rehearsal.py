@@ -180,6 +180,9 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         assert code == status, f"Local provider {method} returned HTTP {code}, expected {status}"
         return data.get("result", data) if data else None
 
+    def inventory(self, path):
+        return self.provider(path)
+
     def sql(self, query):
         return json.loads(subprocess.check_output(self.compose + [
             "exec", "-T", "postgres", "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "bifrost", "-d", "bifrost",
@@ -598,7 +601,7 @@ async def {name}():
         scripts = {row["script"] for row in receipts}
         namespaces = {value for row in receipts for value in row["namespaces"].values()}
         assert scripts.isdisjoint(self.scripts())
-        inventory = self.provider(root + "/workers/durable_objects/namespaces")
+        inventory = self.inventory(root + "/workers/durable_objects/namespaces")
         assert namespaces.isdisjoint(row["id"] for row in inventory)
         assert scripts.isdisjoint(row.get("script") for row in inventory)
         for script in sorted(scripts):
@@ -1219,52 +1222,88 @@ class HostedContainers(ContainerRehearsal):
         return data["result"] if status == 200 else None
 
     def inventory_page(self, path, params):
-        code, body = request_json(self.provider_origin + path + "?" + urlencode(params), "GET",
+        query = "?" + urlencode(params) if params else ""
+        code, body = request_json(self.provider_origin + path + query, "GET",
                                   token=self.cfg["managementToken"])
-        assert code == 200 and body["success"] and isinstance(body["result"], list)
+        assert code == 200 and body["success"]
         return body["result"], body.get("result_info", {})
 
-    def inventory(self, path, *, cursor=False):
-        inventory, seen, tokens = [], set(), set()
-        params = {"per_page": 100} if cursor else {"per_page": 100, "page": 1}
+    def inventory(self, path, *, cursor=False, single_page=False):
+        rows, tokens = {}, set()
+        params = {} if single_page else {"per_page": 100}
+        if not single_page and not cursor:
+            params["page"] = 1
         total = pages = None
+        page_size = None if single_page else 100
         for page in range(1, 101):
-            rows, info = self.inventory_page(path, params)
-            ids = {row["id"] for row in rows}
-            assert all(isinstance(identity, str) and identity for identity in ids)
-            assert len(ids) == len(rows) and not seen.intersection(ids), "Provider inventory repeated an ID"
-            assert info.get("count", len(rows)) == len(rows)
-            seen.update(ids)
-            inventory.extend(rows)
-            if cursor:
-                token = info.get("next_page_token")
-                if not token:
-                    return inventory
-                assert rows and isinstance(token, str) and token not in tokens
+            batch, info = self.inventory_page(path, params)
+            assert isinstance(batch, list) and isinstance(info, dict), "Malformed inventory envelope"
+            count = info.get("count", len(batch))
+            assert type(count) is int and count == len(batch), "Inventory page count mismatch"
+            if "per_page" in info:
+                size = info["per_page"]
+                assert type(size) is int and size > 0 and (single_page or size <= 100), "Invalid inventory page size"
+                assert page == 1 or size == page_size, "Inventory page size changed"
+                page_size = size
+            assert page_size is None or len(batch) <= page_size, "Oversized inventory page"
+            assert all(isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]
+                       for row in batch), "Inventory row has no ID"
+            ids = {row["id"] for row in batch}
+            assert len(ids) == len(batch) and not ids.intersection(rows), "Provider inventory repeated an ID"
+            rows.update((row["id"], row) for row in batch)
+            if "total_count" in info:
+                reported = info["total_count"]
+                assert type(reported) is int and reported >= len(rows) and total in (None, reported), \
+                    "Inventory total_count mismatch"
+                total = reported
+            assert total is None or len(rows) <= total, "Inventory exceeds total_count"
+
+            token = info.get("next_page_token")
+            echoed = info.get("page_token")
+            assert echoed is None or echoed == params.get("page_token", ""), "Inventory cursor echo mismatch"
+            if pages is not None or "page" in info or "total_pages" in info:
+                assert not tokens and token in (None, "") and echoed is None, "Mixed inventory pagination modes"
+                reported_page, reported_pages = info.get("page"), info.get("total_pages")
+                assert type(reported_page) is int and reported_page == page, "Inventory page number mismatch"
+                assert type(reported_pages) is int and 0 <= reported_pages <= 100, "Invalid inventory total_pages"
+                assert pages in (None, reported_pages), "Inventory total_pages changed"
+                pages = reported_pages
+                if page < pages:
+                    assert not single_page and len(batch) == page_size and total != len(rows), \
+                        "Inventory numbered continuation is inconsistent"
+                    params["page"] = page + 1
+                    continue
+                assert page <= pages or (page == 1 and pages == 0 and not batch), "Inventory page exceeds total_pages"
+                assert page == 1 or batch, "Empty terminal numbered inventory page"
+            elif token not in (None, ""):
+                assert not single_page and isinstance(token, str) and token not in tokens and batch \
+                    and total != len(rows), "Invalid inventory cursor continuation"
                 tokens.add(token)
+                params.pop("page", None)
                 params["page_token"] = token
+                continue
             else:
-                assert info.get("page", page) == page
-                next_total, next_pages = info.get("total_count", total), info.get("total_pages", pages)
-                assert next_total is None or (type(next_total) is int and next_total >= len(inventory))
-                assert next_pages is None or (type(next_pages) is int and next_pages >= 0)
-                assert total in (None, next_total) and pages in (None, next_pages)
-                total, pages = next_total, next_pages
-                more = (pages is not None and page < pages) or (total is not None and len(inventory) < total)
-                if not more and (pages is not None or total is not None or len(rows) < info.get("per_page", 100)):
-                    return inventory
-                assert rows
-                params["page"] = page + 1
+                assert total is not None or page_size is None or len(batch) < page_size, \
+                    "Full inventory page has no continuation or total"
+            assert total is None or total == len(rows), "Inventory ended before total_count"
+            return list(rows.values())
         raise RuntimeError("Provider inventory exceeded its pagination bound")
 
     @property
     def account_root(self):
         return f"/client/v4/accounts/{self.account}"
 
+    def script_inventory(self):
+        # The Workers scripts list is documented as a single-page endpoint.
+        return self.inventory(self.account_root + "/workers/scripts", single_page=True)
+
+    def scripts(self):
+        return {row["id"] for row in self.script_inventory()}
+
     def provider_snapshot(self):
         # Worker Scripts is a single-page endpoint. DO namespaces use page
         # numbers and Containers applications use opaque page tokens.
-        scripts = self.provider(self.account_root + "/workers/scripts")
+        scripts = self.script_inventory()
         namespaces = self.inventory(self.account_root + "/workers/durable_objects/namespaces")
         applications = self.inventory(self.account_root + "/containers/applications", cursor=True)
         registry = self.image_probe({"account": self.account, "token": self.cfg["managementToken"]})
@@ -1299,21 +1338,79 @@ class HostedContainers(ContainerRehearsal):
         assert plan["account"] == self.account
         return plan
 
+    @staticmethod
+    def plan_matches(snapshot, plan):
+        scripts = set(plan["scripts"])
+        return {
+            "scripts": scripts.intersection(snapshot["scripts"]),
+            "namespaces": {identity for identity, (script, _, _) in snapshot["namespaces"].items() if script in scripts},
+            "applications": {identity for identity, name in snapshot["applications"].items()
+                             if name == plan["application"]},
+            "registry": {plan["registry_repository"]}.intersection(snapshot["registry"]),
+        }
+
     def opening_inventory(self, plan):
         baseline = self.provider_snapshot()
-        scripts = set(plan["scripts"])
-        collisions = {
-            "scripts": scripts.intersection(baseline["scripts"]),
-            "namespaces": {identity for identity, (script, _, _) in baseline["namespaces"].items() if script in scripts},
-            "applications": {identity for identity, name in baseline["applications"].items()
-                             if name == plan["application"]},
-            "registry": baseline["registry"].get(plan["registry_repository"], frozenset()),
-        }
-        occupied = sorted(kind for kind, match in collisions.items() if match)
+        assert all(isinstance(script, str) for script, _, _ in baseline["namespaces"].values()), \
+            "Pinned release requires script attribution on every namespace"
+        occupied = sorted(kind for kind, matches in self.plan_matches(baseline, plan).items() if matches)
         if occupied:
             raise RuntimeError("Trial ownership collision: " + ", ".join(occupied))
         evidence("foreign-inventory-baseline", self.inventory_evidence(baseline))
         return baseline
+
+    def closing_inventory(self, baseline, plan):
+        after = self.provider_snapshot()
+        before_matches = self.plan_matches(baseline, plan)
+        leftovers = self.plan_matches(after, plan)
+        drift = False
+        changes = {}
+        for kind, before in baseline.items():
+            current = after[kind]
+            planned = before_matches[kind] | leftovers[kind]
+            differences = {
+                "added": current.keys() - before.keys(),
+                "removed": before.keys() - current.keys(),
+                "changed": {identity for identity in before.keys() & current.keys()
+                            if before[identity] != current[identity]},
+            }
+            changes[kind] = {}
+            for change, identities in differences.items():
+                drift |= bool(identities - planned)
+                changes[kind][change] = [{"id": identity, "matches_plan": identity in planned}
+                                         for identity in sorted(identities)]
+        evidence("closing-provider-inventory", {
+            "snapshot": self.inventory_evidence(after), "changes": changes, "foreign_drift": drift,
+            "trial_leftovers": {kind: sorted(identities) for kind, identities in leftovers.items()},
+        })
+        assert not any(leftovers.values()), "Trial-owned resources are still present"
+
+    def teardown(self, baseline, plan, app_path, original):
+        first_error = None
+
+        def attempt(step, action):
+            nonlocal first_error
+            try:
+                action()
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+                evidence("trial-teardown-failed", {"step": step, "error_type": type(error).__name__})
+
+        def disconnect_if_installed():
+            if self.install() is not None:
+                self.disconnect()
+
+        try:
+            attempt("release-primary", self.release_primary)
+            attempt("disconnect", disconnect_if_installed)
+        finally:
+            attempt("closing-inventory", lambda: self.closing_inventory(baseline, plan))
+            if app_path is not None:
+                attempt("application-absence", lambda: self.provider(app_path, status=404))
+        # An in-flight journey exception resumes automatically after finally.
+        if original is None and first_error is not None:
+            raise first_error
 
     def canaries(self, *, job=None, settled=False):
         filters = (" AND container_stopped_at IS NOT NULL" if settled else "")
@@ -1442,16 +1539,7 @@ class HostedContainers(ContainerRehearsal):
             assert self.provider(app_path)["id"] == app["id"] and self.canaries() == 2
             self.observe_scheduler("scale-out", settled=True)
         finally:
-            try:
-                self.release_primary()
-            finally:
-                if self.install() is not None:
-                    self.disconnect()
-            after = self.provider_snapshot()
-            assert after == baseline, "Provider inventory changed across the trial"
-            if app_path is not None:
-                self.provider(app_path, status=404)
-            evidence("foreign-inventory-unchanged", self.inventory_evidence(after))
+            self.teardown(baseline, plan, app_path, sys.exception())
 
 
 class HostedUpgrade(Rehearsal):
