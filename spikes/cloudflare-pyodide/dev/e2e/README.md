@@ -126,7 +126,9 @@ After the run, remove only the rehearsal's Compose project and network and
 the local proxy alias `$PROJECT-containers-proxy:local`. Stop the provider
 process even when the driver fails.
 
-On a separate fresh stack, run
+On a separate fresh stack, pass `--containers-hosted-shape` to
+`combined-stack.py` alongside `--containers-image` to keep SDK reads
+uninterrupted. Run
 `python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py --containers-hosted-shape`.
 The local harness binds the private ingress and the raw TCP test boundary.
 The same runner as `--hosted-containers-config` then drives public Bifrost

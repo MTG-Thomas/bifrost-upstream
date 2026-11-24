@@ -1367,6 +1367,7 @@ def main():
     if args.containers_hosted_shape:
         fixture = ContainerRehearsal()
         assert "containers" in fixture.cfg and "managementToken" not in fixture.cfg
+        assert fixture.cfg["holdSecondSdkRead"] is False
         with fixture.raw_tcp_boundary(), TemporaryDirectory(prefix="containers-hosted-shape-") as directory:
             config = Path(directory) / "trial.json"
             config.touch(mode=0o600)

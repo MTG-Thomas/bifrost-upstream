@@ -229,7 +229,7 @@ function serveIngress(req, res) {
     const call = sdkCalls.get(req.headers.authorization?.slice(7));
     if (call && incoming.pathname === '/api/sdk/tables/list' && response.statusCode === 200) {
       entered.add(call.execution);
-      if (++call.count === 2 && !relayOnly) {
+      if (++call.count === 2 && !relayOnly && config.holdSecondSdkRead) {
         heldQueries.set(call.execution, () => {
           if (res.destroyed) return response.destroy();
           res.writeHead(response.statusCode, relayHeaders(response.headers));
