@@ -1,6 +1,7 @@
-"""Exercise data-preserving Cloudflare downgrades at their exact revision."""
+"""Exercise Cloudflare migrations from their actual predecessor schemas."""
 
 import asyncio
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -8,8 +9,12 @@ import sqlalchemy as sa
 from alembic import command
 from alembic.script import ScriptDirectory
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
+from src.jobs.platform import cloudflare_capacity as lifecycle_job
+from src.models.orm.cloudflare_capacity import CloudflareInstallation
+from src.models.orm.platform_jobs import PlatformJob
+from src.services.worker_pool.cloudflare_release import WorkersReleaseOrder
 from tests.e2e.platform.test_r2b_roles_migration_rehearsal import (
     _alembic_config,
     _create_database,
@@ -312,6 +317,54 @@ def test_empty_cloudflare_schema_can_reverse_and_reupgrade_across_merge(migratio
             assert await connection.scalar(sa.text("SELECT to_regclass(:name)"), {"name": table}) == table
 
     asyncio.run(_run_in_database(migration_database, restored))
+
+
+@pytest.mark.parametrize("release", ["fixture-release", "d" * 64])
+def test_upgrade_migration_pauses_prior_pilot_and_scheduler_pins_the_new_release(
+    migration_database: str, monkeypatch: pytest.MonkeyPatch, release: str,
+) -> None:
+    _upgrade(migration_database, "20261121_cf_queue_prewarm")
+    installation_id = uuid4()
+
+    async def seed(connection: AsyncConnection) -> None:
+        await connection.execute(sa.text("""
+            INSERT INTO cloudflare_installations (
+                id, account_id, worker_ingress_origin, consent_version, consent_actor, consent_at,
+                policy, desired_revision, desired_state, admitted_revision
+            ) VALUES (:id, :account, 'https://worker.example.test', 'test', 'test', now(),
+                      '{}', 1, 'enabled', 1)
+        """), {"id": installation_id, "account": "a" * 32})
+
+    asyncio.run(_run_in_database(migration_database, seed))
+    _upgrade(migration_database, "head")
+    monkeypatch.setattr(lifecycle_job, "installed_workers_release_digest", lambda: release)
+    monkeypatch.setattr(lifecycle_job, "installed_workers_release_order", lambda: WorkersReleaseOrder("1.0.0", 1))
+
+    async def verify(connection: AsyncConnection) -> None:
+        async with AsyncSession(bind=connection) as db:
+            installation = await db.get(CloudflareInstallation, installation_id)
+            assert installation is not None
+            assert installation.deployed_revision == 1
+            assert installation.admitted_revision is None
+            assert installation.desired_revision == 2
+            assert installation.drain_required
+            assert installation.workers_release_sequence is None
+
+            now = datetime.now(UTC)
+            await lifecycle_job.schedule_cloudflare_reconcile(db, now=now)
+            await lifecycle_job.schedule_cloudflare_reconcile(db, now=now)
+            job = (await db.scalars(sa.select(PlatformJob).where(
+                PlatformJob.job_type == lifecycle_job.RECONCILE_JOB,
+                PlatformJob.resource_id == str(installation_id),
+            ))).one()
+            assert job.requested_by_user_id == "system"
+            assert job.payload == {
+                "installation_id": str(installation_id), "revision": 3, "operation": "upgrade",
+                "reset_release_fence": False,
+            }
+            assert installation.upgrade_release == release and installation.admitted_revision is None
+
+    asyncio.run(_run_in_database(migration_database, verify))
 
 
 def test_populated_cloudflare_downgrade_from_head_rolls_back_every_revision(migration_database: str) -> None:

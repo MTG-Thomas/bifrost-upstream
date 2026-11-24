@@ -5601,49 +5601,6 @@ async def test_container_reservation_serializes_shared_capacity(isolated_capacit
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("release", ["fixture-release", "d" * 64])
-async def test_upgrade_migration_pauses_prior_pilot_and_scheduler_pins_the_new_release(
-    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, release,
-) -> None:
-    installation.desired_state = "enabled"
-    installation.admitted_revision = 1
-    await db_session.flush()
-
-    scripts = ScriptDirectory(str(Path(__file__).resolve().parents[3] / "alembic"))
-    migration = scripts.get_revision("20261121_cf_workers_upgrade")
-    assert migration is not None
-
-    def migrate(connection: Connection) -> None:
-        # The seed transaction defers credential FKs. A release migration
-        # runs after those triggers have settled in the prior transaction.
-        connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
-        with Operations.context(MigrationContext.configure(connection)):
-            migration.module.downgrade()
-            migration.module.upgrade()
-
-    connection = await db_session.connection()
-    await connection.run_sync(migrate)
-    await db_session.refresh(installation)
-    assert installation.deployed_revision == 1
-    assert installation.admitted_revision is None
-    assert installation.desired_revision == 2
-    assert installation.drain_required
-    assert installation.workers_release_sequence is None
-
-    monkeypatch.setattr(lifecycle_job, "installed_workers_release_digest", lambda: release)
-    now = datetime.now(UTC)
-    await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now)
-    await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now)
-    job = (await db_session.scalars(select(PlatformJob).where(
-        PlatformJob.job_type == lifecycle_job.RECONCILE_JOB,
-        PlatformJob.resource_id == str(installation.id),
-    ))).one()
-    assert job.requested_by_user_id == "system"
-    assert job.payload == {"installation_id": str(installation.id), "revision": 3, "operation": "upgrade", "reset_release_fence": False}
-    assert installation.upgrade_release == release and installation.admitted_revision is None
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(("status", "code", "recoverable"), [
     ("requires_action", "CF_DRAIN_TIMEOUT", True),
     ("requires_action", "CF_CLEANUP_PENDING", True),
