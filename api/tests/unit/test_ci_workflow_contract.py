@@ -57,8 +57,8 @@ def test_container_release_signing_and_verification_use_the_same_bundle_contract
     install, = [step for step in steps if step.get("name") == "Install cosign for the Linux release descriptor"]
     assert install["with"]["cosign-release"] == cloudflare_containers_release._COSIGN_VERSION
     assert any('install -Dm0755 "$(command -v cosign)"' in step.get("run", "") for step in steps)
-    assert any("bash deploy/capacity/cloudflare/build-containers.sh" in step.get("run", "") for step in steps)
-    signing = (REPO_ROOT / "deploy/capacity/cloudflare/build-containers.sh").read_text()
+    build, = [step for step in steps if "bash deploy/capacity/cloudflare/build-containers.sh" in step.get("run", "")]
+    signing = _publication_script_sources([build])["deploy/capacity/cloudflare/build-containers.sh"]
     assert re.search(r'^cosign sign-blob --yes --new-bundle-format --bundle "\$output/manifest\.sigstore\.json"', signing, re.M)
     verifier = inspect.getsource(cloudflare_containers_release.verify_containers_release)
     assert '"verify-blob", "--new-bundle-format", "--offline"' in verifier
