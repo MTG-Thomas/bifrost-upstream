@@ -1100,6 +1100,7 @@ class HostedContainers(ContainerRehearsal):
         self.live_target = Decimal(self.cfg["live_target_usd"])
         self.live_cap = Decimal(self.cfg["live_abort_usd"])
         self.settled_cap = Decimal(self.cfg["settled_cap_usd"])
+        self.high_water = Decimal(0)
         assert 0 < self.settled_cap <= self.live_target < self.live_cap
 
     def verify_isolation(self, *, successor=None):
@@ -1145,16 +1146,19 @@ class HostedContainers(ContainerRehearsal):
         status = self.send("/api/capacity/cloudflare", method="GET")
         deployment = status["installation"]
         spend = deployment["spend"]
-        assert spend["state"] == "ready" and spend["estimated_usd"] is not None
-        estimate = Decimal(spend["estimated_usd"])
+        assert spend["state"] == "ready" and spend["settled_usd"] is not None and spend["reserved_usd"] is not None
+        paid, reserved = Decimal(spend["settled_usd"]), Decimal(spend["reserved_usd"])
+        estimate = paid + reserved
+        self.high_water = max(self.high_water, estimate)
         if (
-            estimate >= self.live_cap or (settled and estimate >= self.settled_cap)
+            estimate >= self.live_cap or (settled and paid >= self.settled_cap)
             or (starting and estimate >= self.live_target) or time.monotonic() >= self.deadline
         ):
             raise RuntimeError("Trial spend or time stop")
         lane = next((entry for entry in status["lanes"] if entry["lane"] == "containers"), None)
         evidence("hosted-shaped-scheduler", {
             "checkpoint": stage, "lane": lane, "estimated_usd": str(estimate), "canaries": self.canaries(),
+            "settled_usd": str(paid), "reserved_usd": str(reserved), "high_water_usd": str(self.high_water),
         })
 
     def enable(self):
@@ -1167,8 +1171,13 @@ class HostedContainers(ContainerRehearsal):
 
     def run(self):
         root = f"/client/v4/accounts/{self.account}/containers/applications"
+        namespace_path = f"/client/v4/accounts/{self.account}/workers/durable_objects/namespaces"
+
+        def owned_namespaces(scripts):
+            return {row["id"] for row in self.provider(namespace_path) if row.get("script") in scripts}
+
         app_path = None
-        assert not self.scripts() and self.provider(root) == [] and self.canaries() == 0
+        assert not self.scripts() and self.provider(root) == [] and self.provider(namespace_path) == [] and self.canaries() == 0
         self.review_activation("existing", containers=True)
         try:
             self.enable()
@@ -1180,6 +1189,8 @@ class HostedContainers(ContainerRehearsal):
             app_path = f"{root}/{app['id']}"
             scripts = self.scripts()
             assert len(scripts) == 4
+            namespaces = owned_namespaces(scripts)
+            assert len(namespaces) == 6
             approval = self.approve_container_workflow(str(UUID(installation["installation_id"])))
             self.primary_hold()
             self.observe_scheduler("before-workflow", starting=True)
@@ -1206,10 +1217,12 @@ class HostedContainers(ContainerRehearsal):
             self.observe_scheduler("idle-stop", settled=True)
             self.completed(self.job("scale-in"), "scaled_in")
             assert not self.install()["admission_open"] and self.scripts() == scripts
+            assert owned_namespaces(scripts) == namespaces
             assert self.provider(app_path)["health"]["instances"] == {"active": 0, "starting": 0}
             self.observe_scheduler("scale-in", settled=True)
             self.enable()
             assert self.install()["desired_revision"] == revision and self.scripts() == scripts
+            assert owned_namespaces(scripts) == namespaces
             assert self.provider(app_path)["id"] == app["id"] and self.canaries() == 2
             self.observe_scheduler("scale-out", settled=True)
         finally:
@@ -1218,7 +1231,7 @@ class HostedContainers(ContainerRehearsal):
             finally:
                 if self.install() is not None:
                     self.disconnect()
-        assert self.provider(root) == [] and not self.scripts()
+        assert self.provider(root) == [] and self.provider(namespace_path) == [] and not self.scripts()
         if app_path is not None:
             self.provider(app_path, status=404)
 

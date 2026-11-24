@@ -40,9 +40,11 @@ Obtain explicit owner approval for each outward-facing effect before starting.
 
 The suggested shared limit is **$75/month**, including a **100 instance-hour**
 Container budget. Two `standard-1` instances may run concurrently.
-At the pinned compute rate, 100 hours costs about **$7.40** before fixed
-control and outbound holds. Use the signed release and the selected policy
-to calculate the Container floor and add the Workers fleet floor.
+With the trial's signed rates, the modeled monthly Container floor is
+**$12.27**, including $7.40 in compute and the fixed control and outbound
+holds. The modeled Workers floor is **$32.13**, for a **$44.40** combined
+minimum. Confirm both figures in activation preflight for the exact signed
+release and policy.
 The existing Workers Paid subscription is **$5/month**.
 Compare provider instance-seconds, outbound bytes, requests and CPU against
 the Bifrost ledger. Included allowances can make the incremental invoice $0.
