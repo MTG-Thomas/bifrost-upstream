@@ -1,7 +1,7 @@
 # Hosted Containers Trial Plan
 
-This trial requires owner approval for one disposable Workers Paid account
-and one Bifrost installation using Existing HTTPS. The sequence passed
+This trial uses the same Cloudflare account and zone as the earlier Workers
+trials and a dedicated Bifrost installation using Existing HTTPS. The sequence passed
 the [CT128 hosted-shaped rehearsal](../e2e/README.md) using
 `combined-rehearsal.py --containers-hosted-shape` with an empty provider stub,
 pinned Miniflare and the paired Docker guest. The hosted trial uses the
@@ -20,8 +20,10 @@ provider reads target the public Cloudflare API.
 
 ## Account and token
 
-Use the disposable account with Workers Paid and active Workers and Containers
-entitlements. Create a dedicated, expiring management token scoped to that
+Confirm Workers Paid and active Workers and Containers entitlements on the
+previously used account. The runner requires empty Workers script, Durable Object
+namespace, and Containers application inventories. Stop if any are occupied.
+Create a dedicated, expiring management token scoped to that
 account with **Account Settings Read**, **Workers Scripts Write**, and
 **Workers Containers Write**. Add **Account Analytics Read** only if the trial
 will use the advisory Workers usage comparison. Use the billing dashboard
@@ -30,7 +32,12 @@ requires no DNS or Tunnel grants. [Permission catalog](https://developers.cloudf
 
 ## Owner approvals
 
-Obtain explicit owner approval for each outward-facing effect before starting.
+The owner approved in principle a tag push and release CI on the `personal`
+fork (`MTG-Thomas/bifrost-upstream`), publication of a GitHub Release and a
+public GHCR Linux image, and keyless cosign signing with permanent Rekor
+records. Return once with the exact release commit, tag, destinations,
+artifacts, policy and thresholds for final approval before any push.
+See [Release Readiness](RELEASE-PREP.md).
 
 1. Push the exact release tag to the fork and run its release CI.
 2. Publish the GitHub Release with `cloudflare-containers-manifest.json`,
@@ -42,10 +49,8 @@ Obtain explicit owner approval for each outward-facing effect before starting.
 5. Approve the exact policy and its combined monthly fleet floor from preflight.
 6. Approve the calculated live target, live abort threshold, and settled cap.
    Record the signed rates and cleanup margin used for those calculations.
-7. Choose whether to retain the exact fork tag, public release assets and
-   digest-pinned GHCR image for reproducibility, or withdraw the trial
-   publication after evidence is saved. Record the decision and the owner
-   responsible for any withdrawal. Rekor remains public in either case.
+7. Retain the fork release, assets and digest-pinned GHCR image after the trial,
+   as directed by the owner.
 
 ## Manual read-only checklist
 
@@ -161,8 +166,8 @@ application, registry tag, four scripts and six namespaces, a retired
 installation, and no live incarnations, held seats, unresolved effects or
 retained credentials. Verify removal of any trial-owned token, ingress
 resources and local stack using the [Workers teardown procedure](PHASE1-PILOT.md).
-Release publication is tracked separately from Cloudflare teardown. The
-public Rekor entry remains permanently even if the tag, assets and image are removed.
+Retain the release, public assets and GHCR image after Cloudflare teardown.
+The public Rekor records remain permanent.
 Keep sanitized timestamps, digests, usage and absence receipts. If a read
 is inconclusive, preserve the ownership record and leave the trial open
 for cleanup verification.
