@@ -1,7 +1,8 @@
 # Containers Trial Release Readiness
 
-**Prepared locally, pending owner approval and fork settings checks.**
-The exact release candidate is `edaf6f654bfc3b8b9bd0ea40e5fd3674d06df18a`
+**Prepared locally. Publication is held for the frozen-target release review,
+owner approval, and fork settings checks.**
+The exact local candidate is `53084fdc3e2a779c2f89793337a2ce6b6bfc6f5f`
 on local branch `trial/cloudflare-containers-20261124`, based on the verified
 spike and its read-only release preflight. The destination is the same branch
 name on `personal` (`MTG-Thomas/bifrost-upstream`). Keep the fork's `main`
@@ -29,8 +30,9 @@ does not change what the tag builds.
   `ghcr.io/mtg-thomas/bifrost-api-cloudflare-linux`. Verify these paths cover
   digest pushes, cache writes, signatures, attestations and promotion.
   The guard rejects literal upstream destinations on tags and missing trial
-  variables on fork tags, while canonical upstream tags retain optional
-  packaging. The workflow uses the fork's `GITHUB_TOKEN`.
+  variables on fork tags. The ten-digit date-based RC namespace is reserved
+  for fork trials and rejected on upstream. Ordinary upstream tags retain
+  optional packaging. The workflow uses the fork's `GITHUB_TOKEN`.
 - Proposed tag **`v2.0.0-rc.2026112401`** was absent on both
   `personal` and upstream `origin` in exact `git ls-remote` tag checks.
   Upstream already owns `v2.0.0`. Recheck the exact trial ref on both remotes
@@ -42,20 +44,31 @@ does not change what the tag builds.
   `1.4.3`, and the API reconstructs the exact tag from the packaged Workers
   version. The CLI tarball uses PEP 440 metadata `2.0.0rc2026112401`. The signer identity would be
   `https://github.com/MTG-Thomas/bifrost-upstream/.github/workflows/ci.yml@refs/tags/v2.0.0-rc.2026112401`.
-- The three plugin manifests match the prerelease version. The factual trial
-  body at `product-updates/release-bodies/v2.0.0-rc.2026112401.md` awaits
-  exact-text approval. The GitHub Release body is the trial note. It leaves
-  the existing in-app Product Updates inventory untouched.
+- The three plugin manifests match the prerelease version. The trial body at
+  `product-updates/release-bodies/v2.0.0-rc.2026112401.md` is a draft. The
+  frozen inventory and human approvals in `product-updates/release-review.json`
+  cover older source. The documented generator requires both for the exact
+  trial target. Update coverage and obtain the actual content, security and
+  compatibility approvals before generating the formal body. The draft's
+  proposed findings cover the trial changes since the verified Containers
+  spike. That diff changes no dependency locks or application contracts.
+  Review the generator's canonical Docker and signing examples for fork
+  destinations before approving the rendered body. The in-app Product
+  Updates inventory remains unchanged in this local round.
 
 ## Publication commands for owner review
 
-After final owner approval, recheck both remotes for the exact tag and the
-fork for the destination branch. Create the local tag at the candidate SHA
-above. The branch push precedes the tag push. These commands remain unrun.
+These commands pin the current local candidate for review. If the approved
+body or release inputs change its SHA, refresh this pin before approval and
+publication. Recheck both remotes for the exact tag and the fork for the
+destination branch. Use only the explicit `personal` refspecs below.
+Never use `git push --tags` or `git push --follow-tags`. The commands remain unrun.
 
 ```sh
-git push personal edaf6f654bfc3b8b9bd0ea40e5fd3674d06df18a:refs/heads/trial/cloudflare-containers-20261124
-git push personal refs/tags/v2.0.0-rc.2026112401:refs/tags/v2.0.0-rc.2026112401
+git tag -a v2.0.0-rc.2026112401 53084fdc3e2a779c2f89793337a2ce6b6bfc6f5f -m "Cloudflare Containers Trial"
+test "$(git rev-parse 'v2.0.0-rc.2026112401^{commit}')" = 53084fdc3e2a779c2f89793337a2ce6b6bfc6f5f || exit 1
+git -c push.followTags=false push personal 53084fdc3e2a779c2f89793337a2ce6b6bfc6f5f:refs/heads/trial/cloudflare-containers-20261124
+git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112401:refs/tags/v2.0.0-rc.2026112401
 ```
 
 The tag runs the full CI test suite on the fork's GitHub Actions before
