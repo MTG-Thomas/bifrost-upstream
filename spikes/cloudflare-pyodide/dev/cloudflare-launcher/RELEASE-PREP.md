@@ -1,13 +1,12 @@
 # Containers Trial Release Readiness
 
-**Publication is blocked.** The locally verified source is
-`t3/cloudflare-pyodide-workflow-spike` at
-`84ea4bc9cabae4477b50d0efe18183fa1f72c7eb`. Use it as the base for a separate
-release-preparation commit on the proposed fork branch
-`trial/cloudflare-containers-20261124` on `personal`
-(`MTG-Thomas/bifrost-upstream`). The exact publishable SHA does not exist yet.
-Keep the fork's `main` unchanged. This document records the read-only
-preflight and proposed inputs for a single final owner approval.
+**Prepared locally, pending owner approval and fork settings checks.**
+The exact release candidate is `b226b0e6be91839355a86ea2e61b266e7ef65246`
+on local branch `trial/cloudflare-containers-20261124`, based on the verified
+spike and its read-only release preflight. The destination is the same branch
+name on `personal` (`MTG-Thomas/bifrost-upstream`). Keep the fork's `main`
+unchanged. The SHA is pinned below so the later local documentation receipt
+does not change what the tag builds.
 
 ## Fork, workflow and tag
 
@@ -18,19 +17,20 @@ preflight and proposed inputs for a single final owner approval.
   local candidate at `4ebd217b747ed4158cc57fd05fef469771367dd4`.
 - Comparing `.github/workflows/ci.yml` at fork main and the spike shows the
   spike adds qualified Workers packaging, signed Linux assets, and release
-  staging followed by image promotion. **Both currently hard-code
+  staging followed by image promotion. **Both comparisons before the routing fix hard-code
   `ghcr.io/gobifrost/bifrost-api` and `ghcr.io/gobifrost/bifrost-client`.**
   On the spike the Linux image would also target
   `ghcr.io/gobifrost/bifrost-api-cloudflare-linux`. The tagged commit's
   workflow is what matters for this release.
-- Before approval, prepare and test a release commit that derives package
-  paths from the lowercased repository owner and fails before any registry
-  write on a mismatch. The approved fork targets would be
+- The release candidate derives package paths from the lowercased repository
+  owner, checks it against the repository name, and gates all registry writers
+  on that check. Fork destinations are
   `ghcr.io/mtg-thomas/bifrost-api`, `ghcr.io/mtg-thomas/bifrost-client`, and
   `ghcr.io/mtg-thomas/bifrost-api-cloudflare-linux`. Verify these paths cover
   digest pushes, cache writes, signatures, attestations and promotion.
-  Give the workflow only the fork's `GITHUB_TOKEN`. Make the trial tag fail
-  before any publication when any required trial packaging variable is absent.
+  The guard rejects literal upstream destinations on tags and missing trial
+  variables on fork tags, while canonical upstream tags retain optional
+  packaging. The workflow uses the fork's `GITHUB_TOKEN`.
 - Proposed tag **`v2.0.0-rc.2026112401`** was absent on both
   `personal` and upstream `origin` in exact `git ls-remote` tag checks.
   Upstream already owns `v2.0.0`. Recheck the exact trial ref on both remotes
@@ -42,11 +42,24 @@ preflight and proposed inputs for a single final owner approval.
   `1.4.3`, and the API reconstructs the exact tag from the packaged Workers
   version. The signer identity would be
   `https://github.com/MTG-Thomas/bifrost-upstream/.github/workflows/ci.yml@refs/tags/v2.0.0-rc.2026112401`.
-- The three plugin manifests currently say `2.0.0`. Update them to the exact
-  prerelease version and prepare the approved body at
-  `product-updates/release-bodies/v2.0.0-rc.2026112401.md`.
-  The tag gates require both. The release summary and approved body should
-  travel with the final candidate SHA to the owner.
+- The three plugin manifests match the prerelease version. The factual trial
+  body at `product-updates/release-bodies/v2.0.0-rc.2026112401.md` awaits
+  exact-text approval. The GitHub Release body is the trial note. It leaves
+  the existing in-app Product Updates inventory untouched.
+
+## Publication commands for owner review
+
+After final owner approval, recheck both remotes for the exact tag and the
+fork for the destination branch. Create the local tag at the candidate SHA
+above. The branch push precedes the tag push. These commands remain unrun.
+
+```sh
+git push personal b226b0e6be91839355a86ea2e61b266e7ef65246:refs/heads/trial/cloudflare-containers-20261124
+git push personal refs/tags/v2.0.0-rc.2026112401:refs/tags/v2.0.0-rc.2026112401
+```
+
+The tag runs the full CI test suite on the fork's GitHub Actions before
+publication. Release outputs and signing are described below.
 
 ## Fork settings to verify
 
