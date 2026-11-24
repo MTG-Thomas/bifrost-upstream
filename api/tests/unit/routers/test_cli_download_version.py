@@ -18,12 +18,12 @@ def test_to_pep440_preserves_dirty_dev_release_versions() -> None:
 
 def test_build_cli_artifact_preserves_release_candidate_version(tmp_path: Path) -> None:
     source_dir = Path(__file__).resolve().parents[3] / "bifrost"
-    artifact = build_cli_artifact(source_dir, tmp_path, "2.0.0-rc.2026112401")
-    assert artifact.name == "bifrost-cli-2.0.0rc2026112401.tar.gz"
+    artifact = build_cli_artifact(source_dir, tmp_path, "2.0.0-rc.2026112402")
+    assert artifact.name == "bifrost-cli-2.0.0rc2026112402.tar.gz"
     with tarfile.open(artifact, mode="r:gz") as archive:
         pyproject = archive.extractfile("pyproject.toml")
         assert pyproject is not None
-        assert tomllib.loads(pyproject.read().decode())["project"]["version"] == "2.0.0rc2026112401"
+        assert tomllib.loads(pyproject.read().decode())["project"]["version"] == "2.0.0rc2026112402"
 
 
 def test_build_cli_artifact_stamps_and_filters_package(tmp_path: Path) -> None:

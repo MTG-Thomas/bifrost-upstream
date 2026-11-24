@@ -448,13 +448,13 @@ _TRIAL_VARS = ("QUALIFIED_WORKERS_RUNTIME_URL", "QUALIFIED_WORKERS_METER_BOUNDS"
 @pytest.mark.parametrize(
     ("owner", "repository", "ref", "missing", "hardcoded", "error"),
     [
-        ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112401", None, False, None),
+        ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112402", None, False, None),
         ("gobifrost", "gobifrost/bifrost", "refs/tags/v2.0.0", "all", False, None),
-        ("gobifrost", "gobifrost/bifrost", "refs/tags/v2.0.0-rc.2026112401", None, False, "require a fork owner"),
-        ("MTG-Thomas", "gobifrost/bifrost", "refs/tags/v2.0.0-rc.2026112401", None, False, "mismatched"),
-        ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112401", None, True, "Hard-coded"),
+        ("gobifrost", "gobifrost/bifrost", "refs/tags/v2.0.0-rc.2026112402", None, False, "require a fork owner"),
+        ("MTG-Thomas", "gobifrost/bifrost", "refs/tags/v2.0.0-rc.2026112402", None, False, "mismatched"),
+        ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112402", None, True, "Hard-coded"),
         *[
-            ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112401",
+            ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112402",
              variable, False, f"Missing required release variable: {variable}")
             for variable in _TRIAL_VARS
         ],
