@@ -286,13 +286,13 @@ async def _lock_container_capacity(
         return None
     now = await db.scalar(select(func.clock_timestamp()))
     assert now is not None
+    if await db.scalar(overdue_container_reservations(installation.account_id, now).limit(1)) is not None:
+        return ContainerAdmissionRefused()
     if canary:
         start, end = usage_period(now)
         used = await db.scalar(container_canaries_used(installation.account_id, start, end))
         if (used or 0) >= containers.monthly_qualification_canaries:
             return ContainerAdmissionRefused(CONTAINERS_QUALIFICATION_DEFERRED, end)
-    if await db.scalar(overdue_container_reservations(installation.account_id, now).limit(1)) is not None:
-        return ContainerAdmissionRefused()
     if not qualification:
         used = await db.scalar(select(container_account_usage(now, instance_seconds=True, account_id=installation.account_id)))
         if used is None:

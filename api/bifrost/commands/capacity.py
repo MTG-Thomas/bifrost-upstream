@@ -167,10 +167,11 @@ async def activate(
         click.echo(
             f"Containers: {containers['instance_type']}, {containers['installation_instances']} maximum, "
             f"{containers['tenant_instances']} per tenant, {containers['workflow_slots']} workflow per instance, "
-            f"{containers['idle_seconds']} s idle stop, {containers['monthly_instance_hours']} instance-hours/month, "
-            f"{containers['monthly_qualification_canaries']} qualification canaries/month.",
+            f"{containers['idle_seconds']} s idle stop, {containers['monthly_instance_hours']} instance-hours/month.",
             err=True,
         )
+        if (canaries := containers.get("monthly_qualification_canaries")) is not None:
+            click.echo(f"Containers qualification allowance: {canaries} canaries/month.", err=True)
     click.echo(f"Account: {account} ({plan['account_id']})", err=True)
     if plan["zone_id"]:
         click.echo(f"DNS Zone: {plan['zone_name']} ({plan['zone_id']})", err=True)

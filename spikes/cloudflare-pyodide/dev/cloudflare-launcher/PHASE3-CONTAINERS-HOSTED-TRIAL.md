@@ -94,8 +94,10 @@ before Disconnect. Those estimates used the local signed-release fixture rates.
 - Hosted DNS resolution, API reachability on the probe ports and provider
   raw-TCP denial remain unqualified. If any witness fails, require admission
   to stay closed, skip steps 3–5 and go straight to Disconnect.
-- The suggested monthly allowance is 30 Container canaries, about $0.15 at
-  pilot rates. Confirm at least two remain before the trial.
+- The suggested monthly allowance is 30 Container canaries per Cloudflare
+  account in this Bifrost database, about $0.15 at pilot rates. Other
+  Bifrost databases have separate allowances. Confirm at least two remain
+  before the trial.
 - Treat `CF_CONTAINERS_CLEANUP_PENDING` and
   `CF_CONTAINERS_QUALIFICATION_BACKOFF` as stop conditions. Neither permits a
   third canary. Record Capacity lane state, the original dispatch/claim fence,

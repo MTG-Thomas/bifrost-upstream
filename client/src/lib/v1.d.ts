@@ -16731,7 +16731,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "approved" | "pending_review" | "revision_changed" | "ineligible" | "temporarily_unavailable";
+            status: "approved" | "pending_review" | "revision_changed" | "ineligible" | "temporarily_unavailable" | "waiting_for_container_qualification";
             /** Has Proposal */
             has_proposal: boolean;
             /**
@@ -16810,7 +16810,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "approved" | "pending_review" | "revision_changed" | "ineligible" | "temporarily_unavailable";
+            status: "approved" | "pending_review" | "revision_changed" | "ineligible" | "temporarily_unavailable" | "waiting_for_container_qualification";
             /** Can Manage */
             can_manage: boolean;
             /** Current Revision */

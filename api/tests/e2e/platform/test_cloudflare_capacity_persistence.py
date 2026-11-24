@@ -1297,7 +1297,7 @@ async def test_container_application_effect_survives_provisioning_failures(
 @pytest.mark.parametrize("canary_result", [
     "missing", "failed", "ready", "retire-timeout", "refresh-failure",
     "pending-wrong-digest", "pending-expired", "pending-near-expiry", "pending-replaced",
-    "hours-exhausted", "canaries-exhausted",
+    "hours-exhausted", "canaries-exhausted", "deferred-failed", "deferred-conflict", "deferred-release-unavailable",
 ])
 async def test_cold_enable_prepares_image_and_deploys_container_application(
     db_session, installation, monkeypatch, tmp_path, canary_result,
@@ -1308,8 +1308,8 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     from src.worker.remote.protocol import nonce_digest
 
     canary_started = canary_result != "missing"
-    canary_ready = canary_result not in ("missing", "failed")
-    deferred = canary_result == "canaries-exhausted"
+    canary_ready = canary_result not in ("missing", "failed", "deferred-failed")
+    deferred = canary_result == "canaries-exhausted" or canary_result.startswith("deferred-")
     revision = 2 if deferred or canary_result == "hours-exhausted" else 1
     container, image, config = make_release()
     manifest = container.manifest
@@ -1607,6 +1607,17 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             lane = next(item for item in capacity.lanes if item.lane == "containers")
             reason = next(item for item in lane.reasons if item.code == "container_qualification_deferred")
             assert reason.next_eligible_at == usage_period(datetime.now(UTC))[1]
+            if canary_result == "deferred-release-unavailable":
+                monkeypatch.setattr(enable_job, "load_containers_release", AsyncMock(
+                    side_effect=cloudflare_containers_release.ContainersReleaseUnavailable("Release unavailable")
+                ))
+                with pytest.raises(PlatformJobRequiresAction) as failure:
+                    await enable_job._settle_enable(context, payload, http, workers, refresh_container_egress=True)
+                assert failure.value.result["code"] == "CF_CONTAINERS_RELEASE_UNAVAILABLE"
+                await db_session.refresh(installation)
+                assert installation.admitted_revision is None
+                assert "container_qualification_deferred_revision" not in installation.deployment_evidence
+                return
 
             async def enable_reconcile(ctx, body, **kwargs):
                 return await enable_job._settle_enable(ctx, body, http, workers, **kwargs)
@@ -1622,6 +1633,28 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             prior_pin.container_reserved_at -= timedelta(seconds=2)
             prior_pin.container_stopped_at -= timedelta(seconds=2)
             await db_session.flush()
+            if canary_result in ("deferred-failed", "deferred-conflict"):
+                if canary_result == "deferred-conflict":
+                    stop = enable_job.reconcile_container_stop
+
+                    async def conflicting_origin(*args):
+                        settled = await stop(*args)
+                        if settled:
+                            await db_session.refresh(installation)
+                            installation.worker_ingress_origin = "https://changed.example.test"
+                            await db_session.flush()
+                        return settled
+
+                    monkeypatch.setattr(enable_job, "reconcile_container_stop", conflicting_origin)
+                with pytest.raises(PlatformJobRequiresAction) as failure:
+                    await lifecycle_job._reconcile(context, reconcile)
+                assert failure.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
+                assert events == ["copy", "prepare", "launcher", "application", "canary", "stop", "retire"]
+                await db_session.refresh(installation)
+                assert installation.admitted_revision is installation.containers_ready_revision is None
+                assert installation.containers_release_digest is None
+                assert "container_qualification_deferred_revision" not in installation.deployment_evidence
+                return
             with monkeypatch.context() as cleanup:
                 cleanup.setattr(enable_job, "reconcile_container_stop", AsyncMock(side_effect=PlatformJobFailure(
                     "CF_CONTAINERS_CLEANUP_PENDING", "Fixture timeout", retryable=True,
@@ -4333,6 +4366,7 @@ async def create_installation(
     "cross-org", "wrong-approval-owner", "tenant-owned-global-approval",
     "stale-egress", "different-provider-version", "overdue-account", "overdue-other-account",
     "cold-canary", "stopped-unconfirmed", "scheduler-refusal", "scheduler-claim", "scheduler-grace-expired",
+    "changed-timeout", "changed-memory", "refresh-allowance",
 ])
 async def test_container_reservation_rejects_unreviewed_source_and_scope(
     db_session, installation, reason, monkeypatch,
@@ -4442,8 +4476,54 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         assert worker is not None and worker.capacity_resource_uid is not None
         assert UUID(hex=worker.capacity_resource_uid).hex == worker.capacity_resource_uid
         await nested.rollback()
+    if reason == "refresh-allowance":
+        installation.containers_policy = {**installation.containers_policy, "monthly_qualification_canaries": 1}
+        job = PlatformJob(
+            id=uuid4(), job_type="capacity.cloudflare_reconcile", title="Container refresh",
+            payload={"revision": 1}, status="running", lease_token=uuid4(), lease_expires_at=now + timedelta(minutes=5),
+            resource_type="cloudflare_installation", resource_id=str(installation.id),
+            requested_by_user_id=str(OPERATOR_ID), requested_by_name="fixture", requested_by_email="fixture@example.test",
+        )
+        db.add(job)
+        await db.flush()
+        args = {key: admission[key] for key in ("installation_id", "controller_id", "release")}
+        booking = {"job_id": job.id, "lease_token": job.lease_token, "refresh_primary": primary}
+        canary = await reserve_container_canary(db, **args, **booking)
+        assert isinstance(canary, CloudflareWorkerReservation)
+        reset = usage_period(now)[1]
+        assert await reserve_container_canary(db, **args, **booking) == ContainerAdmissionRefused(
+            "CF_CONTAINERS_QUALIFICATION_DEFERRED", reset,
+        )
+        # The current revision is qualified, with demand but an expired proof.
+        proof = admission["verified_egress"]
+        installation.deployment_evidence = {"container_egress": {
+            **proof.as_record(), "observed_at": (now - timedelta(hours=2)).isoformat(),
+        }}
+        await db.flush()
+        status = await get_cloudflare_capacity_status(db, _platform_operator())
+        lane = next(lane for lane in status.lanes if lane.lane == "containers")
+        deferred = next(reason for reason in lane.reasons if reason.code == "container_qualification_deferred")
+        assert deferred.next_eligible_at == reset
+        assert status.installation is not None and status.installation.admission_open
+        assert status.installation.containers_remaining_qualification_canaries == 0
+
+        @asynccontextmanager
+        async def transaction():
+            yield db
+
+        reconcile_enable = AsyncMock()
+        monkeypatch.setattr(lifecycle_job, "get_db_context", transaction)
+        monkeypatch.setattr(lifecycle_job, "_settle_reconcile", AsyncMock(return_value={"outcome": "verified"}))
+        monkeypatch.setattr(enable_job, "_enable", reconcile_enable)
+        ctx = PlatformJobContext(job.id, job.lease_token, None, str(OPERATOR_ID), "", "")
+        reconcile = lifecycle_job.CloudflareReconcilePayloadV2(installation_id=installation.id, revision=1)
+        assert await lifecycle_job._reconcile(ctx, reconcile) == {"outcome": "verified"}
+        reconcile_enable.assert_not_awaited()
+        canary.container_envelope = {**(canary.container_envelope or {}), "seconds": 0}
+        await db.flush()
+        assert await reserve_container_canary(db, **args, **booking) == ContainerAdmissionRefused()
+        return
     if reason == "cold-canary":
-        from src.models.orm.platform_jobs import PlatformJob
         from src.services.worker_pool.cloudflare_containers_egress import verify_container_egress
         from src.worker.remote.container_egress import CONTAINER_EGRESS_DENIALS
         from src.worker.remote.protocol import nonce_digest
@@ -4623,6 +4703,9 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         await db.execute(update(FileIndex).where(FileIndex.path == path).values(content_hash="b" * 64))
     elif reason == "missing-pin":
         await db.execute(delete(FileIndex).where(FileIndex.path == path))
+    elif reason in ("changed-timeout", "changed-memory"):
+        fields = {"timeout_seconds": 59} if reason == "changed-timeout" else {"memory_request_mib": 2}
+        await db.execute(update(Workflow).where(Workflow.id == workflow_id).values(**fields))
     elif reason == "cross-org":
         execution.organization_id = other
     elif reason == "stale-egress":
@@ -7895,11 +7978,33 @@ async def test_container_policy_save_checks_the_signed_hours_envelope(db_session
         )
     assert installation.desired_revision == 1
     policy.container_instance_hours = 90
+    policy.container_qualification_canaries = 45
+    installation.desired_state = "enabled"
+    installation.admitted_revision = 1
+    prior_canaries = await db_session.scalar(select(func.count()).select_from(CloudflareWorkerReservation).where(
+        CloudflareWorkerReservation.canary_job_id.is_not(None),
+    ))
     assert await save_cloudflare_policy(
         db_session, installation_id=installation.id, expected_revision=1, policy=policy,
         bounds=bounds, containers_release=release,
-    ) == 2
+    ) == 1
+    assert installation.admitted_revision == 1
     assert installation.containers_policy["monthly_instance_hours"] == 90
+    assert installation.containers_policy["monthly_qualification_canaries"] == 45
+    assert await db_session.scalar(select(func.count()).select_from(CloudflareWorkerReservation).where(
+        CloudflareWorkerReservation.canary_job_id.is_not(None),
+    )) == prior_canaries
+
+
+@pytest.mark.parametrize("field", ["container_instance_hours", "container_qualification_canaries"])
+async def test_workers_only_policy_rejects_container_budgets(db_session, installation, field):
+    zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
+    bounds = WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000, TEST_ORDER)
+    policy = CloudflareCapacityPolicy.model_validate({**installation.policy["limits"], field: 10})
+    with pytest.raises(CloudflarePolicyConflict, match="Opt in to Containers"):
+        await save_cloudflare_policy(
+            db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
+        )
 
 
 @pytest.mark.asyncio
@@ -7976,6 +8081,12 @@ async def test_preflight_and_activation_share_one_enable_job(db_session, monkeyp
                 assert "paid Cloudflare Containers" in plan["consent_text"]
             else:
                 assert floor == Decimal("32.13") and plan["preview"]["containers_policy"] is None
+                invalid = await http.post(f"{base}/preflight", json={
+                    "credential_ref": ref, "worker_ingress_origin": "https://workers.example.test",
+                    "container_qualification_canaries": 10,
+                })
+                assert invalid.status_code == 422
+                assert "container_qualification_canaries" in invalid.json()["details"]["fields"]
             assert await db_session.scalar(select(CloudflareInstallation.id)) is None
             activation_body = {
                 "credential_ref": ref, "preflight_receipt": plan["preflight_receipt"],
@@ -8525,9 +8636,29 @@ async def test_public_linux_approval_binds_reviewed_runtime_and_scope(
         assert (await http.get(path)).status_code == 404
         assert (await http.post(f"{path}/accept", json=body)).status_code == 403
         current_caller = caller
+        policy = installation.containers_policy
+        changes = (
+            {"enabled": False},
+            {"lifetime_seconds": workflow.timeout_seconds + policy["idle_seconds"]},
+            {"ingress_bytes": policy["ingress_bytes"] + 1},
+            {"outbound_bytes": policy["outbound_bytes"] + 1},
+        )
+        for change in changes:
+            installation.containers_policy = {**policy, **change}
+            await db_session.flush()
+            with pytest.raises(AnalysisRejected, match="limits changed during review"):
+                await cloudflare_eligibility.accept_proposal(db_session, reviewed_directly, accepted_by=str(OPERATOR_ID))
+        installation.containers_policy = policy
+        await db_session.flush()
         accepted = await http.post(f"{path}/accept", json=body)
         assert accepted.status_code == 200, accepted.text
         assert accepted.json()["status"] == "approved"
+        await db_session.flush()
+        for change in changes:
+            installation.containers_policy = {**policy, **change}
+            await db_session.flush()
+            assert (await http.get(path)).json()["status"] == "revision_changed"
+        installation.containers_policy = policy
         await db_session.flush()
 
         # A limits-only update rolls the deployment without changing Linux eligibility.
@@ -8542,4 +8673,15 @@ async def test_public_linux_approval_binds_reviewed_runtime_and_scope(
         assert status.installation.workers_fleet_envelope_usd == Decimal("1.25")
         assert status.installation.containers_fleet_envelope_usd == Decimal("2.75")
         assert status.installation.fleet_envelope_usd == Decimal("4.00")
+        installation.containers_ready_revision = None
+        installation.containers_release_digest = None
+        installation.deployment_evidence = {"container_qualification_deferred_revision": installation.admitted_revision}
+        await db_session.flush()
+        assert (await http.get(path)).json()["status"] == "waiting_for_container_qualification"
+        attempted = await http.post(f"{path}/accept", json=body)
+        assert attempted.status_code == 409
+        assert attempted.json()["detail"]["state"]["status"] == "waiting_for_container_qualification"
+        installation.admitted_revision = None
+        await db_session.flush()
+        assert (await http.get(path)).json()["status"] == "revision_changed"
         assert (await http.delete(path)).json()["current_revision"] is None

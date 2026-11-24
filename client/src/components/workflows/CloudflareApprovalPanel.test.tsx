@@ -44,6 +44,16 @@ function open() {
 describe("CloudflareApprovalPanel", () => {
 	beforeEach(() => vi.resetAllMocks());
 
+	it("explains why approval acceptance awaits Containers qualification", async () => {
+		vi.mocked(getCloudflareApproval).mockResolvedValue({
+			...pending, status: "waiting_for_container_qualification",
+		});
+		open();
+		expect(await screen.findByRole("status")).toHaveTextContent("Waiting for Containers Qualification");
+		expect(screen.getByText(/Linux placement and approval acceptance resume/)).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Accept Reviewed Digest" })).not.toBeInTheDocument();
+	});
+
 	it("accepts the reviewed digest, then confirms revocation", async () => {
 		vi.mocked(getCloudflareApproval).mockResolvedValue(pending);
 		vi.mocked(proposeCloudflareApproval).mockResolvedValue({ ...pending, proposal });

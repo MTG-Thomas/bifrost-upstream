@@ -22,6 +22,7 @@ async def configure_cloudflare(
     workers_release = load_workers_release()
     bounds = release_meter_bounds(workers_release)
     installation = await db.get(CloudflareInstallation, body.installation_id)
+    previous_container_policy = installation.containers_policy if installation is not None else None
     containers_release = None
     if installation is not None and installation.containers_policy.get("enabled") is True:
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
@@ -30,7 +31,9 @@ async def configure_cloudflare(
         db, installation_id=body.installation_id, expected_revision=body.expected_revision,
         policy=body.policy, bounds=bounds, containers_release=containers_release,
     )
-    if revision != body.expected_revision:
+    if revision != body.expected_revision or (
+        installation is not None and installation.containers_policy != previous_container_policy
+    ):
         await emit_audit(db, "capacity.cloudflare_policy_updated", resource_type="cloudflare_installation",
                          resource_id=body.installation_id, details={"revision": revision})
     return await get_cloudflare_capacity_status(db, caller)

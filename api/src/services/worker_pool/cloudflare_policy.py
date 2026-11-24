@@ -605,6 +605,10 @@ async def save_cloudflare_policy(
         raise CloudflarePolicyConflict("Edit policy from the matched Cloudflare release.")
     desired_containers = row.containers_policy
     current_containers = row.containers_policy
+    if desired_containers.get("enabled") is not True and (
+        policy.container_instance_hours is not None or policy.container_qualification_canaries is not None
+    ):
+        raise CloudflarePolicyConflict("Opt in to Containers before setting Container budgets.")
     if desired_containers.get("enabled") is True:
         if containers_release is None or containers_release.manifest.workers_release_digest != bounds.release:
             raise CloudflarePolicyConflict("Install the matched signed Cloudflare Containers release to edit policy.")
@@ -635,7 +639,10 @@ async def save_cloudflare_policy(
         current_limits["container_qualification_canaries"] = current_containers["monthly_qualification_canaries"]
         current["limits"] = current_limits
     compared = {key: value for key, value in desired.items() if key != "containers_fleet_envelope_usd"}
-    if current != compared or current_containers != desired_containers:
+    counter_fields = {"container_instance_hours", "container_qualification_canaries"}
+    current_deployment = {**current, "limits": {key: value for key, value in current["limits"].items() if key not in counter_fields}}
+    desired_deployment = {**compared, "limits": {key: value for key, value in compared["limits"].items() if key not in counter_fields}}
+    if current_deployment != desired_deployment:
         floor = workers_release_floor(row)
         if floor is None or bounds.release_order.key > floor.key:
             set_workers_release_floor(row, bounds.release, bounds.release_order)
@@ -644,6 +651,11 @@ async def save_cloudflare_policy(
         row.admitted_revision = None
         row.desired_revision += 1
         row.upgrade_drained_at = None
+        await db.flush()
+        wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+    elif current != compared or current_containers != desired_containers:
+        row.policy = {**row.policy, **desired}
+        row.containers_policy = desired_containers
         await db.flush()
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     elif "containers_fleet_envelope_usd" in desired:

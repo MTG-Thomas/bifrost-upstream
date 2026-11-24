@@ -44,7 +44,11 @@ from src.services.execution.cloudflare_analysis_runner import analyze
 from src.services.execution.cloudflare_hosts import reviewed_https_allowlist
 from src.services.repo_storage import RepoStorage
 from src.services.solutions.storage import SolutionStorage
-from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
+from src.services.worker_pool.cloudflare_containers_policy import (
+    CONTAINERS_QUALIFICATION_DEFERRED,
+    ContainersPolicy,
+    qualification_deferred,
+)
 from src.services.worker_pool.cloudflare_containers_release import (
     ContainersReleaseFetchError,
     ContainersReleaseUnavailable,
@@ -248,9 +252,16 @@ async def propose_approval(
             installation = await db.scalar(select(CloudflareInstallation).where(
                 CloudflareInstallation.retired_at.is_(None),
                 CloudflareInstallation.admitted_revision == CloudflareInstallation.desired_revision,
-                CloudflareInstallation.containers_ready_revision == CloudflareInstallation.desired_revision,
             ))
-            if installation is None or installation.containers_policy.get("enabled") is not True:
+            if installation is not None and qualification_deferred(installation):
+                raise AnalysisRejected(
+                    "Wait for Containers qualification before reviewing or accepting a Linux workflow.",
+                    CONTAINERS_QUALIFICATION_DEFERRED,
+                )
+            if (
+                installation is None or installation.containers_policy.get("enabled") is not True
+                or installation.containers_ready_revision != installation.desired_revision
+            ):
                 raise AnalysisRejected("Enable the Containers lane before reviewing this workflow")
             if https_hosts:
                 raise AnalysisRejected("Container workflows may only use the worker ingress", "CF_TRANSPORT")

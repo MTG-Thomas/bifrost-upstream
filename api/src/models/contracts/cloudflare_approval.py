@@ -147,6 +147,7 @@ class CloudflareApprovalDiagnostic(BaseModel):
 
 CloudflareApprovalStatus = Literal[
     "approved", "pending_review", "revision_changed", "ineligible", "temporarily_unavailable",
+    "waiting_for_container_qualification",
 ]
 
 

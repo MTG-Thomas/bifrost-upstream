@@ -595,7 +595,10 @@ async def overflow_status(
             elif installation.containers_ready_revision != installation.desired_revision:
                 lane_blockers.append(reason("container_readiness_unverified"))
             elif read_verified_egress(installation, now) is None:
-                lane_blockers.append(_container_refresh_reason(installation, now))
+                if installation.admitted_revision == installation.desired_revision and qualification_reset is not None:
+                    lane_blockers.append(reason("container_qualification_deferred", qualification_reset))
+                else:
+                    lane_blockers.append(_container_refresh_reason(installation, now))
             observed_issue = await _container_controller_reason(installation)
             if observed_issue is not None and not any(item.code == observed_issue.code for item in lane_blockers):
                 lane_blockers.append(observed_issue)

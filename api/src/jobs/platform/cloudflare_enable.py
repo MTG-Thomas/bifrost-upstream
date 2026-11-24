@@ -315,6 +315,9 @@ async def _settle_enable(
                 if row is None:
                     return {"outcome": "superseded"}
                 row.admitted_revision = None
+                evidence = dict(row.deployment_evidence or {})
+                evidence.pop(QUALIFICATION_DEFERRED_KEY, None)
+                row.deployment_evidence = evidence
                 wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
             raise PlatformJobRequiresAction("Install the Matched Cloudflare Linux Release", {
                 "code": "CF_CONTAINERS_RELEASE_UNAVAILABLE",

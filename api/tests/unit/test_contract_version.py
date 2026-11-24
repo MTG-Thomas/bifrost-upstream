@@ -482,9 +482,11 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # The same status includes Container readiness, egress, cooldown and receipt reasons.
     # Failed Container egress refresh adds an additive Capacity placement reason.
     # Optional Container opt-in and budget fields preserve older requests.
+    # Optional qualification canary allowance and balance fields are additive.
+    # Approval status can report that the Containers lane is awaiting qualification.
     # Workflow approval accepts an optional runtime and defaults to Workers.
     # The CLI passes through response fields, so MIN_CLI_VERSION is unchanged.
-    "d368c791e84141c41a7aa0dc4f257f889bd2f4f2449163aa9b269bdd33714855"
+    "17fdab7fc4d0840b7f79371d110ef94764dbfc74fa09b2311e0d4fcdc6b86ca6"
 )
 
 

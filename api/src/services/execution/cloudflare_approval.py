@@ -35,7 +35,11 @@ from src.models.contracts.cloudflare_approval import (
 )
 from src.models.orm import CloudflareApproval, Solution, SolutionFileIndex, Workflow
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
-from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
+from src.services.worker_pool.cloudflare_containers_policy import (
+    CONTAINERS_QUALIFICATION_DEFERRED,
+    ContainersPolicy,
+    qualification_deferred,
+)
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import (
     Caller,
@@ -129,9 +133,6 @@ def _state_from_observations(
             if (
                 installation is not None and installation.id == container.installation_id
                 and limits is not None and limits.enabled
-                and installation.admitted_revision is not None
-                and installation.containers_ready_revision == installation.admitted_revision
-                and installation.containers_release_digest == container.release_digest
                 and installation.worker_ingress_origin == container.worker_ingress_origin
                 and installation.consent_version == container.consent_version
                 and (container.path, container.function_name) == (workflow.path, workflow.function_name)
@@ -142,14 +143,21 @@ def _state_from_observations(
                 and (container.ingress_bytes, container.outbound_bytes) == (limits.ingress_bytes, limits.outbound_bytes)
                 and all(pins.get(path) == pin for path, pin in container.source_pins.items())
             ):
-                state.status = "approved"
+                if qualification_deferred(installation):
+                    state.status = "waiting_for_container_qualification"
+                elif (
+                    installation.admitted_revision is not None
+                    and installation.containers_ready_revision == installation.admitted_revision
+                    and installation.containers_release_digest == container.release_digest
+                ):
+                    state.status = "approved"
     if review is not None and review.status != "temporarily_unavailable":
         scope_matches = review.scope == workflow_review_scope(workflow)
         if (
             scope_matches and review.solution == placement and review.current_revision == state.current_revision
             and all(pins.get(path) == pin for path, pin in review.observed_pins.items())
         ):
-            if state.status != "approved":
+            if state.status not in ("approved", "waiting_for_container_qualification"):
                 needs_budget = any(item.rule_id in _BUDGET_RULES for item in review.diagnostics)
                 state.status = "pending_review" if needs_budget else review.status
             if can_manage:
@@ -216,7 +224,6 @@ async def _states(
 
     installation = await db.scalar(select(CloudflareInstallation).where(
         CloudflareInstallation.retired_at.is_(None),
-        CloudflareInstallation.containers_ready_revision == CloudflareInstallation.admitted_revision,
     )) if containers else None
     return [
         _state_from_observations(
@@ -313,6 +320,7 @@ async def list_approvals(db: AsyncSession, user: UserPrincipal) -> CloudflareApp
         ))
     statuses: tuple[CloudflareApprovalStatus, ...] = (
         "approved", "pending_review", "revision_changed", "ineligible", "temporarily_unavailable",
+        "waiting_for_container_qualification",
     )
     counts = Counter(item.status for item in items)
     return CloudflareApprovalList(
@@ -449,11 +457,13 @@ async def review_approval(
         state.diagnostics = [diagnostic]
         if diagnostic.rule_id == _TEMPORARY_RULE:
             state.status = "temporarily_unavailable"
+        elif diagnostic.rule_id == CONTAINERS_QUALIFICATION_DEFERRED:
+            state.status = "waiting_for_container_qualification"
         elif state.status != "approved" and not changed_during_review:
             state.status = "pending_review" if diagnostic.rule_id in _BUDGET_RULES else "ineligible"
         if accepting:
             raise _review_error(state, diagnostic.message)
-        if not changed_during_review and diagnostic.rule_id != _TEMPORARY_RULE:
+        if not changed_during_review and diagnostic.rule_id not in (_TEMPORARY_RULE, CONTAINERS_QUALIFICATION_DEFERRED):
             await _save_review(db, workflow, state, observed_pins)
         return state
 

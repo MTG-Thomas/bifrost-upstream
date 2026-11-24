@@ -81,6 +81,7 @@ def container_canaries_used(account_id, start, end):
 def qualification_deferred(installation: CloudflareInstallation) -> bool:
     return (
         installation.containers_policy.get("enabled") is True
+        and installation.admitted_revision == installation.desired_revision
         and installation.containers_ready_revision != installation.desired_revision
         and (installation.deployment_evidence or {}).get(QUALIFICATION_DEFERRED_KEY) == installation.desired_revision
     )

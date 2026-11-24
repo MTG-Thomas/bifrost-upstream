@@ -352,7 +352,9 @@ reservation that would exceed the hours budget is refused with the reset
 time, and Workers remain eligible under the shared dollar limit. Enable
 qualification canaries record their runtime even when the hours budget is
 spent. The suggested monthly allowance is 30 Container canary reservations
-per account, about $0.15 at the pilot rates. The UTC allowance includes
+per Cloudflare account in each Bifrost database, about $0.15 at the pilot
+rates. Independent Bifrost deployments using the same Cloudflare account
+each track their own allowance. The UTC allowance includes
 routine refresh and reserves a start even if the attempt is later voided.
 Backoff limits how quickly attempts can occur. The allowance bounds their
 monthly count, and the shared dollar limit and seat caps still apply.
@@ -361,6 +363,8 @@ can admit. Reconcile qualifies the deferred lane after capacity returns to
 the allowance and the qualification backoff expires. Routine refresh still
 requires overflow demand and remaining instance-hours. Failed qualification
 and conflicting egress evidence close both lanes.
+Changes to instance-hours and qualification canary counters take effect
+without replacing the deployment or closing Workers admission.
 
 ## Joint drain, replacement and teardown
 
@@ -735,7 +739,9 @@ traffic billing still require hosted measurement. Stop receipts keep
 
 Use the Containers (Linux) option in workflow approval or select
 `runtime=containers` when proposing and accepting through REST, CLI or MCP.
-Acceptance uses the existing platform-level human operator permission.
+Acceptance requires the current Containers revision to have qualified and
+uses the existing platform-level human operator permission. A matching
+existing review shows Waiting for Containers Qualification during deferral.
 A Global Linux approval can authorize runs for every tenant.
 Provider-organization membership grants no such permission.
 

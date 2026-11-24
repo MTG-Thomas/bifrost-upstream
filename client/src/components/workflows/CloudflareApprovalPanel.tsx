@@ -22,6 +22,7 @@ export const approvalStatuses: Record<ApprovalState["status"], string> = {
 	revision_changed: "Revision Changed",
 	ineligible: "Ineligible",
 	temporarily_unavailable: "Temporarily Unavailable",
+	waiting_for_container_qualification: "Waiting for Containers Qualification",
 };
 
 export function CloudflareApprovalPanel({ workflowId, onChange }: {
@@ -78,6 +79,9 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 			<Badge variant="outline" role="status">
 				{accessDenied ? "Unavailable" : statusLabel}
 			</Badge>
+			{state?.status === "waiting_for_container_qualification" && (
+				<p>Linux placement and approval acceptance resume after Containers qualifies. Check Capacity for the allowance and reset time.</p>
+			)}
 			{(error || status.isError) && (
 				<p className="text-sm text-destructive" role="alert">
 					{error || status.error?.message || "Approval status could not be loaded."}
@@ -179,6 +183,8 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 						</details>
 					)}
 					{proposal && state?.can_manage && (
+						state.status !== "waiting_for_container_qualification" || !proposal.container
+					) && (
 						<>
 							{proposal.organization_id === null && (
 								<p>Approving this Global workflow allows it to run on Cloudflare for every tenant.</p>
