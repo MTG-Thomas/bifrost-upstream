@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261121_cf_cleanup_backoff"
 down_revision = "20261120_cf_workflow_slots"
 branch_labels = None
@@ -20,6 +22,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_usage_activity", "cloudflare_worker_reservations")
     op.drop_column("cloudflare_usage_activity", "capacity_cleanup_do_requests")
     op.drop_column("cloudflare_worker_reservations", "cleanup_retry_at")
     op.drop_column("cloudflare_worker_reservations", "cleanup_attempts")

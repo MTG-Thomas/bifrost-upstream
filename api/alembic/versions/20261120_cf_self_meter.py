@@ -4,6 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_self_meter"
 down_revision = "20261120_cf_runtime_canary"
 branch_labels = None
@@ -128,22 +130,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "LOCK TABLE cloudflare_installations, cloudflare_usage_incarnations, cloudflare_usage_activity "
-        "IN ACCESS EXCLUSIVE MODE"
+    refuse_populated_downgrade(
+        "cloudflare_usage_activity", "cloudflare_usage_incarnations",
+        non_null=("cloudflare_installations", "usage_advisory"),
     )
-    op.execute("""
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM cloudflare_usage_incarnations)
-               OR EXISTS (SELECT 1 FROM cloudflare_usage_activity)
-               OR EXISTS (SELECT 1 FROM cloudflare_installations WHERE usage_advisory IS NOT NULL)
-            THEN
-                RAISE EXCEPTION 'Self-metering receipts must survive rollback'
-                    USING ERRCODE = 'object_not_in_prerequisite_state';
-            END IF;
-        END $$;
-    """)
     op.execute("DROP FUNCTION cloudflare_usage_totals(uuid, timestamptz)")
     for trigger, table in (
         ("record_cf_usage_dispatch", "execution_worker_claims"),

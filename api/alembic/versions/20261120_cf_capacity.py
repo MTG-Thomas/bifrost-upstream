@@ -4,6 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_capacity"
 down_revision = "20261119_cf_chat_outbox"
 branch_labels = None
@@ -114,6 +116,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade(
+        "cloudflare_owned_resources", "cloudflare_capacity_scopes",
+        "cloudflare_capacity_credentials", "cloudflare_installations",
+    )
     op.drop_table("cloudflare_owned_resources")
     op.drop_table("cloudflare_capacity_scopes")
     op.drop_table("cloudflare_capacity_credentials")

@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_workflow_slots"
 down_revision = "20261120_cf_residue_rates"
 branch_labels = None
@@ -29,4 +31,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_workflow_slots")
     op.drop_table("cloudflare_workflow_slots")

@@ -141,7 +141,7 @@ async def test_worker_ingress_over_tls(
                     welcome = json.loads(await asyncio.wait_for(ws.recv(), 5))
                 assert welcome["event"] == "welcome"
                 # The real canary mints run credentials through the ingress.
-                # A session user's bearer can expire during a long E2E shard.
+                # A raw session bearer cannot refresh after an authority epoch change.
                 async with committed_world(async_engine) as world:
                     org = await world.organization()
                     user = await world.person(org)

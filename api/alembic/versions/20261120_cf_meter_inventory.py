@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_meter_inventory"
 down_revision = "20261120_cf_meter_control"
 branch_labels = None
@@ -19,6 +21,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_usage_activity")
     for name in ("capacity_cpu_ms", "capacity_requests", "inventory_warm_pings", "inventory_dispatches", "inventory_tenant_seconds"):
         op.drop_column("cloudflare_usage_activity", name)
     op.drop_column("cloudflare_capacity_scopes", "capacity_cpu_ms")

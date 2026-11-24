@@ -9,6 +9,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_launcher_meter"
 down_revision = "20261120_cf_canary_gen"
 branch_labels = None
@@ -49,6 +51,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_usage_incarnations")
     op.execute("""
         CREATE OR REPLACE FUNCTION record_cf_usage_incarnation() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN

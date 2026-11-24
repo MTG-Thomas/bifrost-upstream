@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_settle_receipts"
 down_revision = "20261120_cf_gateway_isolation"
 branch_labels = None
@@ -45,6 +47,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade(
+        "cloudflare_dispatch_meters", "cloudflare_engine_usage_keys", "cloudflare_usage_activity",
+    )
     _dispatch_trigger(settle=False)
     for name in ("released_engine_requests", "released_cpu_us"):
         op.drop_column("cloudflare_usage_activity", name)

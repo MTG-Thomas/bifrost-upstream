@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_usage_receipts"
 down_revision = "20261120_cf_control_root"
 branch_labels = None
@@ -33,14 +35,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("LOCK TABLE cloudflare_capacity_usage IN ACCESS EXCLUSIVE MODE")
-    op.execute("""
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM cloudflare_capacity_usage) THEN
-                RAISE EXCEPTION 'Legacy capacity receipts must survive rollback'
-                    USING ERRCODE = 'object_not_in_prerequisite_state';
-            END IF;
-        END $$;
-    """)
+    refuse_populated_downgrade("cloudflare_capacity_usage")
     op.drop_table("cloudflare_capacity_usage")

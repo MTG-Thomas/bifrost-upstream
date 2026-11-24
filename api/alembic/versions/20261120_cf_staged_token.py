@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_staged_token"
 down_revision = "20261120_cf_self_meter"
 branch_labels = None
@@ -24,4 +26,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_staged_tokens")
     op.drop_table("cloudflare_staged_tokens")

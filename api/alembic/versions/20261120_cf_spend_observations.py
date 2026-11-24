@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_spend_observations"
 down_revision = "20261120_cf_prepare_usage"
 branch_labels = None
@@ -50,6 +52,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade(
+        "cloudflare_storage_residue", "cloudflare_usage_incarnations", "cloudflare_dispatch_meters",
+    )
     op.drop_table("cloudflare_storage_residue")
     op.drop_index("ix_cf_usage_incarnation_deleted", table_name="cloudflare_usage_incarnations")
     _incarnation_trigger(pin_deployment=False)

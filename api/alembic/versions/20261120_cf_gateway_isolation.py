@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_gateway_isolation"
 down_revision = "20261120_cf_qualified_cpu"
 branch_labels = None
@@ -46,6 +48,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_engine_usage_keys", "cloudflare_usage_activity")
     _dispatch_trigger(lifecycle=False)
     op.drop_column("cloudflare_usage_activity", "generation_control_requests")
     op.drop_table("cloudflare_engine_usage_keys")

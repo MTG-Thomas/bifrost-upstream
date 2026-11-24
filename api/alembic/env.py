@@ -14,6 +14,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from shared.migration_policy import include_object
 from src.config import get_settings
 from src.core.database import Base
 
@@ -85,6 +86,7 @@ def run_migrations_offline() -> None:
     context.configure(
         url=url,
         target_metadata=target_metadata,
+        include_object=include_object,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -95,7 +97,11 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection: Connection) -> None:
     """Run migrations using provided connection."""
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_object=include_object,
+    )
     # Record the starting heads before any migration executes. None means
     # a fresh install. A partial rollback across a merge can leave several
     # heads, which is still an existing schema. Read after configure() so

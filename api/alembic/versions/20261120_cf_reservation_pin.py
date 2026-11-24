@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_reservation_pin"
 down_revision = "20261120_cf_resource_tombstone"
 branch_labels = None
@@ -25,4 +27,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_worker_reservations")
     op.drop_table("cloudflare_worker_reservations")

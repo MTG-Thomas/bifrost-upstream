@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_prepare_usage"
 down_revision = "20261120_cf_settle_receipts"
 branch_labels = None
@@ -17,4 +19,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_usage_activity")
     op.drop_column("cloudflare_usage_activity", "qualified_preparations")

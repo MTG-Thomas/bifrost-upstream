@@ -4,6 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
+from shared.migration_policy import refuse_populated_downgrade
+
 revision = "20261120_cf_residue_rates"
 down_revision = "20261120_cf_spend_observations"
 branch_labels = None
@@ -17,4 +19,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    refuse_populated_downgrade("cloudflare_storage_residue")
     op.drop_column("cloudflare_storage_residue", "rate_versions")

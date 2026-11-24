@@ -17,6 +17,8 @@ from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
+from alembic import command
+from alembic.operations.ops import DropTableOp
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from shared.builtin_roles import (
@@ -25,8 +27,11 @@ from shared.builtin_roles import (
     PLATFORM_OPERATOR_ROLE_ID,
     USER_ROLE_ID,
 )
+from shared.migration_policy import NON_ORM_TABLES
 from src.models.orm import Base
 from tests.e2e.platform.test_r2b_roles_migration_rehearsal import (
+    _alembic_config,
+    _temporary_migration_database_url,
     _assert_safe_database_name,
     _create_database,
     _direct_database_url,
@@ -70,14 +75,6 @@ RESIDUE_INDEXES = {
     "ix_solutions_owner_user_id",
 }
 
-# Objects that legitimately exist in the migrated schema without being
-# declared on the ORM metadata. Anything else present in the database but
-# absent from Base.metadata is unexplained schema and fails the test.
-NON_ORM_TABLES = {
-    "alembic_version",  # Alembic's own bookkeeping
-    "schedules",  # workflow schedules, managed outside the ORM
-    "solution_file_jobs",  # Solution file jobs, managed outside the ORM
-}
 NON_ORM_COLUMNS = {
     ("execution_workers", "slots"),  # #1053: retained for older rolling-upgrade readers
     ("scheduler_replicas", "job_slots"),  # #1053: retained for older heartbeat readers/writers
@@ -238,5 +235,20 @@ def test_upgrade_over_builder_residue_removes_it_and_matches_the_orm() -> None:
         orm_table_columns = {c for c in schema["columns"] if c[0] in orm_tables}
         assert orm_table_columns - orm_columns == NON_ORM_COLUMNS
         assert orm_columns - schema["columns"] == set()
+
+        async def add_unexpected_table(connection: AsyncConnection) -> None:
+            await connection.execute(sa.text("CREATE TABLE unexpected_autogenerate_table (id integer)"))
+
+        asyncio.run(_run_in_database(database_url, add_unexpected_table))
+        drops = set()
+
+        def capture_drops(context, revision, directives) -> None:
+            for migration in directives:
+                drops.update(op.table_name for op in migration.upgrade_ops.ops if isinstance(op, DropTableOp))
+            directives.clear()
+
+        with _temporary_migration_database_url(database_url):
+            command.revision(_alembic_config(), autogenerate=True, process_revision_directives=capture_drops)
+        assert drops == {"unexpected_autogenerate_table"}
     finally:
         asyncio.run(_drop_database(database_name))

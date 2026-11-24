@@ -43,7 +43,6 @@ from src.models.orm.branding import GlobalBranding
 from src.models.orm.cloudflare_approvals import CloudflareApproval
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
-    CloudflareCapacityUsage,
     CloudflareCredential,
     CloudflareInstallation,
     CloudflareOwnedResource,
@@ -194,7 +193,6 @@ __all__ = [
     "Workflow",
     "CloudflareApproval",
     "CloudflareCapacityScope",
-    "CloudflareCapacityUsage",
     "CloudflareCredential",
     "CloudflareInstallation",
     "CloudflareOwnedResource",
