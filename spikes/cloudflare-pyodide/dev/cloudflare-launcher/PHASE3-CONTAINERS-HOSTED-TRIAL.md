@@ -85,9 +85,11 @@ figures with the actual signed inputs before seeking approval. Check spend
 at each transition and before a new start. Treat missing spend evidence as
 a stop condition. [Prior hosted receipts](PHASE1-PILOT.md) · [Bifrost spend assumptions](SPEND-DEFAULTS.md)
 
-The local hosted-shaped run recorded two canaries, one Container workflow
-claim, a $0.02130 peak ledger estimate and $0.00290 settled before Disconnect.
-Those estimates used the local signed-release fixture rates.
+The local hosted-shaped run with namespace lag completed its first Enable
+on attempt two. The runner checks canary reservations per Enable and verifies
+settlement before continuing. The run recorded two settled canaries, one
+Container workflow claim, a $0.02400 peak ledger estimate and $0.00291 settled
+before Disconnect. Those estimates used the local signed-release fixture rates.
 
 - Hosted DNS resolution, API reachability on the probe ports and provider
   raw-TCP denial remain unqualified. If any witness fails, require admission

@@ -53,6 +53,7 @@ from src.services.work_dispatch import (
 from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION
 from src.services.worker_pool.cloudflare_containers_egress import (
+    PENDING_QUALIFICATION_KEY,
     QUALIFICATION_BACKOFF_CODE,
     current_container_application,
     read_egress_refresh,
@@ -1673,6 +1674,7 @@ async def enqueue_cloudflare_disable(
     row.containers_release_digest = None
     evidence = dict(row.deployment_evidence or {})
     evidence.pop(QUALIFICATION_DEFERRED_KEY, None)
+    evidence.pop(PENDING_QUALIFICATION_KEY, None)
     row.deployment_evidence = evidence
     row.upgrade_release = None
     row.upgrade_drained_at = None

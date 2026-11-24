@@ -3099,6 +3099,10 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     installation.admitted_revision = installation.deployed_revision = 1
     installation.containers_ready_revision = 1
     installation.containers_release_digest = release.digest
+    installation.deployment_evidence = {
+        "revision": 1, "container_qualification_deferred_revision": 1,
+        "container_pending_qualification": {"revision": 1},
+    }
     installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
     application = app_journal(installation, release.digest, now)
     launcher = CloudflareOwnedResource(
@@ -3123,6 +3127,7 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     )
     assert not reused and job.payload_version == 1
     assert installation.desired_state == "scaled_in" and installation.admitted_revision is None
+    assert installation.deployment_evidence == {"revision": 1}
     assert installation.desired_revision == job.payload["revision"] == 1
     with pytest.raises(CloudflarePolicyConflict, match="finish draining"):
         await enable_job.enqueue_cloudflare_enable(

@@ -572,7 +572,7 @@ async def _settle_enable(
                 ContainersPolicy.model_validate(row.containers_policy), container_release.manifest.rates, 31 * 86400,
             ).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
             row.policy = {**row.policy, "containers_fleet_envelope_usd": str(floor)}
-        row.deployment_evidence = {
+        evidence = {
             **(row.deployment_evidence or {}),
             "revision": payload.revision,
             "ingress_verified_at": (ingress.verified_at or probe_completed_at).isoformat(),
@@ -583,7 +583,8 @@ async def _settle_enable(
         if deferred:
             row.containers_ready_revision = None
             row.containers_release_digest = None
-            row.deployment_evidence = {**row.deployment_evidence, QUALIFICATION_DEFERRED_KEY: payload.revision}
+            evidence[QUALIFICATION_DEFERRED_KEY] = payload.revision
+        row.deployment_evidence = evidence
         row.admitted_revision = payload.revision
         row.deployed_revision = payload.revision
         floor = workers_release_floor(row)
