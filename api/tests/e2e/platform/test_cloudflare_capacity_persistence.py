@@ -4515,6 +4515,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         monkeypatch.setattr(lifecycle_job, "get_db_context", transaction)
         monkeypatch.setattr(lifecycle_job, "_settle_reconcile", AsyncMock(return_value={"outcome": "verified"}))
         monkeypatch.setattr(enable_job, "_enable", reconcile_enable)
+        monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
         ctx = PlatformJobContext(job.id, job.lease_token, None, str(OPERATOR_ID), "", "")
         reconcile = lifecycle_job.CloudflareReconcilePayloadV2(installation_id=installation.id, revision=1)
         assert await lifecycle_job._reconcile(ctx, reconcile) == {"outcome": "verified"}
@@ -8661,7 +8662,7 @@ async def test_public_linux_approval_binds_reviewed_runtime_and_scope(
         installation.containers_policy = policy
         await db_session.flush()
 
-        # A limits-only update rolls the deployment without changing Linux eligibility.
+        # A deployment revision change with matching runtime evidence preserves Linux eligibility.
         installation.desired_revision += 1
         installation.admitted_revision = installation.containers_ready_revision = installation.desired_revision
         installation.containers_policy = {**installation.containers_policy, "monthly_instance_hours": 80}

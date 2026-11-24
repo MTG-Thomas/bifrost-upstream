@@ -30,6 +30,13 @@ const proposal: NonNullable<ApprovalState["proposal"]> = {
 	manifest_sha256: digest, packages: ["httpx"], https_hosts: ["*.example.com"], required_https_hosts: [],
 	unresolved_url_calls: 1, estimated_subrequests: 1, subrequest_allowance: 10, estimated_cpu_ms: 10, cpu_budget_ms: 1000,
 };
+const container: NonNullable<ApprovalState["current_container"]> = {
+	findings: ["CF_NATIVE"], release_digest: digest, installation_id: "installation",
+	deployment_revision: 1, consent_version: "v1", worker_ingress_origin: "https://workers.example.test",
+	egress: "worker-ingress-only-v1", path: "test.py", function_name: "run", source_pins: { "test.py": digest },
+	wheels: {}, memory_bytes: 96 * 2 ** 20, timeout_seconds: 30, ingress_bytes: 250000, outbound_bytes: 250000,
+	previous_revision: null, inactive_history_count: 0,
+};
 
 function open() {
 	const queryClient = new QueryClient();
@@ -47,9 +54,10 @@ describe("CloudflareApprovalPanel", () => {
 	it("explains why approval acceptance awaits Containers qualification", async () => {
 		vi.mocked(getCloudflareApproval).mockResolvedValue({
 			...pending, status: "waiting_for_container_qualification",
+			proposal: { ...proposal, container, https_hosts: [], wildcard_https_hosts: [] },
 		});
 		open();
-		expect(await screen.findByRole("status")).toHaveTextContent("Waiting for Containers Qualification");
+		expect(await screen.findByText("Waiting for Containers Qualification")).toBeVisible();
 		expect(screen.getByText(/Linux placement and approval acceptance resume/)).toBeVisible();
 		expect(screen.queryByRole("button", { name: "Accept Reviewed Digest" })).not.toBeInTheDocument();
 	});
@@ -86,13 +94,6 @@ describe("CloudflareApprovalPanel", () => {
 	});
 
 	it("proposes and accepts a Containers review using the reviewed runtime", async () => {
-		const container: NonNullable<ApprovalState["current_container"]> = {
-			findings: ["CF_NATIVE"], release_digest: digest, installation_id: "installation",
-			deployment_revision: 1, consent_version: "v1", worker_ingress_origin: "https://workers.example.test",
-			egress: "worker-ingress-only-v1", path: "test.py", function_name: "run", source_pins: { "test.py": digest },
-			wheels: {}, memory_bytes: 96 * 2 ** 20, timeout_seconds: 30, ingress_bytes: 250000, outbound_bytes: 250000,
-			previous_revision: null, inactive_history_count: 0,
-		};
 		vi.mocked(getCloudflareApproval).mockResolvedValue(pending);
 		vi.mocked(proposeCloudflareApproval).mockResolvedValue({
 			...pending, proposal: { ...proposal, container, https_hosts: [], wildcard_https_hosts: [] },

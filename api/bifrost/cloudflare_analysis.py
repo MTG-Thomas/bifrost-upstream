@@ -167,6 +167,7 @@ _HINTS = {
     "CF_ARTIFACT_WORKSPACE": "Keep this run on Linux or remove its dependency on an artifact workspace.",
     "CF_EXECUTABLE_TYPE": "Keep this executable on its current runtime. Use a Normal workflow for an independently approved Workers step.",
     "CF_AGENT": "Keep agent runs on Bifrost. Agent summaries can use Workers when the operator enables the summary handler.",
+    "CF_CONTAINERS_QUALIFICATION_DEFERRED": "Review the qualification allowance and reset time on the Capacity page.",
 }
 
 
