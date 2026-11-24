@@ -1470,9 +1470,11 @@ def main():
     modes.add_argument("--upgrade-only", action="store_true", help="Rehearse uninterrupted Upgrade with Existing HTTPS")
     modes.add_argument("--containers-only", action="store_true", help="Rehearse the opted-in local Container journey")
     modes.add_argument("--hosted-upgrade-config", type=Path, help="Run the rehearsed Upgrade against a dedicated hosted ingress")
-    modes.add_argument("--hosted-containers-config", type=Path, help="Use public APIs for the Containers trial")
-    modes.add_argument("--containers-hosted-shape", action="store_true", help="Run that trial against the isolated local provider")
+    modes.add_argument("--containers-hosted-shape", action="store_true", help="Run the Containers trial sequence")
+    parser.add_argument("--hosted-containers-config", type=Path, help="Use this hosted config with --containers-hosted-shape")
     args = parser.parse_args()
+    if args.hosted_containers_config and not args.containers_hosted_shape:
+        parser.error("--hosted-containers-config requires --containers-hosted-shape")
     if args.hosted_upgrade_config:
         HostedUpgrade(args.hosted_upgrade_config).run()
         return

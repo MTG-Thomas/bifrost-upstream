@@ -51,10 +51,10 @@ beforeEach(() => {
 	mocks.observe.mockReturnValue({ promise: Promise.resolve(), cancel: vi.fn() });
 });
 
-function renderCapacity() {
+function renderCapacity(queryClient = new QueryClient()) {
 	return render(
 		<MemoryRouter>
-			<QueryClientProvider client={new QueryClient()}>
+			<QueryClientProvider client={queryClient}>
 				<CloudflareCapacity />
 			</QueryClientProvider>
 		</MemoryRouter>,
@@ -64,6 +64,7 @@ function renderCapacity() {
 const installation = {
 	installation_id: "installation-id",
 	desired_revision: 3,
+	policy_version: 7,
 	desired_state: "scaled_in",
 	admission_open: false,
 	worker_ingress_origin: "https://workers.example.test",
@@ -104,6 +105,27 @@ it("shows the combined floor and allows editing the Container hours budget", asy
 	await user.type(field, "90");
 	expect(field).toHaveValue(90);
 	expect(screen.getByLabelText("Monthly Container Qualification Canaries")).toHaveValue(30);
+});
+
+it("submits the reviewed policy version after a background status update", async () => {
+	const user = userEvent.setup();
+	const queryClient = new QueryClient();
+	const initial = {
+		...installation,
+		policy: { ...installation.policy, container_instance_hours: 100, container_qualification_canaries: 30 },
+	};
+	const updated = { ...initial, policy_version: 8, policy: { ...initial.policy, container_qualification_canaries: 0 } };
+	mocks.get.mockResolvedValue({ installation: initial });
+	mocks.configure.mockRejectedValue(new Error("Cloudflare policy changed."));
+	renderCapacity(queryClient);
+	await user.click(await screen.findByRole("button", { name: "Edit Policy" }));
+	act(() => queryClient.setQueryData(["cloudflare-capacity"], { installation: updated }));
+	await user.click(screen.getByRole("button", { name: "Save Policy" }));
+	expect(mocks.configure).toHaveBeenCalledWith(expect.objectContaining({
+		expected_revision: 3,
+		expected_policy_version: 7,
+		policy: expect.objectContaining({ container_instance_hours: 100, container_qualification_canaries: 30 }),
+	}));
 });
 
 it("displays scoped overflow, ledger and recovery evidence from status", async () => {

@@ -16,7 +16,7 @@ from shared.models import (
     CloudflarePlacementReason,
     CloudflareRecoveryDetails,
 )
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
@@ -53,7 +53,11 @@ from src.services.worker_pool.cloudflare_containers_egress import (
     read_pending_qualification,
     read_verified_egress,
 )
-from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy, qualification_deferred
+from src.services.worker_pool.cloudflare_containers_policy import (
+    ContainersPolicy,
+    container_deadline_sql,
+    qualification_deferred,
+)
 from src.services.worker_pool.cloudflare_provisioning import ObservationCheck, OwnershipCheck, OwnershipResource
 from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admission, tenant_key
 from src.services.worker_pool.controller import (
@@ -595,7 +599,18 @@ async def overflow_status(
             elif installation.containers_ready_revision != installation.desired_revision:
                 lane_blockers.append(reason("container_readiness_unverified"))
             elif read_verified_egress(installation, now) is None:
-                if installation.admitted_revision == installation.desired_revision and qualification_reset is not None:
+                if (
+                    installation.admitted_revision == installation.desired_revision
+                    and qualification_reset is not None
+                    and not await db.scalar(select(exists().where(
+                        pin.installation_id == installation.id,
+                        pin.deployment_revision == installation.desired_revision,
+                        pin.container_release == installation.containers_release_digest,
+                        pin.canary_job_id.is_not(None),
+                        pin.container_stopped_at.is_(None),
+                        container_deadline_sql() > now,
+                    )))
+                ):
                     lane_blockers.append(reason("container_qualification_deferred", qualification_reset))
                 else:
                     lane_blockers.append(_container_refresh_reason(installation, now))

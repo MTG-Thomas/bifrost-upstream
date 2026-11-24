@@ -135,7 +135,7 @@ On a separate fresh stack, pass `--containers-hosted-shape` to
 uninterrupted. Run
 `python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py --containers-hosted-shape`.
 The local harness binds the private ingress and the raw TCP test boundary.
-The same runner as `--hosted-containers-config` then drives public Bifrost
+The same runner used with `--containers-hosted-shape --hosted-containers-config` then drives public Bifrost
 routes, scheduler and claim readback, and provider inventory GETs. It
 performs the uninterrupted workflow journey without the local relay handoff.
 

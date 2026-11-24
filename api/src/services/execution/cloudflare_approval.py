@@ -37,6 +37,7 @@ from src.models.orm import CloudflareApproval, Solution, SolutionFileIndex, Work
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_QUALIFICATION_DEFERRED,
+    QUALIFICATION_DEFERRED_RELEASE_KEY,
     ContainersPolicy,
     qualification_deferred,
 )
@@ -144,7 +145,8 @@ def _state_from_observations(
                 and all(pins.get(path) == pin for path, pin in container.source_pins.items())
             ):
                 if qualification_deferred(installation):
-                    state.status = "waiting_for_container_qualification"
+                    if (installation.deployment_evidence or {}).get(QUALIFICATION_DEFERRED_RELEASE_KEY) == container.release_digest:
+                        state.status = "waiting_for_container_qualification"
                 elif (
                     installation.admitted_revision is not None
                     and installation.containers_ready_revision == installation.admitted_revision

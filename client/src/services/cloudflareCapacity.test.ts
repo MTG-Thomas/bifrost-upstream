@@ -126,11 +126,12 @@ describe("Cloudflare capacity service", () => {
 		});
 	});
 
-	it("patches the observed revision and policy", async () => {
+	it("patches the observed revision, policy version, and policy", async () => {
 		const body = {
 			action: "policy" as const,
 			installation_id: "installation-id",
 			expected_revision: 3,
+			expected_policy_version: 7,
 			policy: {
 				version: 1 as const,
 				workers: {

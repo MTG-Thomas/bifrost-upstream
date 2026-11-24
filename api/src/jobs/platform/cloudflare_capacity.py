@@ -62,6 +62,7 @@ from src.services.worker_pool.cloudflare_containers_egress import (
 )
 from src.services.worker_pool.cloudflare_containers_policy import (
     QUALIFICATION_DEFERRED_KEY,
+    QUALIFICATION_DEFERRED_RELEASE_KEY,
     ContainersPolicy,
     container_canaries_used,
     qualification_deferred,
@@ -1674,6 +1675,7 @@ async def enqueue_cloudflare_disable(
     row.containers_release_digest = None
     evidence = dict(row.deployment_evidence or {})
     evidence.pop(QUALIFICATION_DEFERRED_KEY, None)
+    evidence.pop(QUALIFICATION_DEFERRED_RELEASE_KEY, None)
     evidence.pop(PENDING_QUALIFICATION_KEY, None)
     row.deployment_evidence = evidence
     row.upgrade_release = None

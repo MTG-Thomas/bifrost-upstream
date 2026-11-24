@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, ROUND_CEILING
 from functools import cache
 from hashlib import sha256
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
@@ -36,6 +36,7 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.authorization.enforce import Caller
+from src.services.audit import emit_audit
 from src.services.platform_job_access import platform_job_visibility_filter
 from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
@@ -89,6 +90,11 @@ from src.services.worker_pool.cloudflare_status import (
 from src.services.worker_pool.cloudflare_tunnel_rest import dedicated_hostname
 
 CONSENT_TEXT_VERSION = "cloudflare-reachability-v5"
+_CONTAINER_COUNTERS = frozenset({"container_instance_hours", "container_qualification_canaries"})
+
+
+def _without_container_counters(limits: Mapping[str, object]) -> dict[str, object]:
+    return {key: value for key, value in limits.items() if key not in _CONTAINER_COUNTERS}
 CONTAINERS_CONSENT_VERSION = "cloudflare-containers-pilot-v1"
 CONSENT_TEXT = (
     "Cloudflare will process approved workflow code, workload data, and run-scoped credentials. "
@@ -252,12 +258,14 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             disconnected_at=retired_at,
         )
     installation, estimate, reserved, as_of, owned_resources_pending, overdue_containers = row
-    policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
+    containers_enabled = installation.containers_policy.get("enabled") is True
+    limits = installation.policy["limits"]
+    policy = CloudflareCapacityPolicy.model_validate(limits if containers_enabled else _without_container_counters(limits))
     period_start, period_end = usage_period(as_of)
     container_hours = None
     remaining_container_hours = None
     remaining_canaries = None
-    if installation.containers_policy.get("enabled") is True:
+    if containers_enabled:
         containers = ContainersPolicy.model_validate(installation.containers_policy)
         container_hours = containers.monthly_instance_hours
         consumed = await db.scalar(select(container_account_usage(
@@ -369,6 +377,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             "consent_version": installation.consent_version,
             "consent_at": installation.consent_at,
             "desired_revision": installation.desired_revision,
+            "policy_version": installation.policy.get("policy_version", 1),
             "deployed_revision": installation.deployed_revision,
             "upgrade_pending": installation.upgrade_release is not None,
             "upgrade_available": workers_upgrade_available(
@@ -585,6 +594,7 @@ async def save_cloudflare_policy(
     *,
     installation_id: UUID,
     expected_revision: int,
+    expected_policy_version: int,
     policy: CloudflareCapacityPolicy,
     bounds: WorkersReleaseMeterBounds,
     containers_release: VerifiedContainerRelease | None = None,
@@ -599,6 +609,8 @@ async def save_cloudflare_policy(
     row = result.scalar_one_or_none()
     if row is None or row.desired_revision != expected_revision or row.desired_state == "disconnected":
         raise CloudflarePolicyConflict("Cloudflare installation changed. Reload its current policy.")
+    if row.policy.get("policy_version", 1) != expected_policy_version:
+        raise CloudflarePolicyConflict("Cloudflare policy changed. Reload and review its current settings.")
     if code := workers_release_error(row, bounds.release, bounds.release_order):
         raise CloudflarePolicyConflict(f"{code}. Use Reconcile with Reset Release Fence to accept this package.")
     if row.upgrade_release is not None and row.upgrade_release != bounds.release:
@@ -631,7 +643,7 @@ async def save_cloudflare_policy(
             raise CloudflareBudgetTooLow(floor)
         desired["containers_fleet_envelope_usd"] = str(container_floor)
     current = {key: value for key, value in row.policy.items() if key not in (
-        "activation_fingerprint", "containers_fleet_envelope_usd",
+        "activation_fingerprint", "containers_fleet_envelope_usd", "policy_version",
     )}
     if current_containers.get("enabled") is True:
         current_limits = dict(row.policy["limits"])
@@ -639,25 +651,32 @@ async def save_cloudflare_policy(
         current_limits["container_qualification_canaries"] = current_containers["monthly_qualification_canaries"]
         current["limits"] = current_limits
     compared = {key: value for key, value in desired.items() if key != "containers_fleet_envelope_usd"}
-    counter_fields = {"container_instance_hours", "container_qualification_canaries"}
-    current_deployment = {**current, "limits": {key: value for key, value in current["limits"].items() if key not in counter_fields}}
-    desired_deployment = {**compared, "limits": {key: value for key, value in compared["limits"].items() if key not in counter_fields}}
-    if current_deployment != desired_deployment:
+    desired_limits = cast(dict[str, object], desired["limits"])
+    current_deployment = {**current, "limits": _without_container_counters(current["limits"])}
+    desired_deployment = {**compared, "limits": _without_container_counters(desired_limits)}
+    deployment_changed = current_deployment != desired_deployment
+    counters_before = {key: current["limits"].get(key) for key in sorted(_CONTAINER_COUNTERS)}
+    counters_after = {key: desired_limits.get(key) for key in sorted(_CONTAINER_COUNTERS)}
+    if desired_containers.get("enabled") is not True:
+        desired["limits"] = desired_deployment["limits"]
+    base = {} if deployment_changed else row.policy
+    row.policy = {**base, **desired, "policy_version": expected_policy_version + 1}
+    row.containers_policy = desired_containers
+    if deployment_changed:
         floor = workers_release_floor(row)
         if floor is None or bounds.release_order.key > floor.key:
             set_workers_release_floor(row, bounds.release, bounds.release_order)
-        row.policy = desired
-        row.containers_policy = desired_containers
         row.admitted_revision = None
         row.desired_revision += 1
         row.upgrade_drained_at = None
-        await db.flush()
+    await db.flush()
+    if deployment_changed or (desired_containers.get("enabled") is True and counters_before != counters_after):
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
-    elif current != compared or current_containers != desired_containers:
-        row.policy = {**row.policy, **desired}
-        row.containers_policy = desired_containers
-        await db.flush()
-        wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
-    elif "containers_fleet_envelope_usd" in desired:
-        row.policy = {**row.policy, "containers_fleet_envelope_usd": desired["containers_fleet_envelope_usd"]}
+    await emit_audit(
+        db, "capacity.cloudflare_policy_updated", resource_type="cloudflare_installation",
+        resource_id=row.id, details={
+            "revision": row.desired_revision, "policy_version": expected_policy_version + 1,
+            "container_counters_before": counters_before, "container_counters_after": counters_after,
+        },
+    )
     return row.desired_revision
