@@ -4508,11 +4508,11 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         assert status.installation.containers_remaining_qualification_canaries == 0
 
         @asynccontextmanager
-        async def transaction():
+        async def refresh_transaction():
             yield db
 
         reconcile_enable = AsyncMock()
-        monkeypatch.setattr(lifecycle_job, "get_db_context", transaction)
+        monkeypatch.setattr(lifecycle_job, "get_db_context", refresh_transaction)
         monkeypatch.setattr(lifecycle_job, "_settle_reconcile", AsyncMock(return_value={"outcome": "verified"}))
         monkeypatch.setattr(enable_job, "_enable", reconcile_enable)
         monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
