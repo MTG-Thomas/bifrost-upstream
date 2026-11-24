@@ -8504,7 +8504,10 @@ async def test_public_linux_approval_binds_reviewed_runtime_and_scope(
             setattr(workflow, field, original)
             await db_session.flush()
 
-        body = {"runtime": "containers", "review_sha256": reviewed["review_sha256"]}
+        body = {
+            "runtime": "containers", "review_sha256": reviewed["review_sha256"],
+            "subrequest_allowance": reviewed["subrequest_allowance"], "cpu_budget_ms": reviewed["cpu_budget_ms"],
+        }
         current_caller = outsider
         assert (await http.get(path)).status_code == 404
         assert (await http.post(f"{path}/accept", json=body)).status_code == 403
