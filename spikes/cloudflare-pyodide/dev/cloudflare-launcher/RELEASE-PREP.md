@@ -2,20 +2,20 @@
 
 **Prepared locally. Publication is held for the frozen-target release review,
 owner approval, and fork settings checks.**
-The exact local candidate is `53084fdc3e2a779c2f89793337a2ce6b6bfc6f5f`
-on local branch `trial/cloudflare-containers-20261124`, based on the verified
-spike and its read-only release preflight. The destination is the same branch
-name on `personal` (`MTG-Thomas/bifrost-upstream`). Keep the fork's `main`
-unchanged. The SHA is pinned below so the later local documentation receipt
-does not change what the tag builds.
+The exact release candidate is `5c0ae02d662cb044ca70cc9730ed46371c1fccc5`
+on local branch `t3/cloudflare-release-fix`. It contains the release gate repairs,
+the version bump, and the approved trial body. Push the pinned candidate to
+`trial/cloudflare-containers-20261124` on `personal`
+(`MTG-Thomas/bifrost-upstream`). Keep the fork's `main` unchanged. The tag
+pins the commit before this documentation receipt.
 
 ## Fork, workflow and tag
 
 - `git ls-remote --symref personal HEAD refs/heads/main` reported that the
   fork defaults to `main` at `27b7e39175769b2ab4ea8629b8a1f9dd81e529d5`.
   That commit is local and is outside the candidate's ancestry. The proposed
-  trial branch is absent. The already-published fork spike ref is behind the
-  local candidate at `4ebd217b747ed4158cc57fd05fef469771367dd4`.
+  trial branch was absent during that check. The first trial then used that
+  branch for its failed release attempt.
 - Comparing `.github/workflows/ci.yml` at fork main and the spike shows the
   spike adds qualified Workers packaging, signed Linux assets, and release
   staging followed by image promotion. **Both comparisons before the routing fix hard-code
@@ -33,28 +33,23 @@ does not change what the tag builds.
   variables on fork tags. The ten-digit date-based RC namespace is reserved
   for fork trials and rejected on upstream. Ordinary upstream tags retain
   optional packaging. The workflow uses the fork's `GITHUB_TOKEN`.
-- Proposed tag **`v2.0.0-rc.2026112401`** was absent on both
-  `personal` and upstream `origin` in exact `git ls-remote` tag checks.
-  Upstream already owns `v2.0.0`. Recheck the exact trial ref on both remotes
-  at the approval gate. The date-based release candidate suffix keeps the tag separate from the
-  stable release and prevents promotion to `:latest`.
+- The fork's `v2.0.0-rc.2026112401` reached the CI test gates and published
+  no release. The new tag is **`v2.0.0-rc.2026112402`**. Verify that exact
+  ref is available on both remotes at the approval gate. The ten-digit
+  suffix reserves it for fork trials and keeps the prerelease off `:latest`.
 - CI strips the leading `v` and sets both the API version and
-  `workers.release_version` to `2.0.0-rc.2026112401`. The Workers
-  builder accepts SemVer prereleases, the version exceeds the CLI floor of
-  `1.4.3`, and the API reconstructs the exact tag from the packaged Workers
-  version. The CLI tarball uses PEP 440 metadata `2.0.0rc2026112401`. The signer identity would be
-  `https://github.com/MTG-Thomas/bifrost-upstream/.github/workflows/ci.yml@refs/tags/v2.0.0-rc.2026112401`.
-- The three plugin manifests match the prerelease version. The trial body at
-  `product-updates/release-bodies/v2.0.0-rc.2026112401.md` is a draft. The
-  frozen inventory and human approvals in `product-updates/release-review.json`
-  cover older source. The documented generator requires both for the exact
-  trial target. Update coverage and obtain the actual content, security and
-  compatibility approvals before generating the formal body. The draft's
-  proposed findings cover the trial changes since the verified Containers
-  spike. That diff changes no dependency locks or application contracts.
-  Review the generator's canonical Docker and signing examples for fork
-  destinations before approving the rendered body. The in-app Product
-  Updates inventory remains unchanged in this local round.
+  `workers.release_version` to `2.0.0-rc.2026112402`. The version exceeds
+  the CLI floor of `1.4.3`, and the API reconstructs the exact tag from the
+  packaged Workers version. The CLI tarball uses PEP 440 metadata
+  `2.0.0rc2026112402`. The signer identity would be
+  `https://github.com/MTG-Thomas/bifrost-upstream/.github/workflows/ci.yml@refs/tags/v2.0.0-rc.2026112402`.
+- The three plugin manifests match the prerelease version. The tag workflow
+  selects `product-updates/release-bodies/v2.0.0-rc.2026112402.md` by exact
+  filename. Its bytes match the owner-approved body from the first candidate.
+  The general `scripts/release-check.sh` preflight requires a separately
+  rendered Product Updates body with reviewed inventory metadata. The fork
+  workflow checks the exact-tag body and prepares approved in-app updates
+  separately.
 
 ## Publication commands for owner review
 
@@ -65,10 +60,10 @@ destination branch. Use only the explicit `personal` refspecs below.
 Never use `git push --tags` or `git push --follow-tags`. The commands remain unrun.
 
 ```sh
-git tag -a v2.0.0-rc.2026112401 53084fdc3e2a779c2f89793337a2ce6b6bfc6f5f -m "Cloudflare Containers Trial"
-test "$(git rev-parse 'v2.0.0-rc.2026112401^{commit}')" = 53084fdc3e2a779c2f89793337a2ce6b6bfc6f5f || exit 1
-git -c push.followTags=false push personal 53084fdc3e2a779c2f89793337a2ce6b6bfc6f5f:refs/heads/trial/cloudflare-containers-20261124
-git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112401:refs/tags/v2.0.0-rc.2026112401
+git tag -a v2.0.0-rc.2026112402 5c0ae02d662cb044ca70cc9730ed46371c1fccc5 -m "Cloudflare Containers Trial"
+test "$(git rev-parse 'v2.0.0-rc.2026112402^{commit}')" = 5c0ae02d662cb044ca70cc9730ed46371c1fccc5 || exit 1
+git -c push.followTags=false push personal 5c0ae02d662cb044ca70cc9730ed46371c1fccc5:refs/heads/trial/cloudflare-containers-20261124
+git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112402:refs/tags/v2.0.0-rc.2026112402
 ```
 
 The tag runs the full CI test suite on the fork's GitHub Actions before
