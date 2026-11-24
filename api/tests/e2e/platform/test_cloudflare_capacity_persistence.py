@@ -8039,6 +8039,16 @@ async def test_container_policy_save_checks_the_signed_hours_envelope(
     assert audit.details["container_counters_after"] == {
         "container_instance_hours": 90, "container_qualification_canaries": 0,
     }
+    unchanged = first.model_copy(update={"expected_policy_version": saved.installation.policy_version})
+    for _ in range(2):
+        repeated = await capacity_routes.configure_cloudflare_capacity(unchanged, db_session, object())
+        assert repeated.installation is not None
+        assert repeated.installation.policy_version == saved.installation.policy_version
+        assert repeated.installation.desired_revision == snapshot.desired_revision
+    assert await db_session.scalar(select(func.count()).select_from(AuditLog).where(
+        AuditLog.resource_id == installation.id, AuditLog.action == "capacity.cloudflare_policy_updated",
+        AuditLog.details["policy_version"].as_integer() >= saved.installation.policy_version,
+    )) == 1
 
 
 @pytest.mark.parametrize("field", ["container_instance_hours", "container_qualification_canaries"])
@@ -8052,7 +8062,7 @@ async def test_workers_only_policy_rejects_container_budgets(db_session, install
         )
 
 
-async def test_workers_only_policy_normalizes_legacy_counters(db_session, installation):
+async def test_workers_only_policy_normalizes_legacy_counters(db_session, installation, lifecycle_audit_actor):
     zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
     bounds = WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000, TEST_ORDER)
     keys = {"container_instance_hours", "container_qualification_canaries"}
@@ -8071,24 +8081,13 @@ async def test_workers_only_policy_normalizes_legacy_counters(db_session, instal
         expected_policy_version=reviewed.policy_version, policy=reviewed.policy, bounds=bounds,
     ) == reviewed.desired_revision
     assert keys.isdisjoint(installation.policy["limits"])
-
-
-async def test_workers_sql_rejects_deferral_for_old_admitted_revision(db_session, installation):
-    from sqlalchemy.sql.visitors import replacement_traverse
-
-    installation.containers_policy = {"enabled": True}
-    installation.desired_state = "enabled"
-    installation.admitted_revision = installation.desired_revision
-    installation.deployment_evidence = {"container_qualification_deferred_revision": installation.admitted_revision}
-    deferral = cloudflare_admission.workers_release_matches()
-    scope = CloudflareInstallation.id == installation.id
-    await db_session.flush()
-    assert await db_session.scalar(select(deferral).where(scope)) is True
-    # Exercise the SQL's own fence with a projected revision. The table check
-    # also prevents persisting an admitted row with a stale desired revision.
-    desired = CloudflareInstallation.__table__.c.desired_revision
-    stale = replacement_traverse(deferral, {}, lambda node: desired + 1 if node.compare(desired) else None)
-    assert await db_session.scalar(select(stale).where(scope)) is False
+    audit = await db_session.scalar(select(AuditLog).where(
+        AuditLog.resource_id == installation.id, AuditLog.action == "capacity.cloudflare_policy_updated",
+    ))
+    assert audit is not None
+    assert audit.details["normalized_legacy_container_counters"] is True
+    assert "container_counters_before" not in audit.details
+    assert "container_counters_after" not in audit.details
 
 
 @pytest.mark.asyncio
@@ -8373,7 +8372,7 @@ async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
 
     async def save(limit: str, revision: int):
         request = CloudflarePolicyUpdate(
-            action="policy", installation_id=installation.id, expected_revision=revision, expected_policy_version=revision,
+            action="policy", installation_id=installation.id, expected_revision=revision, expected_policy_version=installation.policy.get("policy_version", 1),
             policy=CloudflareCapacityPolicy(workers=workers, monthly_limit_usd=Decimal(limit)),
         )
         return await capacity_routes.configure_cloudflare_capacity(request, db_session, object())
@@ -8765,6 +8764,11 @@ async def test_public_linux_approval_binds_reviewed_runtime_and_scope(
         }
         await db_session.flush()
         assert (await http.get(path)).json()["status"] == "revision_changed"
+        installation.deployment_evidence = {
+            "container_qualification_deferred_revision": installation.admitted_revision,
+        }
+        await db_session.flush()
+        assert (await http.get(path)).json()["status"] == "waiting_for_container_qualification"
         installation.deployment_evidence = {
             **installation.deployment_evidence, "container_qualification_deferred_release": release.digest,
         }

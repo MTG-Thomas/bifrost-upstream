@@ -91,10 +91,6 @@ from src.services.worker_pool.cloudflare_tunnel_rest import dedicated_hostname
 
 CONSENT_TEXT_VERSION = "cloudflare-reachability-v5"
 _CONTAINER_COUNTERS = frozenset({"container_instance_hours", "container_qualification_canaries"})
-
-
-def _without_container_counters(limits: Mapping[str, object]) -> dict[str, object]:
-    return {key: value for key, value in limits.items() if key not in _CONTAINER_COUNTERS}
 CONTAINERS_CONSENT_VERSION = "cloudflare-containers-pilot-v1"
 CONSENT_TEXT = (
     "Cloudflare will process approved workflow code, workload data, and run-scoped credentials. "
@@ -589,6 +585,10 @@ async def cloudflare_workers_remain(db: AsyncSession, installation_id: UUID, *, 
     )) is not None
 
 
+def _without_container_counters(limits: Mapping[str, object]) -> dict[str, object]:
+    return {key: value for key, value in limits.items() if key not in _CONTAINER_COUNTERS}
+
+
 async def save_cloudflare_policy(
     db: AsyncSession,
     *,
@@ -657,8 +657,17 @@ async def save_cloudflare_policy(
     deployment_changed = current_deployment != desired_deployment
     counters_before = {key: current["limits"].get(key) for key in sorted(_CONTAINER_COUNTERS)}
     counters_after = {key: desired_limits.get(key) for key in sorted(_CONTAINER_COUNTERS)}
-    if desired_containers.get("enabled") is not True:
+    containers_enabled = desired_containers.get("enabled") is True
+    counters_changed = containers_enabled and counters_before != counters_after
+    legacy_counters = not containers_enabled and any(value is not None for value in counters_before.values())
+    if not containers_enabled:
         desired["limits"] = desired_deployment["limits"]
+    if not (
+        deployment_changed or counters_changed or legacy_counters
+        or desired_containers != row.containers_policy
+        or row.policy.get("containers_fleet_envelope_usd") != desired.get("containers_fleet_envelope_usd")
+    ):
+        return row.desired_revision
     base = {} if deployment_changed else row.policy
     row.policy = {**base, **desired, "policy_version": expected_policy_version + 1}
     row.containers_policy = desired_containers
@@ -670,13 +679,16 @@ async def save_cloudflare_policy(
         row.desired_revision += 1
         row.upgrade_drained_at = None
     await db.flush()
-    if deployment_changed or (desired_containers.get("enabled") is True and counters_before != counters_after):
+    if deployment_changed or counters_changed:
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     await emit_audit(
         db, "capacity.cloudflare_policy_updated", resource_type="cloudflare_installation",
         resource_id=row.id, details={
             "revision": row.desired_revision, "policy_version": expected_policy_version + 1,
-            "container_counters_before": counters_before, "container_counters_after": counters_after,
+            **({"normalized_legacy_container_counters": True} if legacy_counters else {}),
+            **({
+                "container_counters_before": counters_before, "container_counters_after": counters_after,
+            } if containers_enabled else {}),
         },
     )
     return row.desired_revision

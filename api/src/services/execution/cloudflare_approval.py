@@ -145,7 +145,9 @@ def _state_from_observations(
                 and all(pins.get(path) == pin for path, pin in container.source_pins.items())
             ):
                 if qualification_deferred(installation):
-                    if (installation.deployment_evidence or {}).get(QUALIFICATION_DEFERRED_RELEASE_KEY) == container.release_digest:
+                    if (installation.deployment_evidence or {}).get(
+                        QUALIFICATION_DEFERRED_RELEASE_KEY, container.release_digest,
+                    ) == container.release_digest:
                         state.status = "waiting_for_container_qualification"
                 elif (
                     installation.admitted_revision is not None

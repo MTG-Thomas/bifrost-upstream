@@ -179,7 +179,6 @@ def workers_release_matches() -> ColumnElement[bool]:
             joint_container_readiness(CloudflareInstallation.admitted_revision),
             and_(
                 CloudflareInstallation.containers_policy["enabled"].as_boolean().is_(True),
-                CloudflareInstallation.desired_revision == CloudflareInstallation.admitted_revision,
                 CloudflareInstallation.containers_ready_revision.is_distinct_from(CloudflareInstallation.admitted_revision),
                 func.coalesce(
                     CloudflareInstallation.deployment_evidence[QUALIFICATION_DEFERRED_KEY].as_integer()

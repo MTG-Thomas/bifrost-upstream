@@ -18,6 +18,16 @@ authorized management token, and the three approved spend thresholds.
 The runner uses the dedicated instance's operator account. By default its
 provider reads target the public Cloudflare API.
 
+## Account and token
+
+Use the disposable account with Workers Paid and active Workers and Containers
+entitlements. Create a dedicated, expiring management token scoped to that
+account with **Account Settings Read**, **Workers Scripts Write**, and
+**Workers Containers Write**. Add **Account Analytics Read** only if the trial
+will use the advisory Workers usage comparison. Use the billing dashboard
+with the owner's access for provider usage and notifications. Existing HTTPS
+requires no DNS or Tunnel grants. [Permission catalog](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)
+
 ## Owner approvals
 
 Obtain explicit owner approval for each outward-facing effect before starting.
@@ -32,6 +42,10 @@ Obtain explicit owner approval for each outward-facing effect before starting.
 5. Approve the exact policy and its combined monthly fleet floor from preflight.
 6. Approve the calculated live target, live abort threshold, and settled cap.
    Record the signed rates and cleanup margin used for those calculations.
+7. Choose whether to retain the exact fork tag, public release assets and
+   digest-pinned GHCR image for reproducibility, or withdraw the trial
+   publication after evidence is saved. Record the decision and the owner
+   responsible for any withdrawal. Rekor remains public in either case.
 
 ## Manual read-only checklist
 
@@ -41,9 +55,22 @@ Obtain explicit owner approval for each outward-facing effect before starting.
 - Before activation and after Disconnect, record the provider usage window
   and attributed instance-seconds, outbound bytes, requests, and CPU. Keep
   the opening and closing samples together for the same account and window.
+  If the closing data has not arrived, recheck daily through 72 hours after
+  Disconnect. At that deadline, mark provider billing evidence incomplete
+  if the trial window is still missing or unattributable.
 - Before activation, record DNS resolution for the alternate
   peer as seen from the API and whether the API can connect to the alternate
   worker origin on TCP 2053 and the probe peer on TCP 8443.
+  The local rehearsal exercised these witnesses against the isolated provider.
+  During the hosted trial, abort before workflow placement if the DNS,
+  reachability, or guest denial witness fails.
+- Have the account owner review **Manage Account → Billing → Billable Usage**
+  before activation. Use an existing account-wide budget alert or have the
+  owner configure one with an approved threshold and monitored recipient
+  where available. Record the threshold or the absence of an eligible alert.
+  The runner reads evidence only. Cloudflare alerts are delayed and
+  informational, and Bifrost's ledger thresholds do not cap the provider bill.
+  [Cloudflare budget alerts](https://developers.cloudflare.com/billing/manage/budget-alerts/)
 
 ## Sequence and evidence
 
@@ -84,11 +111,14 @@ start, with 250,000 outbound bytes each.
 | Supporting Workers requests and CPU | The earlier attributed Workers sample was $0.00006021396. Keep this as a usage comparison anchor. |
 | Durable Objects and ingress | Earlier hosted runs did not isolate both costs. Carry $0.012847448 as a conservative combined supporting allowance from the settled Existing HTTPS Upgrade run. Keep the provider breakdown separate where available. |
 
-Round the live reservation allowance plus both supporting allowances up to
-the next cent for the **live target**. Set the **abort threshold** one
-additional rounded live reservation allowance above it, reserved for cleanup.
-Round the expected cost plus the supporting allowances up to the next cent
-for the **settled cap**. For illustration, `c=60` and `f=$0.000001` with the
+Round the sum of the live reservation allowance and both supporting allowances
+up to a whole cent for the **live target**. For the **abort threshold**, round
+the Container live reservation allowance alone up to a whole cent, then add
+that already-rounded cleanup allowance to the live target. Round the expected
+cost plus the supporting allowances up to a whole cent for the **settled cap**.
+The settled cap is below the live target by design because it replaces
+reservation headroom with expected settled operation costs. For illustration,
+`c=60` and `f=$0.000001` with the
 pinned rates give $0.03 live, $0.05 abort and $0.02 settled. Replace those
 figures with the actual signed inputs before seeking approval. Write the
 approved values to `live_target_usd`, `live_abort_usd`, and `settled_cap_usd`
@@ -97,14 +127,16 @@ at each transition and before a new start. Treat missing spend evidence as
 a stop condition. [Prior hosted receipts](PHASE1-PILOT.md) · [Bifrost spend assumptions](SPEND-DEFAULTS.md)
 
 The local hosted-shaped run with namespace lag completed its first Enable
-on attempt two. The runner checks canary reservations per Enable and verifies
-settlement before continuing. The run recorded two settled canaries, one
+on attempt two. A retry before qualification is canary-free. An attempt that
+reaches qualification can reserve a canary, so retries must never be counted
+as inherently free. The runner budgets by persisted reservations across all
+attempts of each Enable. It stops on a second reservation for that job and
+requires one settled canary before continuing. The run recorded two settled canaries, one
 Container workflow claim, a $0.02400 peak ledger estimate and $0.00291 settled
 before Disconnect. Those estimates used the local signed-release fixture rates.
 
-- Hosted DNS resolution, API reachability on the probe ports and provider
-  raw-TCP denial remain unqualified. If any witness fails, require admission
-  to stay closed, skip steps 3–5 and go straight to Disconnect.
+- If a hosted DNS, reachability or raw-TCP denial witness fails, require
+  admission to stay closed, skip steps 3–5 and go straight to Disconnect.
 - The suggested monthly allowance is 30 Container canaries per Cloudflare
   account in this Bifrost database, about $0.15 at pilot rates. Other
   Bifrost databases have separate allowances. Confirm at least two remain
