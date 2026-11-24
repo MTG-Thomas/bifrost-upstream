@@ -68,6 +68,7 @@ jobs:
     outputs:
       api-image: ${{ steps.route.outputs.api-image }}
       client-image: ${{ steps.route.outputs.client-image }}
+      containers-required: ${{ steps.route.outputs.containers-required }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,8 +89,13 @@ jobs:
             echo "::error::Invalid or mismatched registry repository owner."
             exit 1
           fi
+          containers_required=0
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            if grep -Ei 'ghcr[.]io/gobifrost/|gobifrost/bifrost-(api|client)' \
+            if [[ "$owner" == gobifrost && "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]{10}$ ]]; then
+              echo "::error::Date-based trial release candidates require a fork owner."
+              exit 1
+            fi
+            if grep -Ei 'ghcr[.]io/gobifrost/|(^|[^/[:alnum:]-])gobifrost/[[:alnum:]_.-]+' \
               .github/workflows/ci.yml .github/actions/sign-image/action.yml \
               deploy/capacity/cloudflare/build-containers.sh; then
               echo "::error::Hard-coded upstream registry destination."
@@ -99,7 +105,8 @@ jobs:
             fi
             # Fork releases carry the trial artifacts. Canonical releases
             # retain the existing opt-in Workers/Containers packaging.
-            if [[ "$repository" != gobifrost/bifrost || "$GITHUB_REF" == refs/tags/v2.0.0-rc.2026112401 ]]; then
+            if [[ "$owner" != gobifrost ]]; then
+              containers_required=1
               for required in QUALIFIED_WORKERS_RUNTIME_URL QUALIFIED_WORKERS_METER_BOUNDS CONTAINERS_RELEASE_RATES; do
                 if [[ -z "${!required//[[:space:]]/}" ]]; then
                   echo "::error::Missing required release variable: $required"
@@ -109,6 +116,7 @@ jobs:
             fi
           fi
           printf 'api-image=%s/bifrost-api\nclient-image=%s/bifrost-client\n' "$owner" "$owner" >> "$GITHUB_OUTPUT"
+          printf 'containers-required=%s\n' "$containers_required" >> "$GITHUB_OUTPUT"
 
   windows-credentials:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
@@ -1148,10 +1156,11 @@ jobs:
   create-release:
     if: >-
       always() &&
+      needs.registry-route.result == 'success' &&
       startsWith(github.ref, 'refs/tags/v') &&
       needs.build-api.result == 'success' &&
       needs.build-client.result == 'success'
-    needs: [build-api, build-client]
+    needs: [registry-route, build-api, build-client]
     runs-on: ubuntu-latest
     name: Create Release
     outputs:
@@ -1182,6 +1191,18 @@ jobs:
           BODY="product-updates/release-bodies/${{ steps.get_version.outputs.version }}.md"
           test -s "$BODY"
 
+      - name: Require Linux release assets for fork tags
+        env:
+          CONTAINERS_REQUIRED: ${{ needs.registry-route.outputs.containers-required }}
+          CONTAINERS_RELEASE: ${{ needs.build-api.outputs.containers-release }}
+        run: |
+          set -euo pipefail
+          case "$CONTAINERS_REQUIRED" in
+            0) ;;
+            1) test "$CONTAINERS_RELEASE" = 1 ;;
+            *) exit 1 ;;
+          esac
+
       - name: Download the matched Cloudflare Linux release
         if: needs.build-api.outputs.containers-release == '1'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -1194,6 +1215,7 @@ jobs:
         run: |
           set -euo pipefail
           for name in manifest.json manifest.sigstore.json container-registry.mjs; do
+            test -s "$RUNNER_TEMP/containers-release/$name"
             install -m 0644 "$RUNNER_TEMP/containers-release/$name" "cloudflare-containers-$name"
           done
 

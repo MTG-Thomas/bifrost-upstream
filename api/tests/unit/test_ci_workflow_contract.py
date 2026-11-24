@@ -356,7 +356,7 @@ def test_release_tags_still_require_the_complete_suite() -> None:
 
     assert set(jobs["build-api"]["needs"]) == release_prerequisites
     assert set(jobs["build-client"]["needs"]) == release_prerequisites
-    assert set(jobs["create-release"]["needs"]) == {"build-api", "build-client"}
+    assert set(jobs["create-release"]["needs"]) == {"registry-route", "build-api", "build-client"}
 
     for job_name in ("build-api", "build-client"):
         condition = _normalized(jobs[job_name]["if"])
@@ -386,21 +386,57 @@ def test_release_remains_draft_until_assets_and_images_are_verified() -> None:
     assert "draft=false" in publish["run"]
 
 
+_UPSTREAM_IMAGE = re.compile(r"(?:ghcr\.io/|(?<![\w/.-]))gobifrost/[a-z0-9_.-]+", re.IGNORECASE)
+_SCRIPT_PATH = re.compile(r"(?<![\w/])((?:api/scripts|scripts|deploy)/[\w./-]+\.(?:sh|py|mjs))\b")
+_SCRIPT_MODULE = re.compile(r"\bpython3?\s+-m\s+(scripts\.[\w.]+)")
+_LOCAL_ACTION = re.compile(r"\./(\.github/actions/[\w/-]+)")
+
+
+def _publication_script_sources(steps: list[dict[str, Any]]) -> dict[str, str]:
+    """Follow checked-in action and command references from publication jobs."""
+    sources: dict[str, str] = {}
+    pending = [step.get("run", "") + "\n" + step.get("uses", "") for step in steps]
+    while pending:
+        source = pending.pop()
+        refs = set(_SCRIPT_PATH.findall(source))
+        refs.update(module.replace(".", "/") + ".py" for module in _SCRIPT_MODULE.findall(source))
+        refs.update(action + "/action.yml" for action in _LOCAL_ACTION.findall(source))
+        for ref in refs - sources.keys():
+            path = REPO_ROOT / ref
+            if REPO_ROOT == Path("/app"):
+                if ref.startswith("scripts/"):
+                    path = Path("/ci-root-scripts") / ref.removeprefix("scripts/")
+                elif ref.startswith("api/scripts/"):
+                    path = REPO_ROOT / ref.removeprefix("api/")
+                elif ref.startswith("deploy/"):
+                    path = Path("/") / ref
+            sources[ref] = path.read_text(encoding="utf-8")
+            pending.append(sources[ref])
+    return sources
+
+
 def test_ci_registry_writes_require_repository_routing() -> None:
     workflow = _load_workflow(CI_WORKFLOW)
     jobs = workflow["jobs"]
-    assert not re.search(r"(?:ghcr\.io/)?gobifrost/bifrost-(?:api|client)|ghcr\.io/gobifrost/", CI_WORKFLOW.read_text())
+    assert not _UPSTREAM_IMAGE.search(CI_WORKFLOW.read_text())
     assert next(iter(jobs)) == "registry-route"
     assert "needs" not in jobs["registry-route"]
     assert "packages" not in jobs["registry-route"].get("permissions", {})
-    writers = {name for name, job in jobs.items() if job.get("permissions", {}).get("packages") == "write"}
+    writers = {name for name, job in jobs.items() if "write" in (
+        job.get("permissions", {}).get("packages"), job.get("permissions", {}).get("contents"),
+    )}
     assert writers == {"build-dev-api-candidate", "build-dev-client-candidate", "build-dev",
-                       "build-api", "build-client", "promote-release-images"}
+                       "build-api", "build-client", "create-release", "promote-release-images"}
     for name in writers:
         job = jobs[name]
         assert "registry-route" in job["needs"]
         if "always()" in job["if"]:
             assert "needs.registry-route.result == 'success'" in job["if"]
+        for path, source in _publication_script_sources(job["steps"]).items():
+            if path == "scripts/product_updates.py":
+                # This is the GitHub inventory CLI's default repository.
+                source = source.replace('default="gobifrost/bifrost"', "")
+            assert not _UPSTREAM_IMAGE.search(source), path
         for image in ("API_IMAGE", "CLIENT_IMAGE"):
             if image in json.dumps(job["steps"]):
                 assert job["env"][image] == "${{ needs.registry-route.outputs." + image.lower().replace("_", "-") + " }}"
@@ -414,6 +450,7 @@ _TRIAL_VARS = ("QUALIFIED_WORKERS_RUNTIME_URL", "QUALIFIED_WORKERS_METER_BOUNDS"
     [
         ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112401", None, False, None),
         ("gobifrost", "gobifrost/bifrost", "refs/tags/v2.0.0", "all", False, None),
+        ("gobifrost", "gobifrost/bifrost", "refs/tags/v2.0.0-rc.2026112401", None, False, "require a fork owner"),
         ("MTG-Thomas", "gobifrost/bifrost", "refs/tags/v2.0.0-rc.2026112401", None, False, "mismatched"),
         ("MTG-Thomas", "MTG-Thomas/bifrost-upstream", "refs/tags/v2.0.0-rc.2026112401", None, True, "Hard-coded"),
         *[
@@ -438,7 +475,7 @@ def test_registry_route_before_tag_publication(
                  "deploy/capacity/cloudflare/build-containers.sh"):
         fixture = tmp_path / path
         fixture.parent.mkdir(parents=True, exist_ok=True)
-        fixture.write_text("ghcr.io/gobifrost/unexpected" if hardcoded else "")
+        fixture.write_text("GoBiFrOsT/unexpected" if hardcoded else "")
     result = subprocess.run(["bash", "-c", route["run"]], cwd=tmp_path, env=env, capture_output=True, text=True)
     output = tmp_path / "output"
     if error:
@@ -448,7 +485,22 @@ def test_registry_route_before_tag_publication(
         assert result.returncode == 0, result.stdout + result.stderr
         assert output.read_text().splitlines() == [
             f"api-image={owner.lower()}/bifrost-api", f"client-image={owner.lower()}/bifrost-client",
+            f"containers-required={int(owner.lower() != 'gobifrost')}",
         ]
+
+
+@pytest.mark.parametrize(("required", "available", "success"), [("0", "", True), ("1", "", False), ("1", "1", True)])
+def test_release_requires_fork_linux_artifacts(required: str, available: str, success: bool) -> None:
+    steps = _load_workflow(CI_WORKFLOW)["jobs"]["create-release"]["steps"]
+    index = next(i for i, step in enumerate(steps) if step.get("name") == "Require Linux release assets for fork tags")
+    assert index < next(i for i, step in enumerate(steps) if step.get("id") == "release")
+    step = steps[index]
+    assert step["env"] == {
+        "CONTAINERS_REQUIRED": "${{ needs.registry-route.outputs.containers-required }}",
+        "CONTAINERS_RELEASE": "${{ needs.build-api.outputs.containers-release }}",
+    }
+    env = {**os.environ, "CONTAINERS_REQUIRED": required, "CONTAINERS_RELEASE": available}
+    assert (subprocess.run(["bash", "-c", step["run"]], env=env).returncode == 0) == success
 
 
 def test_nightly_owns_full_browser_slow_and_clean_build_discovery() -> None:
