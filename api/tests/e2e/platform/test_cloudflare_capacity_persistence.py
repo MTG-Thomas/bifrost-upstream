@@ -1622,8 +1622,16 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             prior_pin.container_reserved_at -= timedelta(seconds=2)
             prior_pin.container_stopped_at -= timedelta(seconds=2)
             await db_session.flush()
+            with monkeypatch.context() as cleanup:
+                cleanup.setattr(enable_job, "reconcile_container_stop", AsyncMock(side_effect=PlatformJobFailure(
+                    "CF_CONTAINERS_CLEANUP_PENDING", "Fixture timeout", retryable=True,
+                )))
+                with pytest.raises(PlatformJobFailure, match="Fixture timeout"):
+                    await lifecycle_job._reconcile(context, reconcile)
+            # Reuse the proof after retirement even though that reservation
+            # consumed the last canary allowance for the new window.
             assert await lifecycle_job._reconcile(context, reconcile) == {"outcome": "enabled"}
-            reconcile_enable.assert_awaited_once()
+            assert reconcile_enable.await_count == 2
             assert events == ["copy", "prepare", "launcher", "application", "canary", "stop", "retire"]
             await db_session.refresh(installation)
             assert installation.admitted_revision == installation.containers_ready_revision == revision

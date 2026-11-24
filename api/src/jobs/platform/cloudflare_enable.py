@@ -331,7 +331,7 @@ async def _settle_enable(
         already_admitted = row.admitted_revision == payload.revision
         refresh = (
             already_admitted and container_release is not None and refresh_container_egress
-            and read_verified_egress(row, datetime.now(UTC)) is None
+            and (deferred or read_verified_egress(row, datetime.now(UTC)) is None)
         )
         if already_admitted and not refresh:
             return {"outcome": "enabled"}
@@ -581,6 +581,8 @@ async def _settle_enable(
             ).isoformat(),
         }
         if deferred:
+            row.containers_ready_revision = None
+            row.containers_release_digest = None
             row.deployment_evidence = {**row.deployment_evidence, QUALIFICATION_DEFERRED_KEY: payload.revision}
         row.admitted_revision = payload.revision
         row.deployed_revision = payload.revision

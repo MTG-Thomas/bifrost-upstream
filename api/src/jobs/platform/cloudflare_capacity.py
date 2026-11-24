@@ -1128,7 +1128,10 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
         )
         # A deferred installation cannot review its first Linux workflow until
         # qualified. Demand gates routine proof refresh, not initial qualification.
-        qualify = deferred and canary_available and (qualification_retry is None or qualification_retry.retry_at <= now)
+        qualify = deferred and (
+            read_pending_qualification(row, now) is not None
+            or (canary_available and (qualification_retry is None or qualification_retry.retry_at <= now))
+        )
     if provision:
         # Reuse the admission canary and write fences used by Enable.
         from src.jobs.platform.cloudflare_enable import CloudflareEnablePayload, _enable
