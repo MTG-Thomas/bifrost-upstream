@@ -1652,6 +1652,8 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
         from src.services.worker_pool.cloudflare_containers_egress import read_verified_egress
         from src.services.worker_pool.cloudflare_containers_policy import container_account_usage
 
+        for module in (cloudflare_admission, cloudflare_policy):
+            monkeypatch.setattr(module, "installed_workers_release_digest", lambda: workers.digest)
         now = datetime.now(UTC)
         assert await db_session.scalar(select(container_account_usage(
             now, instance_seconds=True, account_id=installation.account_id,
