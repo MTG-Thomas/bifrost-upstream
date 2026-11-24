@@ -60,6 +60,10 @@ dependencies = [
     "webauthn>=2.7.1",  # WebAuthn/Passkeys support
     "authlib>=1.9.5",  # OIDC relying party: JWKS + id_token claim validation
     "altcha>=2.1.0",  # Self-hosted proof-of-work protection for public forms
+    # SCIM 2.0 (RFC 7643/7644) resource, PatchOp and filter models for the
+    # identity-provider provisioning endpoint. Pre-1.0: pinned to a minor line.
+    "scim2-models>=0.12.4,<0.13",
+    "dnspython>=2.8.0",  # DNS TXT verification of organization domain claims
 
     # =========================================================================
     # Configuration
@@ -70,6 +74,20 @@ dependencies = [
     "packaging",  # PEP 440/SemVer-compatible CLI minimum-version comparisons
     "keyring>=24.0",  # OS-native credential storage; SecretStorage pulled in transitively on Linux
     "email-validator",  # Required by Pydantic for email validation
+
+    # =========================================================================
+    # Observability (OpenTelemetry) — traces + metrics to operator backends.
+    # Default off: telemetry initializes only when OTEL_EXPORTER_OTLP_ENDPOINT
+    # is set. See docs/architecture/otel-observability.md.
+    # =========================================================================
+    "opentelemetry-sdk",  # TracerProvider/MeterProvider; env config is explicit in telemetry.py
+    "opentelemetry-exporter-otlp-proto-http",  # OTLP/HTTP spans + metrics, no grpc dep
+    "opentelemetry-instrumentation-fastapi",  # Request spans (health endpoints excluded)
+    "opentelemetry-instrumentation-sqlalchemy",  # DB spans (statement capture audited, see telemetry.py)
+    "opentelemetry-instrumentation-asyncpg",  # AsyncPG driver spans
+    "opentelemetry-instrumentation-redis",  # Redis spans
+    "opentelemetry-instrumentation-httpx",  # Outbound HTTP spans
+    "opentelemetry-instrumentation-system-metrics",  # Runtime CPU/memory meters (pulls psutil)
 
     # =========================================================================
     # HTTP & Async
@@ -122,7 +140,7 @@ dependencies = [
     # =========================================================================
     # Object Storage (S3-compatible)
     # =========================================================================
-    "awscrt==0.38.1",  # Official SigV4 signer/checksums for the narrow HTTPX S3 transport
+    "awscrt==0.38.2",  # Official SigV4 signer/checksums for the narrow HTTPX S3 transport
     "azure-storage-blob>=12.27,<13",  # Opt-in native Azure Blob transport
     "azure-identity>=1.25,<2",  # Explicit managed identity (no developer credential fallback)
 
@@ -131,8 +149,8 @@ dependencies = [
     # =========================================================================
     # Exact pins are intentional: the Harness API is still pre-1.0 and is the
     # execution boundary for every Bifrost agent surface.
-    "pydantic-ai-slim[openai,anthropic,google,retries]==2.68.0",
-    "pydantic-ai-harness==0.68.0",
+    "pydantic-ai-slim[openai,anthropic,google,retries]==2.71.0",
+    "pydantic-ai-harness==0.71.0",
     "pydantic-monty==1.6.0",  # Local language sandbox for Automatic CodeMode
 
     # =========================================================================
@@ -199,4 +217,6 @@ dev = [
     # still declares watchdog for laptop installs.
     "debugpy",  # Remote debugging (VS Code attach)
     "watchdog",  # File watching for hot reload (watchmedo command)
+    # RFC 7643/7644 compliance checks against the SCIM endpoint (e2e suite)
+    "scim2-tester>=0.6.4,<0.7",
 ]

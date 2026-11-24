@@ -52,7 +52,7 @@ def _consumer(route: CredentialRoute = CredentialRoute(1)) -> WorkflowExecutionC
 @pytest.mark.parametrize('written', [True, False])
 @pytest.mark.parametrize('owner', [None, UUID('00000000-0000-0000-0000-0000000000bb')])
 async def test_setup_failure_fences_owner_and_notifies_only_after_written(written: bool, owner: UUID | None):
-    issued = RunCredentials('synthetic-access', 'synthetic-refresh', datetime.now(timezone.utc), 2)
+    issued = RunCredentials('synthetic-access', 'synthetic-refresh', datetime.now(timezone.utc), 2, None)
     consumer = _consumer(CredentialRoute(2, 1))
     consumer.owner_worker_id = owner
     consumer._pool.route_execution.side_effect = ValueError('Synthetic prelaunch refusal')
@@ -142,7 +142,7 @@ async def test_historic_unattended_pending_run_uses_its_durable_identity_not_pen
         name="Scheduled Identity",
         is_platform_admin=False,
     )
-    issued = RunCredentials("access", None, datetime.now(timezone.utc), 2)
+    issued = RunCredentials("access", None, datetime.now(timezone.utc), 2, None)
     with (
         patch(f"{MODULE}.create_execution", new=AsyncMock()) as create,
         patch(f"{MODULE}.publish_execution_update", new=AsyncMock()),
@@ -319,9 +319,18 @@ async def test_a_run_that_moved_on_is_discarded_and_wakes_its_sync_caller() -> N
     ids=["claims route", "legacy launcher"],
 )
 async def test_credentials_are_minted_for_the_route_chosen_first(
-    route: CredentialRoute, credential_version: int | None, refresh_token: str | None
+    route: CredentialRoute,
+    credential_version: int | None,
+    refresh_token: str | None,
+    current_runtime_authority,
 ) -> None:
-    issued = RunCredentials("access", refresh_token, datetime.now(timezone.utc), credential_version)
+    authority, load = current_runtime_authority
+    # Claims are minted from the run's authority; a legacy token is signed
+    # without reading it.
+    minted_from = authority if credential_version is not None else None
+    issued = RunCredentials(
+        "access", refresh_token, datetime.now(timezone.utc), credential_version, minted_from
+    )
     with (
         patch(f"{MODULE}.create_execution", new=AsyncMock()) as create,
         patch(f"{MODULE}.publish_execution_update", new=AsyncMock()),
@@ -347,6 +356,8 @@ async def test_credentials_are_minted_for_the_route_chosen_first(
     assert routed["context"]["original_user_id"] == RUN_USER_ID
     assert routed["context"]["engine_token"] == "access"
     assert routed["context"].get("engine_refresh_token") == refresh_token
+    # The authority the claims were minted from is not read a second time.
+    assert load.await_count == (0 if minted_from is not None else 1)
     refresh.assert_called_once_with()
 
 
@@ -363,9 +374,40 @@ def current_runtime_authority():
         agent_id=UUID("00000000-0000-0000-0000-0000000000bb"),
         run_user=SimpleNamespace(user_id=RUN_USER_ID, is_platform_admin=False),
     )
+    load = AsyncMock(return_value=authority)
     with (
         patch(f"{MODULE}.get_db_context", database),
-        patch("src.services.authorization.runtime.load_runtime_authority", new=AsyncMock(return_value=authority)),
+        patch("src.services.authorization.runtime.load_runtime_authority", new=load),
         patch("src.services.authorization.runtime.load_execution_provenance", new=AsyncMock(return_value=ExecutionProvenance("agent", authority.agent_id))),
     ):
-        yield
+        yield authority, load
+
+
+@pytest.mark.asyncio
+async def test_routed_context_carries_the_dispatch_trace_context_only_when_tracing(monkeypatch) -> None:
+    """The forked child parents its run span on the active dispatch span."""
+    from opentelemetry import trace
+    from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
+
+    async def routed_context() -> dict:
+        with (
+            patch(f"{MODULE}.create_execution", new=AsyncMock()),
+            patch(f"{MODULE}.publish_execution_update", new=AsyncMock()),
+            patch(f"{MODULE}.publish_history_update", new=AsyncMock()),
+            patch("src.services.execution.queue_tracker.request_queue_position_refresh", new=Mock()),
+        ):
+            consumer = _consumer()
+            await consumer.process_message(MESSAGE, _claimed())  # type: ignore[arg-type]
+        return consumer._pool.route_execution.await_args.kwargs["context"]
+
+    # No active span (telemetry off): nothing is written.
+    assert "traceparent" not in await routed_context()
+
+    span = NonRecordingSpan(SpanContext(
+        trace_id=int("ab" * 16, 16), span_id=int("cd" * 8, 16), is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+    ))
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.invalid")
+    with trace.use_span(span):
+        context = await routed_context()
+    assert context["traceparent"] == f"00-{'ab' * 16}-{'cd' * 8}-01"

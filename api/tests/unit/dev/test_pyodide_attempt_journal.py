@@ -501,7 +501,7 @@ async def test_setup_refusal_notifies_only_a_claim_fenced_durable_failure(owner,
 
     consumer._pool.route_execution.side_effect = refuse
     consumer._redis_client = AsyncMock()
-    issued = RunCredentials('synthetic-access', 'synthetic-refresh', datetime.now(timezone.utc), 2)
+    issued = RunCredentials('synthetic-access', 'synthetic-refresh', datetime.now(timezone.utc), 2, None)
     target = 'src.jobs.consumers.workflow_execution'
     try:
         with (
