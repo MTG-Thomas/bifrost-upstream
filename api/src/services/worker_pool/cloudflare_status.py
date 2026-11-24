@@ -214,7 +214,11 @@ def recovery_for_job(
             try:
                 retry = datetime.fromisoformat(retry_at)
                 if retry.utcoffset() is not None:
-                    remedy = f"Retry this capacity action at or after {retry.astimezone(UTC).isoformat()}."
+                    at = retry.astimezone(UTC).isoformat()
+                    remedy = (
+                        f"Wait for the budget reset at {at} or review the Container instance-hour budget in Capacity."
+                        if code == "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED" else f"Retry this capacity action at or after {at}."
+                    )
             except (ValueError, OverflowError):
                 pass
     return CloudflareRecoveryDetails(code=code, remedy=remedy, **sanitized)

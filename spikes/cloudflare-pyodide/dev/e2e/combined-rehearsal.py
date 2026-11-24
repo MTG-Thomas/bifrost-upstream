@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -134,10 +135,12 @@ if asyncio.run(_public_addresses("existing.example.test")) != (address,):
     raise SystemExit("Ingress probe is outside the local fixture")
 if os.getenv("REHEARSAL_CONTAINERS") == "1":
     from src.services.worker_pool.cloudflare_activation import load_containers_release as activation_release
+    from src.services.execution.cloudflare_eligibility import load_containers_release as approval_release
     from src.services.worker_pool.cloudflare_canary import asyncio as cloudflare_asyncio
     from src.services.worker_pool.cloudflare_containers_release import load_containers_release, run_oci_tool
     if (
         activation_release is not load_containers_release
+        or approval_release is not load_containers_release
         or load_containers_release.__name__ != "local_release"
         or run_oci_tool.__name__ != "local_tool"
         or type(cloudflare_asyncio).__name__ != "LocalAsyncio"
@@ -958,7 +961,7 @@ class ContainerRehearsal(Rehearsal):
         assert 0 <= amount < Decimal("0.50") and 0 <= remaining < 100
         evidence("container-spend", {"checkpoint": stage, "estimated_usd": str(amount), "hours_remaining": str(remaining)})
 
-    def container_workflow(self, installation_id):
+    def approve_container_workflow(self, installation_id):
         provider, = [org for org in self.send("/api/organizations", method="GET") if org["is_provider"]]
         self.tenants["linux"] = provider["id"]
         source = """import _ssl
@@ -975,10 +978,19 @@ async def qualification_container(case: str, hold: int):
 """
         workflow = self.register("qualification_container", source, provider["id"], 96, timeout=30)
         self.workflows["linux"] = workflow
-        subprocess.run(self.compose + [
-            "exec", "-T", "--user", "1000:1000", "api", "python", "/rehearsal-site/containers_fixture.py",
-            installation_id, str(UUID(workflow)),
-        ], check=True)
+        approval_path = f"/api/workflows/{UUID(workflow)}/cloudflare-approval"
+        proposal = self.send(approval_path + "/propose", {"runtime": "containers"})["proposal"]
+        assert proposal["container"]["installation_id"] == installation_id
+        assert set(proposal["container"]["findings"]) == {"CF_NATIVE", "CF_PROCESS"}
+        accepted = self.send(approval_path + "/accept", {
+            "runtime": "containers", "review_sha256": proposal["review_sha256"],
+            "subrequest_allowance": proposal["subrequest_allowance"], "cpu_budget_ms": proposal["cpu_budget_ms"],
+        })
+        assert accepted["status"] == "approved" and accepted["current_revision"] == proposal["review_sha256"]
+        return approval_path
+
+    def container_workflow(self, installation_id):
+        approval_path = self.approve_container_workflow(installation_id)
         original_api = self.api_container
         # The static launcher reconnects to the Compose service name.
         self.successor = subprocess.check_output(
@@ -1012,6 +1024,7 @@ async def qualification_container(case: str, hold: int):
 
         try:
             wait("Container SDK request in flight", lambda: execution in self.provider("/local/held-reads"))
+            self.sample_container_spend("workflow-running")
             # The fixture primary dials the original Compose service name.
             # Release its hold before retiring that API. The Container keeps its claim.
             self.release_primary()
@@ -1046,7 +1059,168 @@ async def qualification_container(case: str, hold: int):
 
         settled = wait("Container idle stop and retirement", retired, 120 + 30)
         assert settled["worker"] == terminal["worker"]
+        revoked = self.send(approval_path, method="DELETE")
+        assert revoked["current_revision"] is None
         evidence("container-idle-stop", {"worker": settled["worker"], "placement_settled": True})
+
+
+class HostedContainers(ContainerRehearsal):
+    """Drive Containers through the public surfaces on a dedicated trial account."""
+
+    def __init__(self, config):
+        if config.stat().st_mode & 0o077:
+            raise ValueError("The hosted configuration must be private")
+        self.cfg = json.loads(config.read_text())
+        self.account = self.cfg["account"]
+        assert re.fullmatch("[a-f0-9]{32}", self.account)
+        assert re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", self.cfg["hostname"])
+        project = self.cfg["project"]
+        assert re.fullmatch("bifrost-test-[a-z0-9-]+", project)
+        compose_files = self.cfg["compose_files"]
+        assert 1 <= len(compose_files) <= 2 and all(re.fullmatch("[a-z0-9-]+\\.yml", name) for name in compose_files)
+        self.compose = ["docker", "compose", "-p", project]
+        for name in compose_files:
+            self.compose.extend(("-f", name))
+        self.provider_origin = self.cfg.get("provider_origin", "https://api.cloudflare.com")
+        if self.provider_origin != "https://api.cloudflare.com":
+            endpoint = urlsplit(self.provider_origin)
+            assert endpoint.scheme == "http" and not any((endpoint.path, endpoint.query, endpoint.fragment, endpoint.username))
+            assert ipaddress.ip_address(endpoint.hostname).is_private
+        self.origin = f"http://{self.verify_isolation()}:8000"
+        self.api_container = subprocess.check_output(self.compose + ["ps", "-q", "api"], text=True, timeout=8).strip()
+        credentials = dict(line.split("=", 1) for line in Path(".env").read_text().splitlines())
+        code, data = http(self.origin + "/auth/login", "POST", urlencode({
+            "username": credentials["BIFROST_DEFAULT_USER_EMAIL"],
+            "password": credentials["BIFROST_DEFAULT_USER_PASSWORD"],
+        }).encode(), content_type="application/x-www-form-urlencoded")
+        assert code == 200
+        self.admin = data["access_token"]
+        self.workflows, self.holds, self.runs, self.tenants = {}, [], {}, {}
+        self.deadline = time.monotonic() + 20 * 60
+        self.live_target = Decimal(self.cfg["live_target_usd"])
+        self.live_cap = Decimal(self.cfg["live_abort_usd"])
+        self.settled_cap = Decimal(self.cfg["settled_cap_usd"])
+        assert 0 < self.settled_cap <= self.live_target < self.live_cap
+
+    def verify_isolation(self, *, successor=None):
+        return HostedUpgrade.verify_isolation(self, successor=successor)
+
+    def provider(self, path, method="GET", payload=None, *, status=200):
+        assert path.startswith("/client/v4/accounts/" + self.account + "/") and method == "GET" and payload is None
+        code, data = request_json(self.provider_origin + path, "GET", token=self.cfg["managementToken"])
+        if code != status or (status == 200 and not data["success"]):
+            raise RuntimeError(f"Expected provider read HTTP {status}, received {code}")
+        return data["result"] if status == 200 else None
+
+    def canaries(self):
+        return self.sql("""SELECT count(*) FROM cloudflare_worker_reservations
+            WHERE scope='containers' AND canary_job_id IS NOT NULL""")
+
+    def completed(self, job, outcome, *, window=90):
+        if outcome != "enabled":
+            return super().completed(job, outcome, window=window)
+
+        def terminal():
+            state = self.send(f"/api/platform-jobs/{job}", method="GET")
+            result = state.get("result") or {}
+            code = result.get("code") or (state.get("error") or {}).get("code")
+            count = self.canaries()
+            if code in {"CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_QUALIFICATION_BACKOFF"} or state["attempt"] > 1 or count > 2:
+                raise RuntimeError(f"Qualification stopped ({code or 'canary fence'})")
+            self.observe_scheduler("qualification")
+            if state["status"] not in ACTIVE_JOB:
+                if state["status"] != "succeeded" or result.get("outcome") != outcome:
+                    raise RuntimeError(f"Enable did not succeed ({code})")
+                return result
+            return None
+
+        try:
+            # Each Enable ends before the five-minute paid-start retry window.
+            return wait(outcome, terminal, min(window, ENABLE_RESULT_SECONDS))
+        except (AssertionError, RuntimeError):
+            self.send(f"/api/platform-jobs/{job}/cancel")
+            raise
+
+    def observe_scheduler(self, stage, *, settled=False, starting=False):
+        status = self.send("/api/capacity/cloudflare", method="GET")
+        deployment = status["installation"]
+        spend = deployment["spend"]
+        assert spend["state"] == "ready" and spend["estimated_usd"] is not None
+        estimate = Decimal(spend["estimated_usd"])
+        if (
+            estimate >= self.live_cap or (settled and estimate >= self.settled_cap)
+            or (starting and estimate >= self.live_target) or time.monotonic() >= self.deadline
+        ):
+            raise RuntimeError("Trial spend or time stop")
+        lane = next((entry for entry in status["lanes"] if entry["lane"] == "containers"), None)
+        evidence("hosted-shaped-scheduler", {
+            "checkpoint": stage, "lane": lane, "estimated_usd": str(estimate), "canaries": self.canaries(),
+        })
+
+    def enable(self):
+        assert self.canaries() < 2
+        before = self.canaries()
+        if before:
+            self.observe_scheduler("before-enable", starting=True)
+        super().enable()
+        assert self.canaries() == before + 1
+
+    def run(self):
+        root = f"/client/v4/accounts/{self.account}/containers/applications"
+        app_path = None
+        assert not self.scripts() and self.provider(root) == [] and self.canaries() == 0
+        self.review_activation("existing", containers=True)
+        try:
+            self.enable()
+            self.preflight()
+            self.observe_scheduler("enabled", settled=True)
+            installation = self.install()
+            revision = installation["desired_revision"]
+            app, = self.provider(root)
+            app_path = f"{root}/{app['id']}"
+            scripts = self.scripts()
+            assert len(scripts) == 4
+            approval = self.approve_container_workflow(str(UUID(installation["installation_id"])))
+            self.primary_hold()
+            self.observe_scheduler("before-workflow", starting=True)
+            execution = self.submit("container-overflow", "linux")
+
+            def completed_work():
+                self.observe_scheduler("workflow")
+                current = self.send(f"/api/executions/{execution}", method="GET")
+                return current if current["status"] not in {"Pending", "Queued", "Running", "Cancelling"} else None
+
+            terminal = wait("Container workflow", completed_work, 90)
+            assert terminal["status"] == "Success" and terminal["result"]["child"] == "linux-child"
+            assert terminal["result"]["native"].startswith("OpenSSL")
+            self.release_primary()
+            placement = wait("Container placement retirement", lambda: self.sql(f"""SELECT COALESCE((
+                SELECT container_envelope->'provider_instance_id' FROM cloudflare_worker_reservations
+                WHERE container_envelope->>'execution_id'='{execution}' AND container_stopped_at IS NOT NULL
+                ), 'null')"""), 150)
+            assert self.sql(f"SELECT count(*) FROM execution_worker_claims WHERE subject_id='{execution}'") == 1
+            stopped = self.provider(f"{app_path}/instances/{placement}")
+            assert stopped["application_id"] == app["id"] and stopped["status"]["state"] == "stopped"
+            revoked = self.send(approval, method="DELETE")
+            assert revoked["current_revision"] is None
+            self.observe_scheduler("idle-stop", settled=True)
+            self.completed(self.job("scale-in"), "scaled_in")
+            assert not self.install()["admission_open"] and self.scripts() == scripts
+            assert self.provider(app_path)["health"]["instances"] == {"active": 0, "starting": 0}
+            self.observe_scheduler("scale-in", settled=True)
+            self.enable()
+            assert self.install()["desired_revision"] == revision and self.scripts() == scripts
+            assert self.provider(app_path)["id"] == app["id"] and self.canaries() == 2
+            self.observe_scheduler("scale-out", settled=True)
+        finally:
+            try:
+                self.release_primary()
+            finally:
+                if self.install() is not None:
+                    self.disconnect()
+        assert self.provider(root) == [] and not self.scripts()
+        if app_path is not None:
+            self.provider(app_path, status=404)
 
 
 class HostedUpgrade(Rehearsal):
@@ -1168,9 +1342,28 @@ def main():
     modes.add_argument("--upgrade-only", action="store_true", help="Rehearse uninterrupted Upgrade with Existing HTTPS")
     modes.add_argument("--containers-only", action="store_true", help="Rehearse the opted-in local Container journey")
     modes.add_argument("--hosted-upgrade-config", type=Path, help="Run the rehearsed Upgrade against a dedicated hosted ingress")
+    modes.add_argument("--hosted-containers-config", type=Path, help="Use public APIs for the Containers trial")
+    modes.add_argument("--containers-hosted-shape", action="store_true", help="Run that trial against the isolated local provider")
     args = parser.parse_args()
     if args.hosted_upgrade_config:
         HostedUpgrade(args.hosted_upgrade_config).run()
+        return
+    if args.hosted_containers_config:
+        HostedContainers(args.hosted_containers_config).run()
+        return
+    if args.containers_hosted_shape:
+        fixture = ContainerRehearsal()
+        assert "containers" in fixture.cfg and "managementToken" not in fixture.cfg
+        with fixture.raw_tcp_boundary(), TemporaryDirectory(prefix="containers-hosted-shape-") as directory:
+            config = Path(directory) / "trial.json"
+            config.touch(mode=0o600)
+            config.write_text(json.dumps({
+                "account": fixture.account, "project": fixture.cfg["project"], "network": fixture.cfg["network"],
+                "hostname": "existing.example.test", "managementToken": MANAGEMENT,
+                "provider_origin": fixture.boundary, "compose_files": ["rehearsal-compose.yml", "rehearsal-overlay.yml"],
+                "live_target_usd": "0.03", "live_abort_usd": "0.05", "settled_cap_usd": "0.02",
+            }))
+            HostedContainers(config).run()
         return
     if args.containers_only:
         ContainerRehearsal().run()

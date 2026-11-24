@@ -80,7 +80,8 @@ def container_envelope(policy: ContainersPolicy, rates: ContainerRates) -> dict[
 
 def fleet_envelope(policy: ContainersPolicy, rates: ContainerRates, month_seconds: int) -> Decimal:
     # Price the hours budget and conservatively allow one fixed hold for
-    # every charged second, including the upper bound on rapid restarts.
+    # every budgeted second and the overlapping instance seats. Voided
+    # reservations can still pay a fixed hold and the dollar ledger tracks it.
     envelope = container_envelope(policy, rates)
     seconds = min(policy.monthly_instance_hours * 3600, policy.installation_instances * month_seconds)
     fixed = Decimal(envelope["fixed_usd"])

@@ -7,7 +7,10 @@ suggested 100 instance-hours allow two concurrent `standard-1` instances
 within a monthly allocation. The ledger books startup, lifetime and cleanup
 seconds for each reservation, including canaries, then settles from receipts.
 The budget resets at the UTC month boundary. Exhausting it pauses Container
-admission only. The signed release rates price the Container allocation for
+workflow placement and routine refresh only. Qualification canaries still
+count toward instance-hours but may exceed the hours budget to admit the
+joint revision under the shared dollar limit, backoff and seat caps.
+The signed release rates price the Container allocation for
 the joint fleet check. Compute for 100 hours is about $7.40 before outbound
 and control holds.
 

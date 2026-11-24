@@ -34,7 +34,7 @@ class CloudflarePreflightRequest(BaseModel):
     reachability_mode: Literal["existing_https_endpoint", "managed_tunnel"] | None = None
     worker_ingress_origin: str | None = None
     policy: dict[str, Any] | None = None
-    containers: bool = False
+    containers: bool | None = None
     container_instance_hours: int | None = Field(default=None, ge=1, le=1488)
 
     def request_body(self) -> dict[str, Any]:

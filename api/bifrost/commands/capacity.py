@@ -92,7 +92,7 @@ def _preflight_options(command):
         click.option("--worker-ingress-origin"),
         click.option("--credential-ref", type=click.UUID),
         click.option("--policy", type=click.File("r", encoding="utf-8"), help="Advanced capacity policy JSON file."),
-        click.option("--containers", is_flag=True, help="Include the paid Containers pilot in the preflight."),
+        click.option("--containers", is_flag=True, default=None, help="Include the paid Containers pilot in the preflight."),
         click.option("--container-instance-hours", type=click.IntRange(1, 1488), help="Monthly Container instance-hours."),
     )):
         command = option(command)
@@ -100,6 +100,8 @@ def _preflight_options(command):
 
 
 def _preflight_body(policy: TextIO | None, credential_ref: UUID | None, fields: dict[str, Any]) -> CloudflarePreflightRequest:
+    if fields.get("container_instance_hours") is not None and not fields.get("containers"):
+        raise click.UsageError("--container-instance-hours requires --containers.")
     return CloudflarePreflightRequest(
         **fields, credential_ref=credential_ref, policy=_read_policy(policy) if policy else None,
         api_token=None if credential_ref else click.prompt("Cloudflare API Token", hide_input=True),
@@ -156,6 +158,15 @@ async def activate(
         plan["account_id"],
     )
     mode = "Managed Tunnel" if plan["reachability_mode"] == "managed_tunnel" else "Existing HTTPS Endpoint"
+    preview = plan["preview"]
+    if containers := preview.get("containers_policy"):
+        click.echo(f"Containers minimum: {preview['containers_fleet_envelope_usd']} USD/month", err=True)
+        click.echo(
+            f"Containers: {containers['instance_type']}, {containers['installation_instances']} maximum, "
+            f"{containers['tenant_instances']} per tenant, {containers['workflow_slots']} workflow per instance, "
+            f"{containers['idle_seconds']} s idle stop, {containers['monthly_instance_hours']} instance-hours/month.",
+            err=True,
+        )
     click.echo(f"Account: {account} ({plan['account_id']})", err=True)
     if plan["zone_id"]:
         click.echo(f"DNS Zone: {plan['zone_name']} ({plan['zone_id']})", err=True)

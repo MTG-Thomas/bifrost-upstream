@@ -134,11 +134,12 @@ async def _run_admitted(read: SourceReader, options: dict[str, Any]) -> Any:
 
 async def analyze(
     read: SourceReader, entry_path: str, function_name: str | None,
-    *, subrequest_allowance: int, cpu_budget_ms: int,
+    *, subrequest_allowance: int, cpu_budget_ms: int, linux_packages: dict[str, str] | None = None,
 ) -> dict[str, object]:
     return await _run(
         read, diagnostics=False, entry_path=entry_path, function_name=function_name,
         subrequest_allowance=subrequest_allowance, cpu_budget_ms=cpu_budget_ms,
+        linux_packages=linux_packages,
     )
 
 

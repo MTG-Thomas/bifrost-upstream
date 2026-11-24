@@ -582,11 +582,15 @@ class _Analysis:
     call_hints: list[_CallHint] = field(default_factory=list)
     single_file: bool = False
     findings: list[Finding] | None = None
+    linux_packages: dict[str, str] | None = None
+    linux_findings: set[str] = field(default_factory=set)
     local_helpers_entry: str | None = None
     literal_selectors: dict[int, str] = field(default_factory=dict)
     scope_copy_work: int = 0
 
     def observe(self, rule: str, message: str, path: str, node: ast.AST) -> None:
+        if self.linux_packages is not None and rule == "CF_PROCESS":
+            self.linux_findings.add(rule)
         if self.findings is not None:
             if len(self.findings) == _MAX_FINDINGS:
                 raise AnalysisRejected("Workspace sources exceed the diagnostics budget", "CF_PARSE_BUDGET")
@@ -668,6 +672,17 @@ class _Analysis:
             raise AnalysisRejected("Python import exceeds the analysis budget", "CF_PARSE_BUDGET")
         parts = dotted.split(".")
         root = parts[0]
+        if self.linux_packages is not None:
+            if root in {"subprocess", "multiprocessing"}:
+                self.linux_findings.add("CF_PROCESS")
+                return True
+            if root in {"_ssl", "ctypes", "fcntl", "resource", "signal"}:
+                self.linux_findings.add("CF_NATIVE")
+                return True
+            if root in self.linux_packages and root not in _UNSUPPORTED:
+                self.linux_findings.add("CF_PACKAGE")
+                self.packages.add(self.linux_packages[root])
+                return True
         if root in _UNSUPPORTED and dotted != "importlib.metadata":
             rule = "CF_DYNAMIC"
             if root in {"subprocess", "multiprocessing"}:
@@ -678,6 +693,8 @@ class _Analysis:
                 rule = "CF_NATIVE"
             raise AnalysisRejected(f"Unsupported Pyodide import: {root}", rule)
         if root in _PACKAGES:
+            if self.linux_packages is not None:
+                raise self.unresolved_import(dotted)
             self.packages.add(_PACKAGES[root])
             return True
         if root in _RESERVED:
@@ -701,7 +718,11 @@ class _Analysis:
 
     async def import_from(self, path: str, node: ast.ImportFrom) -> None:
         module = _import_module(path, node)
-        if module.split(".")[0] in _RESERVED | _PACKAGES.keys():
+        root = module.split(".")[0]
+        linux_import = self.linux_packages is not None and (
+            root in self.linux_packages or root in {"subprocess", "multiprocessing", "_ssl", "ctypes", "fcntl", "resource", "signal"}
+        )
+        if root in _RESERVED | _PACKAGES.keys() or linux_import:
             await self.resolve(module)
             if any(
                 alias.name in _TRAPS or alias.name == "*" or f"{module}.{alias.name}" in _REFLECTION
@@ -1059,10 +1080,18 @@ class _Analysis:
 
 async def analyze(
     read: SourceReader, entry_path: str, function_name: str | None,
-    *, subrequest_allowance: int, cpu_budget_ms: int,
+    *, subrequest_allowance: int, cpu_budget_ms: int, linux_packages: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Build the canonical pins and bounded routing proposal without executing code."""
-    return await _analyze(_Analysis(read), entry_path, function_name, subrequest_allowance, cpu_budget_ms)
+    analysis = _Analysis(read, linux_packages=linux_packages)
+    result = await _analyze(analysis, entry_path, function_name, subrequest_allowance, cpu_budget_ms)
+    if linux_packages is not None:
+        if not analysis.linux_findings:
+            raise AnalysisRejected("No Linux runtime requirement was found")
+        if result["https_hosts"] or result["unresolved_url_calls"]:
+            raise AnalysisRejected("Container workflows may only use the worker ingress", "CF_TRANSPORT")
+        result["linux_findings"] = sorted(analysis.linux_findings)
+    return result
 
 
 async def _analyze(

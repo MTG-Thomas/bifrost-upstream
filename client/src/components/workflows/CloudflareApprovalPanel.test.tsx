@@ -75,6 +75,37 @@ describe("CloudflareApprovalPanel", () => {
 		expect(proposeCloudflareApproval).not.toHaveBeenCalled();
 	});
 
+	it("proposes and accepts a Containers review using the reviewed runtime", async () => {
+		const container: NonNullable<ApprovalState["current_container"]> = {
+			findings: ["CF_NATIVE"], release_digest: digest, installation_id: "installation",
+			deployment_revision: 1, consent_version: "v1", worker_ingress_origin: "https://workers.example.test",
+			egress: "worker-ingress-only-v1", path: "test.py", function_name: "run", source_pins: { "test.py": digest },
+			wheels: {}, memory_bytes: 96 * 2 ** 20, timeout_seconds: 30, ingress_bytes: 250000, outbound_bytes: 250000,
+			previous_revision: null, inactive_history_count: 0,
+		};
+		vi.mocked(getCloudflareApproval).mockResolvedValue(pending);
+		vi.mocked(proposeCloudflareApproval).mockResolvedValue({
+			...pending, proposal: { ...proposal, container, https_hosts: [], wildcard_https_hosts: [] },
+		});
+		vi.mocked(acceptCloudflareApproval).mockResolvedValue({
+			...pending, status: "approved", current_revision: digest, current_container: container,
+		});
+		vi.mocked(revokeCloudflareApproval).mockResolvedValue(pending);
+		const user = open();
+		await user.selectOptions(await screen.findByLabelText("Runtime"), "containers");
+		await user.click(screen.getByRole("button", { name: "Propose Approval" }));
+		expect(await screen.findByText("Containers (Linux) · Worker Ingress Only")).toBeVisible();
+		expect(proposeCloudflareApproval).toHaveBeenCalledWith("workflow", { runtime: "containers", https_hosts: [] });
+		await user.click(screen.getByRole("button", { name: "Accept Reviewed Digest" }));
+		expect(await screen.findByText("Current Containers (Linux) Approval")).toBeVisible();
+		expect(acceptCloudflareApproval).toHaveBeenCalledWith("workflow", expect.objectContaining({
+			runtime: "containers", review_sha256: digest,
+		}));
+		await user.click(screen.getByRole("button", { name: "Revoke Approval" }));
+		await user.click(screen.getByRole("button", { name: "Confirm Revocation" }));
+		expect(await screen.findByText("Pending Review")).toBeVisible();
+	});
+
 	it("lets the operator supply a larger reviewed allowance after a budget refusal", async () => {
 		vi.mocked(getCloudflareApproval).mockResolvedValue({
 			...pending,

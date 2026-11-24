@@ -483,7 +483,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Failed Container egress refresh adds an additive Capacity placement reason.
     # Optional Container opt-in and budget fields preserve older requests.
     # The CLI passes through response fields, so MIN_CLI_VERSION is unchanged.
-    "48e0c0f89724d995ebaa951bf3fd5d961db952e3795efed2ff5b0ab7d976e3eb"
+    "044666dfe459db87257e3e9aab51b5c451a023461f6d322f89d79b7ee8e1a444"
 )
 
 

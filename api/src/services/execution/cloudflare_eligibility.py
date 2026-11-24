@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from dataclasses import dataclass
 from uuid import UUID
+
+import httpx
 
 from bifrost.cloudflare_analysis import (
     MAX_BUNDLE_BYTES,
@@ -24,7 +27,10 @@ from src.core.database import get_db_context
 from src.core.storage.contracts import StorageError
 from src.models.contracts.cloudflare_approval import (
     ApprovalDeclaration,
+    LINUX_REVIEW_VERSION,
+    LinuxReview,
     SolutionApprovalScope,
+    linux_review_digest,
 )
 from src.models.orm import (
     CloudflareApproval,
@@ -33,10 +39,18 @@ from src.models.orm import (
     SolutionFileIndex,
     Workflow,
 )
+from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.services.execution.cloudflare_analysis_runner import analyze
 from src.services.execution.cloudflare_hosts import reviewed_https_allowlist
 from src.services.repo_storage import RepoStorage
 from src.services.solutions.storage import SolutionStorage
+from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
+from src.services.worker_pool.cloudflare_containers_release import (
+    ContainersReleaseFetchError,
+    ContainersReleaseUnavailable,
+    load_containers_release,
+)
+from src.services.worker_pool.cloudflare_release import WorkersReleaseUnavailable, load_workers_release
 
 
 def workflow_review_scope(workflow: Workflow) -> tuple[UUID | None, UUID | None, str, str]:
@@ -50,10 +64,11 @@ class ApprovalProposal:
     previous_revision: str | None
     declaration: ApprovalDeclaration
     inactive_history_count: int = 0
+    container: LinuxReview | None = None
 
     def review_document(self) -> dict[str, object]:
         return {
-            "policy_version": POLICY_VERSION,
+            "policy_version": LINUX_REVIEW_VERSION if self.container is not None else POLICY_VERSION,
             "workflow_id": str(self.workflow_id),
             "organization_id": str(self.organization_id) if self.organization_id else None,
             "previous_revision": self.previous_revision,
@@ -63,6 +78,8 @@ class ApprovalProposal:
 
     @property
     def revision(self) -> str:
+        if self.container is not None:
+            return linux_review_digest(self.workflow_id, self.organization_id, self.container.model_dump(mode="json"))
         return digest(self.review_document())
 
 
@@ -211,7 +228,10 @@ async def propose_approval(
     https_hosts: list[str] | None = None,
     sources: dict[str, bytes] | None = None,
     expected_scope: tuple[UUID | None, UUID | None, str, str] | None = None,
+    containers: bool = False,
 ) -> ApprovalProposal:
+    installation = None
+    release = None
     async with get_db_context() as db:
         workflow = await db.get(Workflow, workflow_id)
         if workflow is None:
@@ -224,6 +244,35 @@ async def propose_approval(
         previous_revision = current.revision if current else None
         history_count = 0 if current else await _history_count(db, workflow_id)
         entry_path, function_name, organization_id = workflow.path, workflow.function_name, workflow.organization_id
+        if containers:
+            installation = await db.scalar(select(CloudflareInstallation).where(
+                CloudflareInstallation.retired_at.is_(None),
+                CloudflareInstallation.admitted_revision == CloudflareInstallation.desired_revision,
+                CloudflareInstallation.containers_ready_revision == CloudflareInstallation.desired_revision,
+            ))
+            if installation is None or installation.containers_policy.get("enabled") is not True:
+                raise AnalysisRejected("Enable the Containers lane before reviewing this workflow")
+            if https_hosts:
+                raise AnalysisRejected("Container workflows may only use the worker ingress", "CF_TRANSPORT")
+
+    linux_packages = None
+    if installation is not None:
+        try:
+            async with httpx.AsyncClient(timeout=10, trust_env=False) as http:
+                release = await load_containers_release(http, load_workers_release())
+        except (ContainersReleaseFetchError, ContainersReleaseUnavailable, WorkersReleaseUnavailable) as exc:
+            raise SourceUnresolved("The signed Container release is unavailable") from exc
+        if installation.containers_release_digest != release.digest:
+            raise ObservationChanged("Container release changed before review")
+        # Wheel distribution names identify imports where the normalized names
+        # agree. Keep the known distribution aliases from the supported set.
+        aliases = {"python_dotenv": "dotenv", "pyyaml": "yaml"}
+        linux_packages = {}
+        for wheel in release.manifest.wheels:
+            root = re.sub(r"[-.]+", "_", wheel.partition("-")[0]).lower()
+            module = aliases.get(root, root)
+            if re.fullmatch(r"[a-z_][a-z0-9_]*", module) and module not in linux_packages:
+                linux_packages[module] = wheel
 
     storage = _source_storage(install_id)
 
@@ -258,13 +307,33 @@ async def propose_approval(
 
     result = await analyze(
         read, entry_path, function_name, subrequest_allowance=subrequest_allowance, cpu_budget_ms=cpu_budget_ms,
+        **({"linux_packages": linux_packages} if linux_packages is not None else {}),
     )
+    findings = result.pop("linux_findings", None)
     declaration = ApprovalDeclaration.model_validate(result)
     merged_hosts = sorted(set(declaration.required_https_hosts) | set(reviewed_https_allowlist(https_hosts or [])))
     if len(merged_hosts) > 32:
         raise AnalysisRejected("The reviewed HTTPS allowlist exceeds 32 hosts", "CF_HOST_BUDGET")
     declaration = declaration.model_copy(update={"https_hosts": merged_hosts, "solution": solution})
-    return ApprovalProposal(workflow_id, organization_id, previous_revision, declaration, history_count)
+    linux_review = None
+    if installation is not None and release is not None:
+        policy = ContainersPolicy.model_validate(installation.containers_policy)
+        if workflow.memory_request_mib is None or not 0 < workflow.memory_request_mib < 4096:
+            raise AnalysisRejected("Set an explicit workflow memory request below 4 GiB before Container review")
+        if workflow.timeout_seconds + policy.idle_seconds >= policy.lifetime_seconds:
+            raise AnalysisRejected("Workflow timeout exceeds the Containers lifetime allowance")
+        linux_review = LinuxReview.model_validate({
+            "findings": findings, "release_digest": release.digest, "installation_id": installation.id,
+            "deployment_revision": installation.desired_revision, "consent_version": installation.consent_version,
+            "worker_ingress_origin": installation.worker_ingress_origin, "egress": release.manifest.ingress_contract,
+            "path": entry_path, "function_name": function_name, "source_pins": declaration.manifest,
+            "wheels": {wheel: release.manifest.wheels[wheel] for wheel in declaration.packages},
+            "solution": solution, "memory_bytes": workflow.memory_request_mib * 2**20,
+            "timeout_seconds": workflow.timeout_seconds, "ingress_bytes": policy.ingress_bytes,
+            "outbound_bytes": policy.outbound_bytes, "previous_revision": previous_revision,
+            "inactive_history_count": history_count,
+        })
+    return ApprovalProposal(workflow_id, organization_id, previous_revision, declaration, history_count, linux_review)
 
 
 async def accept_proposal(
@@ -276,6 +345,19 @@ async def accept_proposal(
     current = await current_approval(db, proposal.workflow_id)
     solution = declaration.solution
     install_id = solution.install_id if solution else None
+    linux = proposal.container
+    if linux is not None:
+        installation = await db.get(CloudflareInstallation, linux.installation_id, populate_existing=True)
+        if (
+            installation is None or installation.admitted_revision != linux.deployment_revision
+            or installation.retired_at is not None or installation.containers_ready_revision != linux.deployment_revision
+            or installation.containers_release_digest != linux.release_digest
+            or installation.consent_version != linux.consent_version
+            or installation.worker_ingress_origin != linux.worker_ingress_origin
+            or workflow is None or workflow.timeout_seconds != linux.timeout_seconds
+            or (workflow.memory_request_mib or 0) * 2**20 != linux.memory_bytes
+        ):
+            raise AnalysisRejected("Container policy or workflow limits changed during review")
     if (
         workflow is None or not workflow.is_active or workflow.type != "workflow"
         or workflow.execution_lane == "fast_path"
@@ -296,7 +378,9 @@ async def accept_proposal(
                 await db.flush()
             row = CloudflareApproval(
                 revision=proposal.revision, workflow_id=proposal.workflow_id, organization_id=proposal.organization_id,
-                policy_version=POLICY_VERSION, declaration=declaration.review_fields(), accepted_by=accepted_by,
+                policy_version=LINUX_REVIEW_VERSION if linux is not None else POLICY_VERSION,
+                declaration=linux.model_dump(mode="json") if linux is not None else declaration.review_fields(),
+                accepted_by=accepted_by,
             )
             db.add(row)
             await db.flush()

@@ -1297,6 +1297,7 @@ async def test_container_application_effect_survives_provisioning_failures(
 @pytest.mark.parametrize("canary_result", [
     "missing", "failed", "ready", "retire-timeout", "refresh-failure",
     "pending-wrong-digest", "pending-expired", "pending-near-expiry", "pending-replaced",
+    "hours-exhausted",
 ])
 async def test_cold_enable_prepares_image_and_deploys_container_application(
     db_session, installation, monkeypatch, tmp_path, canary_result,
@@ -1308,6 +1309,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
 
     canary_started = canary_result != "missing"
     canary_ready = canary_result not in ("missing", "failed")
+    revision = 2 if canary_result == "hours-exhausted" else 1
     container, image, config = make_release()
     manifest = container.manifest
     workers = SimpleNamespace(digest=manifest.workers_release_digest, manifest=SimpleNamespace(
@@ -1320,7 +1322,20 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     }
     cloudflare_policy.set_workers_release_floor(installation, workers.digest, TEST_ORDER)
     installation.desired_state = "enabled"
+    installation.desired_revision = revision
     installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
+    if canary_result == "hours-exhausted":
+        start, _ = usage_period(datetime.now(UTC))
+        prior = ExecutionWorker(id=uuid4(), form="external", state="retired", capacity_scope="containers")
+        db_session.add(prior)
+        await db_session.flush()
+        db_session.add(CloudflareWorkerReservation(
+            worker_id=prior.id, installation_id=installation.id, scope="containers",
+            deployment_revision=1, control_root_version=installation.control_root_version,
+            container_tenant="prior", container_release=container.digest,
+            container_reserved_at=start, container_stopped_at=start + timedelta(hours=100),
+            container_envelope={"seconds": 360_000, "second_usd": "0.00002056", "fixed_usd": "0.0000135"},
+        ))
     await db_session.flush()
     connection = await db_session.connection()
     signer = tmp_path / "linux-release-signer"
@@ -1331,7 +1346,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
         "container-registry.mjs": container.launcher_module,
     }
     digest = sha256(assets["manifest.json"]).hexdigest()
-    name = f"bifrost-{installation.id.hex}-r1"
+    name = f"bifrost-{installation.id.hex}-r{revision}"
     namespace = "a" * 32
     version = str(uuid4())
     deployment = str(uuid4())
@@ -1345,7 +1360,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     if canary_started:
         db_session.add(PlatformJob(
             id=context.job_id, job_type="capacity.cloudflare_enable", title="Container qualification",
-            payload={"revision": 1}, status="running", lease_token=context.lease_token,
+            payload={"revision": revision}, status="running", lease_token=context.lease_token,
             lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
             resource_type="cloudflare_installation", resource_id=str(installation.id),
             requested_by_user_id=str(OPERATOR_ID), requested_by_name="fixture", requested_by_email="fixture@example.test",
@@ -1443,7 +1458,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 events.append("canary")
                 return httpx.Response(200, json={
                     "nonce": body["nonce"], "worker_id": str(canary_id), "origin": installation.worker_ingress_origin,
-                    "revision": 1, "release_digest": digest,
+                    "revision": revision, "release_digest": digest,
                 })
             assert "control_key" not in body
             if path == "/v1/stop":
@@ -1496,7 +1511,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             assert bindings[0]["name"] == OWNER_BINDING
             assert not any(binding["type"] == "secret_text" for binding in bindings)
             assert any(binding["name"] == "CONTAINERS_PUBLIC_KEY" and len(binding["text"]) == 64 for binding in bindings)
-            assert bindings[0]["text"].endswith(f":1:{digest}")
+            assert bindings[0]["text"].endswith(f":{revision}:{digest}")
             events.append("launcher")
             result = {"id": f"{name}-containers"}
         elif path.endswith(f"/{name}-containers/settings"):
@@ -1559,7 +1574,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
         (ingress_probes.RouteProbe("GET", "/api/sdk/context", 401, True),),
         runtime_canary=ingress_probes.RuntimeCanary(True, True),
     )))
-    payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1)
+    payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=revision)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         if canary_result == "refresh-failure":
             enable_job.record_egress_refresh_failure(installation, datetime.now(UTC))
@@ -1621,11 +1636,36 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     ))).all()
     assert {row.kind for row in journals} == {"container_image", "container_application", "worker_script"}
     assert all(row.state == "present" and row.artifact_digest == digest and row.scope == "containers" for row in journals)
-    scope = await db_session.get(CloudflareCapacityScope, (installation.id, "containers", 1))
+    scope = await db_session.get(CloudflareCapacityScope, (installation.id, "containers", revision))
     assert scope is not None and scope.endpoint == f"https://{name}-containers.local-fixture.workers.dev"
     await db_session.refresh(installation)
-    assert installation.admitted_revision == installation.containers_ready_revision == (1 if canary_ready else None)
+    assert installation.admitted_revision == installation.containers_ready_revision == (revision if canary_ready else None)
     assert installation.containers_release_digest == (digest if canary_ready else None)
+    if canary_result == "hours-exhausted":
+        from src.services.worker_pool.cloudflare_containers_admission import ContainerAdmissionRefused, reserve_container
+        from src.services.worker_pool.cloudflare_containers_egress import read_verified_egress
+        from src.services.worker_pool.cloudflare_containers_policy import container_account_usage
+
+        now = datetime.now(UTC)
+        assert await db_session.scalar(select(container_account_usage(
+            now, instance_seconds=True, account_id=installation.account_id,
+        ))) > 360_000
+        primary = cloudflare_admission.PrimaryPool("external", scope="fixture", ceiling=1)
+        refused = await reserve_container(
+            db_session, installation_id=installation.id, controller_id=context.job_id, primary=primary,
+            release=container, verified_egress=read_verified_egress(installation, now),
+        )
+        assert refused == ContainerAdmissionRefused("CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED", usage_period(now)[1])
+        refresh = await enable_job.reserve_container_canary(
+            db_session, installation_id=installation.id, controller_id=context.job_id, release=container,
+            job_id=context.job_id, lease_token=context.lease_token, refresh_primary=primary,
+        )
+        assert refresh == refused
+        capacity = await get_cloudflare_capacity_status(db_session, _platform_operator())
+        assert capacity.installation is not None and capacity.installation.containers_remaining_instance_hours == 0
+        lanes = {lane.lane: {reason.code for reason in lane.reasons} for lane in capacity.lanes}
+        assert "container_instance_budget_exhausted" in lanes["containers"]
+        assert "container_instance_budget_exhausted" not in lanes["workers"]
 
 
 @pytest.mark.asyncio

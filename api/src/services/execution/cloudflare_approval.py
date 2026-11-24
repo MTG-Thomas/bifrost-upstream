@@ -29,9 +29,12 @@ from src.models.contracts.cloudflare_approval import (
     CloudflareApprovalReview,
     CloudflareApprovalState,
     CloudflareApprovalStatus,
+    LINUX_REVIEW_VERSION,
+    LinuxReview,
     StoredCloudflareReview,
 )
 from src.models.orm import CloudflareApproval, Solution, SolutionFileIndex, Workflow
+from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import (
     Caller,
@@ -93,6 +96,8 @@ def _state_from_observations(
     workflow: Workflow, can_manage: bool, current: CloudflareApproval | None,
     declaration: ApprovalDeclaration | None, review: StoredCloudflareReview | None,
     solution: Solution | None, pins: dict[str, str | None],
+    container: LinuxReview | None = None,
+    installation: CloudflareInstallation | None = None,
 ) -> CloudflareApprovalState:
     state = CloudflareApprovalState(status="pending_review", can_manage=can_manage)
     if current is not None:
@@ -117,6 +122,21 @@ def _state_from_observations(
             and all(pins.get(path) == pin for path, pin in approved.manifest.items())
         ):
             state.status = "approved"
+        if container is not None and current.organization_id == workflow.organization_id:
+            state.current_container = container
+            if (
+                installation is not None and installation.id == container.installation_id
+                and installation.admitted_revision == container.deployment_revision
+                and installation.containers_release_digest == container.release_digest
+                and installation.worker_ingress_origin == container.worker_ingress_origin
+                and installation.consent_version == container.consent_version
+                and (container.path, container.function_name) == (workflow.path, workflow.function_name)
+                and container.solution == placement
+                and container.timeout_seconds == workflow.timeout_seconds
+                and container.memory_bytes == (workflow.memory_request_mib or 0) * 2**20
+                and all(pins.get(path) == pin for path, pin in container.source_pins.items())
+            ):
+                state.status = "approved"
     if review is not None and review.status != "temporarily_unavailable":
         scope_matches = review.scope == workflow_review_scope(workflow)
         if (
@@ -149,11 +169,15 @@ async def _states(
     ))
     current: dict[UUID, CloudflareApproval] = {}
     declarations: dict[UUID, ApprovalDeclaration] = {}
+    containers: dict[UUID, LinuxReview] = {}
     reviews: dict[UUID, StoredCloudflareReview] = {}
     for row in rows:
         if row.is_current:
             current[row.workflow_id] = row
-            declarations[row.workflow_id] = ApprovalDeclaration.model_validate(row.declaration)
+            if row.policy_version == LINUX_REVIEW_VERSION:
+                containers[row.workflow_id] = LinuxReview.model_validate(row.declaration)
+            else:
+                declarations[row.workflow_id] = ApprovalDeclaration.model_validate(row.declaration)
         else:
             reviews[row.workflow_id] = StoredCloudflareReview.model_validate(row.declaration)
 
@@ -165,6 +189,8 @@ async def _states(
             install_ids.add(install_id)
         if (declaration := declarations.get(workflow.id)) is not None:
             paths[install_id].update(declaration.manifest)
+        if (container := containers.get(workflow.id)) is not None:
+            paths[install_id].update(container.source_pins)
         if (review := reviews.get(workflow.id)) is not None:
             paths[install_id].update(review.observed_pins)
 
@@ -182,10 +208,15 @@ async def _states(
         for install_id, path, pin in installed:
             pins[install_id][path] = pin
 
+    installation = await db.scalar(select(CloudflareInstallation).where(
+        CloudflareInstallation.retired_at.is_(None),
+        CloudflareInstallation.containers_ready_revision == CloudflareInstallation.admitted_revision,
+    )) if containers else None
     return [
         _state_from_observations(
             workflow, can_manage, current.get(workflow.id), declarations.get(workflow.id), reviews.get(workflow.id),
             solutions.get(workflow.solution_id) if workflow.solution_id else None, pins[workflow.solution_id],
+            containers.get(workflow.id), installation,
         )
         for workflow in workflows
     ]
@@ -202,6 +233,7 @@ def _review(proposal: ApprovalProposal) -> CloudflareApprovalReview:
         **proposal.review_document(),
         "review_sha256": proposal.revision,
         "wildcard_https_hosts": [host for host in proposal.declaration.https_hosts if host.startswith("*.")],
+        "container": proposal.container,
     })
 
 
@@ -368,6 +400,7 @@ async def review_approval(
             workflow_id, subrequest_allowance=options.subrequest_allowance,
             cpu_budget_ms=options.cpu_budget_ms, https_hosts=options.https_hosts, analysed_pins=observed_pins, expected_scope=scope,
             sources=sources,
+            **({"containers": True} if options.runtime == "containers" else {}),
         )
     except (StorageError, TimeoutError, SourceUnresolved):
         diagnostic = _temporary()

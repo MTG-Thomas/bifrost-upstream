@@ -149,6 +149,8 @@ class CloudflareInstallationStatus(BaseModel):
     admission_open: bool
     policy: CloudflareCapacityPolicy
     fleet_envelope_usd: Decimal = Field(description="Estimated fleet usage for the configured lifetime and cleanup margin.")
+    workers_fleet_envelope_usd: Decimal | None = None
+    containers_fleet_envelope_usd: Decimal | None = None
     owned_resources_pending: int
     spend: CloudflareSpendStatus | None = None
     containers_remaining_instance_hours: Decimal | None = None

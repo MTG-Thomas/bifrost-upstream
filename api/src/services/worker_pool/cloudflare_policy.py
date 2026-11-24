@@ -328,11 +328,19 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         connector_session=deployment.connector_session, job_code=job_code, cooldown_until=cooldown,
     )
     lanes = await overflow_status(db, caller, installation, policy, now=as_of, approvals=approvals, blockers=blockers)
+    if remaining_container_hours == 0:
+        for lane in lanes:
+            if lane.lane == "containers" and not any(
+                item.code == "container_instance_budget_exhausted" for item in lane.reasons
+            ):
+                lane.reasons.append(reason("container_instance_budget_exhausted", period_end))
     current_job = latest_job if latest_job is not None and latest_job.payload.get("revision") == installation.desired_revision else None
     notices = await primary_cleanup_limits(db, installation, now=as_of, job=current_job)
     blockers.extend(notices)
     for lane in lanes:
         lane.reasons.extend(notices)
+    workers_floor = Decimal(str(installation.policy["fleet_envelope_usd"]))
+    containers_floor = installation.policy.get("containers_fleet_envelope_usd") if container_hours is not None else None
     return CloudflareCapacityStatus(
         consent_text_version=CONSENT_TEXT_VERSION,
         consent_text=CONSENT_TEXT,
@@ -360,7 +368,9 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
                 installation.admitted_revision is not None and release_matches and spend.state == "ready"
             ),
             "policy": policy,
-            "fleet_envelope_usd": installation.policy["fleet_envelope_usd"],
+            "fleet_envelope_usd": workers_floor + Decimal(str(containers_floor or 0)),
+            "workers_fleet_envelope_usd": workers_floor,
+            "containers_fleet_envelope_usd": containers_floor,
             "owned_resources_pending": owned_resources_pending + overdue_containers,
             "spend": spend,
             "containers_remaining_instance_hours": remaining_container_hours,
@@ -446,6 +456,7 @@ async def create_cloudflare_installation(
     installation_id: UUID | None = None,
     activation_fingerprint: str | None = None,
     containers_policy: ContainersPolicy | None = None,
+    containers_fleet_envelope_usd: Decimal | None = None,
 ) -> UUID:
     """Persist an already validated connection in the caller's transaction."""
     if not re.fullmatch("[a-f0-9]{32}", account_id):
@@ -456,6 +467,8 @@ async def create_cloudflare_installation(
         raise ValueError("Cloudflare installation requires consent to the current text")
     actor = str(actor_id)
     desired = _price_policy(policy, bounds)
+    if containers_fleet_envelope_usd is not None:
+        desired["containers_fleet_envelope_usd"] = str(containers_fleet_envelope_usd)
     installation_id = installation_id or uuid4()
     if activation_fingerprint is not None:
         desired["activation_fingerprint"] = activation_fingerprint
@@ -579,22 +592,32 @@ async def save_cloudflare_policy(
     if row.upgrade_release is not None and row.upgrade_release != bounds.release:
         raise CloudflarePolicyConflict("Edit policy from the matched Cloudflare release.")
     desired_containers = row.containers_policy
+    current_containers = row.containers_policy
     if desired_containers.get("enabled") is True:
         if containers_release is None or containers_release.manifest.workers_release_digest != bounds.release:
             raise CloudflarePolicyConflict("Install the matched signed Cloudflare Containers release to edit policy.")
         containers = ContainersPolicy.model_validate(desired_containers)
+        current_containers = containers.model_dump(mode="json")
         if policy.container_instance_hours is not None:
             containers = containers.model_copy(update={"monthly_instance_hours": policy.container_instance_hours})
         desired_containers = containers.model_dump(mode="json")
         desired = _price_policy(policy.model_copy(update={"container_instance_hours": containers.monthly_instance_hours}), bounds)
-        floor = (
-            Decimal(str(desired["fleet_envelope_usd"]))
-            + fleet_envelope(containers, containers_release.manifest.rates, 31 * 86400)
-        ).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+        container_floor = fleet_envelope(containers, containers_release.manifest.rates, 31 * 86400).quantize(
+            Decimal("0.01"), rounding=ROUND_CEILING,
+        )
+        floor = Decimal(str(desired["fleet_envelope_usd"])) + container_floor
         if floor > policy.monthly_limit_usd:
             raise CloudflareBudgetTooLow(floor)
-    current = {key: value for key, value in row.policy.items() if key != "activation_fingerprint"}
-    if current != desired or row.containers_policy != desired_containers:
+        desired["containers_fleet_envelope_usd"] = str(container_floor)
+    current = {key: value for key, value in row.policy.items() if key not in (
+        "activation_fingerprint", "containers_fleet_envelope_usd",
+    )}
+    if current_containers.get("enabled") is True:
+        current_limits = dict(row.policy["limits"])
+        current_limits["container_instance_hours"] = current_containers["monthly_instance_hours"]
+        current["limits"] = current_limits
+    compared = {key: value for key, value in desired.items() if key != "containers_fleet_envelope_usd"}
+    if current != compared or current_containers != desired_containers:
         floor = workers_release_floor(row)
         if floor is None or bounds.release_order.key > floor.key:
             set_workers_release_floor(row, bounds.release, bounds.release_order)
@@ -605,4 +628,6 @@ async def save_cloudflare_policy(
         row.upgrade_drained_at = None
         await db.flush()
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+    elif "containers_fleet_envelope_usd" in desired:
+        row.policy = {**row.policy, "containers_fleet_envelope_usd": desired["containers_fleet_envelope_usd"]}
     return row.desired_revision

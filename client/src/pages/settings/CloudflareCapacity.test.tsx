@@ -81,6 +81,27 @@ function snapshot(id: string, status: string, phase: string, result?: Record<str
 	return { id, status, revision: status === "running" ? 1 : 2, progress: { phase }, result };
 }
 
+it("shows the combined floor and allows editing the Container hours budget", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockResolvedValue({ installation: {
+		...installation,
+		policy: { ...installation.policy, container_instance_hours: 100 },
+		fleet_envelope_usd: "44.40", workers_fleet_envelope_usd: "32.13", containers_fleet_envelope_usd: "12.27",
+		containers_remaining_instance_hours: "25", containers_instance_budget_resets_at: "2026-12-01T00:00:00Z",
+	} });
+	renderCapacity();
+	expect(await screen.findByText("Remaining Container Instance-Hours")).toBeVisible();
+	expect(screen.getByText("25 of 100")).toBeVisible();
+	expect(screen.getByText("Resets 2026-12-01 UTC")).toBeVisible();
+	expect(screen.getByText("32.13 USD Workers · 12.27 USD Containers")).toBeVisible();
+	await user.click(screen.getByRole("button", { name: "Edit Policy" }));
+	const field = screen.getByLabelText("Monthly Container Instance-Hours");
+	expect(field).toHaveValue(100);
+	await user.clear(field);
+	await user.type(field, "90");
+	expect(field).toHaveValue(90);
+});
+
 it("displays scoped overflow, ledger and recovery evidence from status", async () => {
 	mocks.get.mockResolvedValue({
 		installation: {

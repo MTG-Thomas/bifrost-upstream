@@ -95,8 +95,8 @@ python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py --containers-onl
 
 This rehearsal starts with empty script, registry and application
 inventories. Preflight requests the public Containers opt-in and checks the
-budget preview before Activate enqueues Enable. The local fixture pins
-one Linux workflow through the private review model. The release and OCI
+budget preview before Activate enqueues Enable. The driver proposes, accepts
+and revokes one Linux workflow through the public approval routes. The release and OCI
 tool fixture checks the exact package inputs
 and records the registry mutations locally. Pinned Miniflare runs the
 uploaded registry, checks signed start and stop requests, and uses Docker
@@ -125,6 +125,13 @@ It exercises neither public registry access nor hosted provider qualification.
 After the run, remove only the rehearsal's Compose project and network and
 the local proxy alias `$PROJECT-containers-proxy:local`. Stop the provider
 process even when the driver fails.
+
+On a separate fresh stack, run
+`python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py --containers-hosted-shape`.
+The local harness binds the private ingress and the raw TCP test boundary.
+The same runner as `--hosted-containers-config` then drives public Bifrost
+routes, scheduler and claim readback, and provider inventory GETs. It
+performs the uninterrupted workflow journey without the local relay handoff.
 
 ## Autonomous agent qualification
 

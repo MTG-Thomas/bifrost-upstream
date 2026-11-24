@@ -97,12 +97,21 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 							...(subrequests ? { subrequest_allowance: Number(subrequests) } : {}),
 							...(cpu ? { cpu_budget_ms: Number(cpu) } : {}),
 							https_hosts: String(data.get("hosts") ?? "").split(/[\s,]+/).filter(Boolean),
+							...(data.get("runtime") === "containers" ? { runtime: "containers" } : {}),
 						};
 						void request(async () => saveState(await proposeCloudflareApproval(workflowId, options)));
 					}}
 					className="space-y-3"
 				>
 					<fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
+						<div className="space-y-1.5">
+							<Label htmlFor={`${id}-runtime`}>Runtime</Label>
+							<select id={`${id}-runtime`} name="runtime" className="block rounded-md border bg-background p-2"
+								defaultValue={state.proposal?.container || state.current_container ? "containers" : "workers"}>
+								<option value="workers">Workers</option>
+								<option value="containers">Containers (Linux)</option>
+							</select>
+						</div>
 						<div className="space-y-1.5">
 							<Label htmlFor={`${id}-subrequests`}>Subrequest Allowance</Label>
 							<Input id={`${id}-subrequests`} name="subrequests" type="number" min={0} max={50} placeholder="Server Default"
@@ -136,6 +145,7 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 			{declaration && (
 				<div className="space-y-3 rounded-md border p-3 text-sm">
 					<h4 className="font-semibold">{proposal ? "Approval Proposal" : "Current Approval"}</h4>
+					{proposal?.container && <p>Containers (Linux) · Worker Ingress Only</p>}
 					<dl className="space-y-2">
 						<div><dt>Packages</dt><dd>{declaration.packages.join(", ") || "None"}</dd></div>
 						<div><dt>HTTPS Allowlist</dt><dd>{declaration.https_hosts.join(", ") || "None"}</dd></div>
@@ -144,7 +154,7 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 					</dl>
 					<details>
 						<summary className="cursor-pointer">Review Source Pins and Scope</summary>
-						<pre className="mt-2 max-h-64 overflow-auto text-xs">{JSON.stringify(declaration, null, 2)}</pre>
+						<pre className="mt-2 max-h-64 overflow-auto text-xs">{JSON.stringify(proposal?.container ?? declaration, null, 2)}</pre>
 					</details>
 					{proposal && proposal.wildcard_https_hosts.length > 0 && (
 						<p className="rounded-md border border-destructive p-3" role="alert">
@@ -176,6 +186,7 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 										cpu_budget_ms: proposal.cpu_budget_ms,
 										https_hosts: proposal.https_hosts.filter((host) => !proposal.required_https_hosts.includes(host)),
 										review_sha256: proposal.review_sha256,
+										...(proposal.container ? { runtime: "containers" } : {}),
 									});
 									saveState({ ...next, proposal: null, proposal_sources: null });
 								});
@@ -183,6 +194,12 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 						</>
 					)}
 				</div>
+			)}
+			{!proposal && state?.current_container && (
+				<details>
+					<summary className="cursor-pointer">Current Containers (Linux) Approval</summary>
+					<pre className="max-h-64 overflow-auto text-xs">{JSON.stringify(state.current_container, null, 2)}</pre>
+				</details>
 			)}
 			{state?.can_manage && state.current_revision && (
 				confirmRevoke ? (

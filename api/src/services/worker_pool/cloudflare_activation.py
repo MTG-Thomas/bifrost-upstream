@@ -161,6 +161,8 @@ async def preflight_cloudflare(
     if proposal is None:
         raise WorkersReleaseUnavailable("Install a qualified Workers release with lifetime meters")
     policy = body.policy or proposal
+    if not body.containers and (body.container_instance_hours is not None or policy.container_instance_hours is not None):
+        raise CloudflarePreflightFieldError("container_instance_hours", "Opt in to Containers before setting instance-hours.")
     workers_release = load_workers_release()
     bounds = release_meter_bounds(workers_release)
     priced = _price_policy(policy, bounds)
@@ -173,7 +175,9 @@ async def preflight_cloudflare(
         policy = policy.model_copy(update={"container_instance_hours": container_policy.monthly_instance_hours})
     actor = caller.principal.user_id
     bound_account, token, credential_expiry = await _credential(db, actor, body)
-    preset_b = policy.model_dump(exclude={"monthly_limit_usd"}) == proposal.model_dump(exclude={"monthly_limit_usd"})
+    preset_b = policy.model_dump(exclude={"monthly_limit_usd", "container_instance_hours"}) == proposal.model_dump(
+        exclude={"monthly_limit_usd", "container_instance_hours"},
+    )
     if bound_account and body.account_id not in (bound_account, None):
         raise CloudflarePreflightFieldError("account_id", "The staged credential is bound to a different Cloudflare account.")
 
@@ -345,6 +349,7 @@ async def activate_cloudflare(
     policy = CloudflareCapacityPolicy.model_validate({**receipt["policy"], "monthly_limit_usd": body.monthly_limit_usd})
     priced = _price_policy(policy, bounds)
     containers_policy = None
+    containers_floor = None
     account_id, zone_id = receipt["account_id"], receipt["zone_id"]
     try:
         bound_account, token, _ = await _credential(db, actor_id, body)
@@ -362,10 +367,10 @@ async def activate_cloudflare(
                 if release.digest != expected_digest:
                     raise CloudflarePolicyConflict("Cloudflare Containers release changed. Run preflight again.")
                 containers_policy = ContainersPolicy.model_validate(reviewed_policy)
-                combined_floor = (
-                    Decimal(str(priced["fleet_envelope_usd"]))
-                    + fleet_envelope(containers_policy, release.manifest.rates, 31 * 86400)
-                ).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+                containers_floor = fleet_envelope(containers_policy, release.manifest.rates, 31 * 86400).quantize(
+                    Decimal("0.01"), rounding=ROUND_CEILING,
+                )
+                combined_floor = Decimal(str(priced["fleet_envelope_usd"])) + containers_floor
                 if combined_floor > policy.monthly_limit_usd:
                     raise CloudflareBudgetTooLow(combined_floor)
             if zone_id is not None:
@@ -388,6 +393,7 @@ async def activate_cloudflare(
             consent_version=body.consent_version, actor_id=actor_id, verified_api_token=token, policy=policy,
             bounds=bounds, reachability_mode=receipt["mode"], zone_id=zone_id, activation_fingerprint=fingerprint,
             containers_policy=containers_policy,
+            containers_fleet_envelope_usd=containers_floor,
         )
     except CloudflareInstallationExists:
         existing = await _resume_activation(db, caller, installation_id, fingerprint)

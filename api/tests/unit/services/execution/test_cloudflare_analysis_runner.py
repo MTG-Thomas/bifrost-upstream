@@ -96,6 +96,27 @@ async def test_child_limits_are_installed_before_the_first_source_read(monkeypat
     assert process is not None and process.returncode == 0
 
 
+async def test_linux_review_pins_native_sources_and_baked_wheels():
+    files = {
+        "entry.py": b"import _ssl\nimport subprocess\nimport example_wheel\nimport helper\ndef run(): return helper.value\n",
+        "helper.py": b"value = 1\n",
+    }
+
+    async def read(path, maximum):
+        return files.get(path)
+
+    proposal = await runner.analyze(
+        read, "entry.py", "run", subrequest_allowance=5, cpu_budget_ms=1000,
+        linux_packages={"example_wheel": "example_wheel-1-py3-none-any.whl"},
+    )
+    assert proposal["linux_findings"] == ["CF_NATIVE", "CF_PACKAGE", "CF_PROCESS"]
+    assert set(proposal["module_sha256"]) == {"helper.py"}
+    assert proposal["packages"] == ["example_wheel-1-py3-none-any.whl"]
+    with pytest.raises(runner.AnalysisRejected) as failure:
+        await runner.analyze(read, "entry.py", "run", subrequest_allowance=5, cpu_budget_ms=1000, linux_packages={})
+    assert failure.value.rule == "CF_PACKAGE"
+
+
 async def test_cancellation_reaps_child_waiting_for_source(monkeypatch):
     start = asyncio.create_subprocess_exec
     entered = asyncio.Event()

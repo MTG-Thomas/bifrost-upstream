@@ -16534,6 +16534,8 @@ export interface components {
             https_hosts?: string[];
             /** Review Sha256 */
             review_sha256: string;
+            /** Runtime */
+            runtime?: ("workers" | "containers") | null;
         };
         /** CloudflareApprovalDiagnostic */
         CloudflareApprovalDiagnostic: {
@@ -16603,6 +16605,8 @@ export interface components {
             cpu_budget_ms?: number;
             /** Https Hosts */
             https_hosts?: string[];
+            /** Runtime */
+            runtime?: ("workers" | "containers") | null;
         };
         /** CloudflareApprovalReview */
         CloudflareApprovalReview: {
@@ -16655,6 +16659,7 @@ export interface components {
             review_sha256: string;
             /** Wildcard Https Hosts */
             wildcard_https_hosts: string[];
+            container?: components["schemas"]["LinuxReview"] | null;
         };
         /** CloudflareApprovalState */
         CloudflareApprovalState: {
@@ -16668,6 +16673,7 @@ export interface components {
             /** Current Revision */
             current_revision?: string | null;
             current_declaration?: components["schemas"]["ApprovalDeclaration"] | null;
+            current_container?: components["schemas"]["LinuxReview"] | null;
             proposal?: components["schemas"]["CloudflareApprovalReview"] | null;
             /** Proposal Sources */
             proposal_sources?: {
@@ -16820,6 +16826,10 @@ export interface components {
              * @description Estimated fleet usage for the configured lifetime and cleanup margin.
              */
             fleet_envelope_usd: string;
+            /** Workers Fleet Envelope Usd */
+            workers_fleet_envelope_usd?: string | null;
+            /** Containers Fleet Envelope Usd */
+            containers_fleet_envelope_usd?: string | null;
             /** Owned Resources Pending */
             owned_resources_pending: number;
             spend?: components["schemas"]["CloudflareSpendStatus"] | null;
@@ -23690,6 +23700,57 @@ export interface components {
         LinkedAccountsResponse: {
             /** Accounts */
             accounts: components["schemas"]["LinkedAccountResponse"][];
+        };
+        /**
+         * LinuxReview
+         * @description Reviewed Linux source, execution limits, and signed release pins.
+         */
+        LinuxReview: {
+            /** Findings */
+            findings: string[];
+            /** Release Digest */
+            release_digest: string;
+            /**
+             * Installation Id
+             * Format: uuid
+             */
+            installation_id: string;
+            /** Deployment Revision */
+            deployment_revision: number;
+            /** Consent Version */
+            consent_version: string;
+            /** Worker Ingress Origin */
+            worker_ingress_origin: string;
+            /**
+             * Egress
+             * @constant
+             */
+            egress: "worker-ingress-only-v1";
+            /** Path */
+            path: string;
+            /** Function Name */
+            function_name: string;
+            /** Source Pins */
+            source_pins: {
+                [key: string]: string;
+            };
+            /** Wheels */
+            wheels: {
+                [key: string]: string;
+            };
+            solution?: components["schemas"]["SolutionApprovalScope"] | null;
+            /** Memory Bytes */
+            memory_bytes: number;
+            /** Timeout Seconds */
+            timeout_seconds: number;
+            /** Ingress Bytes */
+            ingress_bytes: number;
+            /** Outbound Bytes */
+            outbound_bytes: number;
+            /** Previous Revision */
+            previous_revision: string | null;
+            /** Inactive History Count */
+            inactive_history_count: number;
         };
         /**
          * LogListEntry

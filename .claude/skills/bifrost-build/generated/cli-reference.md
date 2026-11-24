@@ -3714,6 +3714,7 @@ Options:
   --cpu-budget-ms INTEGER         cpu_budget_ms  [required]
   --https-hosts TEXT              https_hosts (repeat for multiple).
   --review-sha256 TEXT            review_sha256  [required]
+  --runtime [workers|containers]  runtime
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```
@@ -3741,6 +3742,7 @@ Options:
   --subrequest-allowance INTEGER  subrequest_allowance
   --cpu-budget-ms INTEGER         cpu_budget_ms
   --https-hosts TEXT              https_hosts (repeat for multiple).
+  --runtime [workers|containers]  runtime
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```

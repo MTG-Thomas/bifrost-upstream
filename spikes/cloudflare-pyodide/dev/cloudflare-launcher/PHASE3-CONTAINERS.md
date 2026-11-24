@@ -349,7 +349,11 @@ workflow starts and canaries reserve start, lifetime and cleanup seconds
 against the same ledger. Settlement replaces the hold with independently
 witnessed runtime. The budget resets with the UTC spend window. A Container
 reservation that would exceed the hours budget is refused with the reset
-time, and Workers remain eligible under the shared dollar limit.
+time, and Workers remain eligible under the shared dollar limit. Enable
+qualification canaries record their runtime even when the hours budget is
+spent. The joint revision still needs qualification to admit Workers.
+Qualification remains subject to the shared dollar limit, backoff and seat
+caps. Routine refresh canaries stop when the hours budget is exhausted.
 
 ## Joint drain, replacement and teardown
 

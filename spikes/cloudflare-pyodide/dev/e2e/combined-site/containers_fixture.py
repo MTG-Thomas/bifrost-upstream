@@ -3,12 +3,10 @@
 import asyncio
 import json
 import re
-import sys
 from hashlib import sha256
 from ipaddress import IPv4Address
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from uuid import UUID
 
 PROVIDER = json.loads(Path("/rehearsal/containers.json").read_text())
 FIXTURE = PROVIDER["containers"]
@@ -134,48 +132,3 @@ HOOKS = {
     "src.services.worker_pool.cloudflare_containers_release": configure_release,
     "src.services.worker_pool.cloudflare_canary": configure_challenge,
 }
-
-
-async def approve_workflow(installation_id, workflow_id):
-    """Pin a fixture workflow through the private review model for this revision."""
-    from sqlalchemy import select
-
-    from src.core.database import get_db_context
-    from src.models.orm.cloudflare_approvals import CloudflareApproval
-    from src.models.orm.cloudflare_capacity import CloudflareInstallation
-    from src.models.orm.file_index import FileIndex
-    from src.models.orm.workflows import Workflow
-    from src.services.worker_pool.cloudflare_containers_admission import (
-        LINUX_REVIEW_VERSION,
-        LinuxReview,
-        linux_review_digest,
-    )
-
-    async with get_db_context() as db:
-        installation = await db.get(CloudflareInstallation, installation_id)
-        workflow = await db.get(Workflow, workflow_id)
-        assert installation is not None and workflow is not None and workflow.solution_id is None
-        assert installation.account_id == ACCOUNT and installation.containers_release_digest
-        assert installation.admitted_revision == installation.desired_revision
-        digest = await db.scalar(select(FileIndex.content_hash).where(FileIndex.path == workflow.path))
-        assert digest and workflow.path == "workflows/qualification_container.py"
-        review = LinuxReview(
-            findings=frozenset({"CF_NATIVE", "CF_PROCESS"}), release_digest=installation.containers_release_digest,
-            installation_id=installation_id, deployment_revision=installation.desired_revision,
-            consent_version=installation.consent_version, worker_ingress_origin=installation.worker_ingress_origin,
-            egress="worker-ingress-only-v1", path=workflow.path, function_name=workflow.function_name,
-            source_pins={workflow.path: digest}, wheels={}, memory_bytes=128 * 2**20, timeout_seconds=30,
-            ingress_bytes=250_000, outbound_bytes=250_000, previous_revision=None, inactive_history_count=0,
-        ).model_dump(mode="json")
-        db.add(CloudflareApproval(
-            revision=linux_review_digest(workflow_id, workflow.organization_id, review), workflow_id=workflow_id,
-            organization_id=workflow.organization_id, policy_version=LINUX_REVIEW_VERSION,
-            declaration=review, is_current=True, accepted_by="local-rehearsal",
-        ))
-        await db.commit()
-
-
-if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        raise SystemExit("Expected the installation and fixture workflow IDs")
-    asyncio.run(approve_workflow(*map(UUID, sys.argv[1:])))

@@ -273,7 +273,9 @@ function PolicyFields({ settings, fieldProps = () => ({}), fieldError = () => nu
 						<div>
 							<Label htmlFor="cf-policy-container-hours">Monthly Container Instance-Hours</Label>
 							<Input id="cf-policy-container-hours" name="policy_container_instance_hours" type="number"
-								min={1} max={1488} defaultValue={settings.container_instance_hours} required />
+								min={1} max={1488} defaultValue={settings.container_instance_hours} required
+								{...fieldProps("policy_container_instance_hours")} />
+							{fieldError("policy_container_instance_hours")}
 						</div>
 					)}
 				</div>
@@ -971,6 +973,9 @@ export function CloudflareCapacity() {
 									Fleet Envelope Backstop
 								</dt>
 								<dd>{installation.fleet_envelope_usd} USD/month</dd>
+								{installation.containers_fleet_envelope_usd != null && (
+									<dd>{installation.workers_fleet_envelope_usd} USD Workers · {installation.containers_fleet_envelope_usd} USD Containers</dd>
+								)}
 							</div>
 							{installation.containers_remaining_instance_hours != null && (
 								<div>

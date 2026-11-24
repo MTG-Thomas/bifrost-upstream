@@ -72,6 +72,23 @@ def test_container_refresh_failure_backs_off_and_surfaces_persistent_failure():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("has_reset", [False, True])
+async def test_instance_budget_reason_expires_after_reset(monkeypatch, has_reset):
+    installation = CloudflareInstallation(id=uuid4(), desired_revision=1)
+    reset = datetime.now(UTC) + timedelta(days=-1 if has_reset else 1)
+    monkeypatch.setattr(cloudflare_status, "_read_controller_observation", AsyncMock(return_value={
+        "placement_code": "container_instance_budget_exhausted", "next_eligible_at": reset.isoformat(),
+    }))
+    reason = await cloudflare_status._container_controller_reason(installation)
+    if has_reset:
+        assert reason is None
+    else:
+        assert reason is not None and reason.code == "container_instance_budget_exhausted"
+        assert reason.next_eligible_at == reset
+        assert "review the Container instance-hour budget" in reason.remedy
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("code", ["container_receipt_limit", "container_allocation_cooldown", "cleanup_pending"])
 async def test_container_controller_reason_is_scope_specific(monkeypatch, code):
     installation = SimpleNamespace(id=uuid4(), desired_revision=3)

@@ -3,6 +3,7 @@
 import secrets
 from asyncio import sleep, timeout
 from datetime import UTC, datetime
+from decimal import Decimal, ROUND_CEILING
 from time import monotonic
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
@@ -64,7 +65,7 @@ from src.services.worker_ingress_probes import CanaryFailure, probe_worker_ingre
 from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_admission import PrimaryPool, joint_container_readiness
 from src.services.worker_pool.cloudflare_canary import CANARY_DEADLINE_SECONDS, canary_session_failure, run_workers_canary
-from src.services.worker_pool.cloudflare_containers_admission import ContainerAdmissionRefused, reserve_container_canary
+from src.services.worker_pool.cloudflare_containers_admission import reserve_container_canary
 from src.services.worker_pool.cloudflare_containers_control import reconcile_container_stop
 from src.services.worker_pool.cloudflare_containers_egress import (
     EGRESS_PROOF_MAX_AGE,
@@ -81,7 +82,7 @@ from src.services.worker_pool.cloudflare_containers_egress import (
     record_egress_refresh_failure,
     verify_container_egress,
 )
-from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, ContainersPolicy
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, ContainersPolicy, fleet_envelope
 from src.services.worker_pool.cloudflare_containers_release import (
     ContainersReleaseFetchError,
     ContainersReleaseUnavailable,
@@ -547,6 +548,11 @@ async def _settle_enable(
                 await _inventory_snapshot(db, row.id, revision=payload.revision),
             )
         await _require_budget(db, row)
+        if container_release is not None:
+            floor = fleet_envelope(
+                ContainersPolicy.model_validate(row.containers_policy), container_release.manifest.rates, 31 * 86400,
+            ).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+            row.policy = {**row.policy, "containers_fleet_envelope_usd": str(floor)}
         row.deployment_evidence = {
             **(row.deployment_evidence or {}),
             "revision": payload.revision,
@@ -639,11 +645,6 @@ async def _qualify_container_revision(
     if not isinstance(reserved, CloudflareWorkerReservation):
         if refresh:
             return None
-        if isinstance(reserved, ContainerAdmissionRefused) and reserved.code == "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED":
-            raise PlatformJobRequiresAction("Container Instance Budget Exhausted", {
-                "code": reserved.code,
-                "retry_at": reserved.retry_at.isoformat() if reserved.retry_at is not None else None,
-            })
         raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
     verified = None
     failure = None

@@ -1,6 +1,6 @@
 """Thin REST tools for Cloudflare workflow approval."""
 
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from bifrost.contracts.cloudflare_approval import DEFAULT_CPU_BUDGET_MS, DEFAULT_SUBREQUEST_ALLOWANCE
@@ -27,12 +27,14 @@ async def bifrost_workflow_cloudflare_approval_propose(
     context: Any, workflow_id: UUID,
     subrequest_allowance: int = DEFAULT_SUBREQUEST_ALLOWANCE, cpu_budget_ms: int = DEFAULT_CPU_BUDGET_MS,
     https_hosts: list[str] | None = None,
+    runtime: Literal["workers", "containers"] | None = None,
 ) -> ToolResult:
     return _result(*await call_rest(
         context, "POST", f"/api/workflows/{workflow_id}/cloudflare-approval/propose",
         json_body={
             "subrequest_allowance": subrequest_allowance, "cpu_budget_ms": cpu_budget_ms,
             "https_hosts": https_hosts or [],
+            **({"runtime": runtime} if runtime is not None else {}),
         },
     ))
 
@@ -40,12 +42,14 @@ async def bifrost_workflow_cloudflare_approval_propose(
 async def bifrost_workflow_cloudflare_approval_accept(
     context: Any, workflow_id: UUID, subrequest_allowance: int, cpu_budget_ms: int, review_sha256: str,
     https_hosts: list[str] | None = None,
+    runtime: Literal["workers", "containers"] | None = None,
 ) -> ToolResult:
     return _result(*await call_rest(
         context, "POST", f"/api/workflows/{workflow_id}/cloudflare-approval/accept",
         json_body={
             "subrequest_allowance": subrequest_allowance, "cpu_budget_ms": cpu_budget_ms,
             "https_hosts": https_hosts or [], "review_sha256": review_sha256,
+            **({"runtime": runtime} if runtime is not None else {}),
         },
     ))
 

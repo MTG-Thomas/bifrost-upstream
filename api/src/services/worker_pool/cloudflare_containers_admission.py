@@ -1,14 +1,12 @@
 """Plan and reserve a tenant-pinned Linux overflow incarnation."""
 
-import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from hashlib import sha256
 from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 from shared.models import CloudflareCapacityPolicy
 from shared.version import get_version
 from sqlalchemy import String, case, cast, exists, func, literal, or_, select, text
@@ -16,7 +14,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from src.models.contracts.cloudflare_approval import SolutionApprovalScope
+from src.models.contracts.cloudflare_approval import (
+    LINUX_REVIEW_VERSION as LINUX_REVIEW_VERSION,
+    LinuxReview as LinuxReview,
+    linux_review_digest as linux_review_digest,
+)
 from src.models.enums import ExecutionStatus
 from src.models.orm.cloudflare_approvals import CloudflareApproval
 from src.models.orm.cloudflare_capacity import (
@@ -56,7 +58,6 @@ from src.services.worker_pool.cloudflare_containers_policy import (
     overdue_container_reservations,
 )
 from src.services.worker_pool.cloudflare_containers_release import (
-    Digest,
     VerifiedContainerRelease,
 )
 from src.services.worker_pool.cloudflare_slots import (
@@ -78,52 +79,6 @@ from src.worker.remote.protocol import (
 
 QUALIFICATION_CANARY_TENANT = "qualification-canary"
 CONTAINERS_PLACEMENT_COOLDOWN = timedelta(minutes=1)
-
-LINUX_REVIEW_VERSION = "containers-linux-v1"
-
-
-class LinuxReview(BaseModel):
-    """Internal review pins consumed by placement. Public review is a later phase."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    findings: frozenset[Literal["CF_NATIVE", "CF_PROCESS", "CF_PACKAGE"]] = Field(min_length=1)
-    release_digest: Digest
-    installation_id: UUID
-    deployment_revision: int = Field(gt=0)
-    consent_version: str = Field(min_length=1)
-    worker_ingress_origin: str
-    egress: Literal["worker-ingress-only-v1"]
-    path: str
-    function_name: str
-    source_pins: dict[str, Digest] = Field(min_length=1, max_length=128)
-    wheels: dict[str, Digest] = Field(max_length=128)
-    solution: SolutionApprovalScope | None = None
-    memory_bytes: int = Field(gt=0, lt=4 * 1024**3)
-    timeout_seconds: int = Field(gt=0)
-    ingress_bytes: int = Field(gt=0)
-    outbound_bytes: int = Field(gt=0)
-    previous_revision: Digest | None
-    inactive_history_count: int = Field(ge=0)
-
-    def matches_release(self, release: VerifiedContainerRelease) -> bool:
-        return (
-            self.release_digest == release.digest
-            and self.egress == release.manifest.ingress_contract
-            and ("CF_PACKAGE" not in self.findings or bool(self.wheels))
-            and all(release.manifest.wheels.get(pin) == digest for pin, digest in self.wheels.items())
-        )
-
-
-def linux_review_digest(workflow_id: UUID, owner: UUID | None, declaration: dict) -> str:
-    # The stored declaration includes the predecessor or inactive history
-    # count at acceptance, so an identical review can be accepted after revoke.
-    return sha256(json.dumps({
-        "policy_version": LINUX_REVIEW_VERSION,
-        "workflow_id": str(workflow_id), "organization_id": str(owner) if owner else None,
-        "declaration": declaration,
-    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
 
 def eligible_linux_review(
     *, dispatch: WorkDispatch, execution: Execution, workflow: Workflow,
@@ -302,6 +257,7 @@ async def _container_scope_cooldown(
 
 async def _lock_container_capacity(
     db: AsyncSession, installation_id: UUID, release: VerifiedContainerRelease,
+    *, qualification: bool = False,
 ) -> _ContainerCapacity | ContainerAdmissionRefused | None:
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": CAPACITY_LOCK})
     installation = await db.get(
@@ -328,6 +284,12 @@ async def _lock_container_capacity(
     assert now is not None
     if await db.scalar(overdue_container_reservations(installation.account_id, now).limit(1)) is not None:
         return ContainerAdmissionRefused()
+    if not qualification:
+        used = await db.scalar(select(container_account_usage(now, instance_seconds=True, account_id=installation.account_id)))
+        if used is None:
+            return None
+        if Decimal(used) >= containers.monthly_instance_hours * 3600:
+            return ContainerAdmissionRefused("CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED", usage_period(now)[1])
     # A month can contain 31 days. The current account balance is checked
     # separately, including a reservation that crosses the next boundary.
     if workers_envelope + fleet_envelope(containers, release.manifest.rates, 31 * 86400) > policy.monthly_limit_usd:
@@ -465,13 +427,19 @@ async def reserve_container_canary(
     ).with_for_update())
     if job_revision is None:
         return None
-    capacity = await _lock_container_capacity(db, installation_id, release)
+    capacity = await _lock_container_capacity(db, installation_id, release, qualification=refresh_primary is None)
     if not isinstance(capacity, _ContainerCapacity):
         return capacity
     if (
         job_revision != capacity.scope.deployment_revision
         or QUALIFICATION_CANARY_TENANT in capacity.container_tenants
     ):
+        return None
+    attempts = await db.scalar(select(func.count()).select_from(CloudflareWorkerReservation).where(
+        CloudflareWorkerReservation.canary_job_id == job_id,
+        CloudflareWorkerReservation.scope == CONTAINERS_SCOPE,
+    ))
+    if (attempts or 0) >= 2:
         return None
     if refresh_primary is not None:
         if (
@@ -498,7 +466,7 @@ async def reserve_container_canary(
         return None
     reserved = await _create_container_reservation(
         db, capacity, release, controller_id=controller_id, tenant=QUALIFICATION_CANARY_TENANT,
-        canary=(job_id, lease_token),
+        canary=(job_id, lease_token), qualification=refresh_primary is None,
     )
     if isinstance(reserved, CloudflareWorkerReservation) and refresh_primary is None:
         # Persist the next paid-start boundary before the canary can run,
@@ -510,7 +478,7 @@ async def reserve_container_canary(
 async def _create_container_reservation(
     db: AsyncSession, capacity: _ContainerCapacity, release: VerifiedContainerRelease, *,
     controller_id: UUID, tenant: str, dispatch_id: UUID | None = None, execution_id: UUID | None = None,
-    approval: str | None = None, canary: tuple[UUID, UUID] | None = None,
+    approval: str | None = None, canary: tuple[UUID, UUID] | None = None, qualification: bool = False,
 ) -> CloudflareWorkerReservation | ContainerAdmissionRefused | None:
     now, installation, scope = capacity.now, capacity.installation, capacity.scope
     limits = capacity.limits
@@ -524,13 +492,16 @@ async def _create_container_reservation(
         reservation_seconds = container_reserve_seconds(envelope, now, start, end)
         if not reservation_seconds:
             continue
-        usage = await db.scalar(select(container_account_usage(max(now, start), instance_seconds=True)).where(
-            CloudflareInstallation.id == installation.id,
-        ))
-        if usage is None:
-            return None
-        if Decimal(usage) + reservation_seconds > limits.monthly_instance_hours * 3600:
-            return ContainerAdmissionRefused("CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED", end)
+        # Qualification is required to admit the joint revision. Its pin is
+        # still metered against the hours budget, like refresh and workflows.
+        if not qualification:
+            usage = await db.scalar(select(container_account_usage(max(now, start), instance_seconds=True)).where(
+                CloudflareInstallation.id == installation.id,
+            ))
+            if usage is None:
+                return None
+            if Decimal(usage) + reservation_seconds > limits.monthly_instance_hours * 3600:
+                return ContainerAdmissionRefused("CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED", end)
         cost = container_reserve_cost(envelope, now, start, end)
         estimate = await db.scalar(select(cloudflare_estimated_usage(max(now, start))).where(
             CloudflareInstallation.id == installation.id,
