@@ -1,7 +1,7 @@
 # Containers Trial Release Readiness
 
 **Prepared locally, pending owner approval and fork settings checks.**
-The exact release candidate is `b226b0e6be91839355a86ea2e61b266e7ef65246`
+The exact release candidate is `edaf6f654bfc3b8b9bd0ea40e5fd3674d06df18a`
 on local branch `trial/cloudflare-containers-20261124`, based on the verified
 spike and its read-only release preflight. The destination is the same branch
 name on `personal` (`MTG-Thomas/bifrost-upstream`). Keep the fork's `main`
@@ -40,7 +40,7 @@ does not change what the tag builds.
   `workers.release_version` to `2.0.0-rc.2026112401`. The Workers
   builder accepts SemVer prereleases, the version exceeds the CLI floor of
   `1.4.3`, and the API reconstructs the exact tag from the packaged Workers
-  version. The signer identity would be
+  version. The CLI tarball uses PEP 440 metadata `2.0.0rc2026112401`. The signer identity would be
   `https://github.com/MTG-Thomas/bifrost-upstream/.github/workflows/ci.yml@refs/tags/v2.0.0-rc.2026112401`.
 - The three plugin manifests match the prerelease version. The factual trial
   body at `product-updates/release-bodies/v2.0.0-rc.2026112401.md` awaits
@@ -54,7 +54,7 @@ fork for the destination branch. Create the local tag at the candidate SHA
 above. The branch push precedes the tag push. These commands remain unrun.
 
 ```sh
-git push personal b226b0e6be91839355a86ea2e61b266e7ef65246:refs/heads/trial/cloudflare-containers-20261124
+git push personal edaf6f654bfc3b8b9bd0ea40e5fd3674d06df18a:refs/heads/trial/cloudflare-containers-20261124
 git push personal refs/tags/v2.0.0-rc.2026112401:refs/tags/v2.0.0-rc.2026112401
 ```
 
