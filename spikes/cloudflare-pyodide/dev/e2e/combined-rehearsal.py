@@ -805,6 +805,8 @@ async def {name}():
             assert re.fullmatch("[a-f0-9]{12,64}", worker_hostname)
             self.primary_hold(worker_hostname=worker_hostname)
             self.submit("replacement", "third")
+            if self.cfg.get("providerContainer"):
+                self.observe_status("replacement-submitted")
             replacement_started = time.monotonic()
             try:
                 new = self.settle("replacement")
@@ -817,6 +819,8 @@ async def {name}():
                     evidence("replacement-settlement-readback-error", {"type": type(error).__name__})
                 raise
             self.record_replacement_settlement(replacement_started)
+            if self.cfg.get("providerContainer"):
+                self.observe_status("replacement-readback")
             self.release_primary()
             evidence_fields.update(admission_fenced=True, same_control_connection=True, successor_scheduler_lease=True,
                                    worker_rebound_to_successor=True,
