@@ -59,6 +59,12 @@ from src.services.worker_pool.cloudflare_containers_egress import (
     read_pending_qualification,
     read_verified_egress,
 )
+from src.services.worker_pool.cloudflare_containers_policy import (
+    QUALIFICATION_DEFERRED_KEY,
+    ContainersPolicy,
+    container_canaries_used,
+    qualification_deferred,
+)
 from src.services.worker_pool.cloudflare_containers_release import ContainersReleaseUnavailable
 from src.services.worker_pool.cloudflare_containers_rest import ContainerRegistry, ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
@@ -1100,8 +1106,15 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
         provision = row.admitted_revision is None
         now = datetime.now(UTC)
         retry = read_egress_refresh(row)
+        deferred = not provision and qualification_deferred(row)
+        canary_available = False
+        if not provision and row.containers_policy.get("enabled") is True:
+            start, end = usage_period(now)
+            used = await db.scalar(container_canaries_used(row.account_id, start, end))
+            canary_available = (used or 0) < ContainersPolicy.model_validate(row.containers_policy).monthly_qualification_canaries
+        qualification_retry = read_egress_refresh(row, qualification=True) if deferred else None
         refresh = (
-            not provision and row.containers_policy.get("enabled") is True
+            canary_available and not deferred
             and read_verified_egress(row, now) is None
             and (retry is None or retry.retry_at <= now)
             and await db.scalar(select(WorkDispatch.id).join(
@@ -1111,9 +1124,11 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
                 Execution.status == ExecutionStatus.PENDING,
                 CloudflareApproval.is_current, CloudflareApproval.policy_version == LINUX_REVIEW_VERSION,
                 CloudflareApproval.declaration["installation_id"].as_string() == str(row.id),
-                CloudflareApproval.declaration["deployment_revision"].as_integer() == row.desired_revision,
             ).limit(1)) is not None
         )
+        # A deferred installation cannot review its first Linux workflow until
+        # qualified. Demand gates routine proof refresh, not initial qualification.
+        qualify = deferred and canary_available and (qualification_retry is None or qualification_retry.retry_at <= now)
     if provision:
         # Reuse the admission canary and write fences used by Enable.
         from src.jobs.platform.cloudflare_enable import CloudflareEnablePayload, _enable
@@ -1129,7 +1144,7 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
             verified = await _settle_reconcile(context, payload, WorkersRestCleanup(http), tunnel_http=http)
     except CloudflareRestUnavailable:
         raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
-    if refresh and verified["outcome"] == "verified":
+    if (refresh or qualify) and verified["outcome"] == "verified":
         from src.jobs.platform.cloudflare_enable import CloudflareEnablePayload, _enable
 
         return await _enable(
@@ -1653,6 +1668,9 @@ async def enqueue_cloudflare_disable(
     row.admitted_revision = None
     row.containers_ready_revision = None
     row.containers_release_digest = None
+    evidence = dict(row.deployment_evidence or {})
+    evidence.pop(QUALIFICATION_DEFERRED_KEY, None)
+    row.deployment_evidence = evidence
     row.upgrade_release = None
     row.upgrade_drained_at = None
     row.drain_required = False

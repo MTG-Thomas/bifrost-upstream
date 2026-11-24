@@ -92,7 +92,8 @@ describe("CloudflareApprovalPanel", () => {
 		});
 		vi.mocked(revokeCloudflareApproval).mockResolvedValue(pending);
 		const user = open();
-		await user.selectOptions(await screen.findByLabelText("Runtime"), "containers");
+		await user.click(await screen.findByRole("combobox", { name: "Runtime" }));
+		await user.click(await screen.findByRole("option", { name: "Containers (Linux)" }));
 		await user.click(screen.getByRole("button", { name: "Propose Approval" }));
 		expect(await screen.findByText("Containers (Linux) · Worker Ingress Only")).toBeVisible();
 		expect(proposeCloudflareApproval).toHaveBeenCalledWith("workflow", { runtime: "containers", https_hosts: [] });

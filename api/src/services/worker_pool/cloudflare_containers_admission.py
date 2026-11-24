@@ -47,9 +47,11 @@ from src.services.worker_pool.cloudflare_containers_egress import (
 )
 from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_CLEANUP_PENDING,
+    CONTAINERS_QUALIFICATION_DEFERRED,
     CONTAINERS_SCOPE,
     ContainersPolicy,
     container_account_usage,
+    container_canaries_used,
     container_deadline_sql,
     container_envelope,
     container_reserve_cost,
@@ -108,14 +110,15 @@ def eligible_linux_review(
     if (
         not review.matches_release(release)
         or review.installation_id != installation.id
-        or review.deployment_revision != installation.admitted_revision
         or review.consent_version != installation.consent_version
         or review.worker_ingress_origin != installation.worker_ingress_origin
         or (review.path, review.function_name) != (workflow.path, workflow.function_name)
         or review.path not in review.source_pins
         or dispatch.memory_request_bytes > review.memory_bytes
+        or review.timeout_seconds != workflow.timeout_seconds
+        or (workflow.memory_request_mib or 0) * 2**20 != review.memory_bytes
         or review.timeout_seconds + policy.idle_seconds >= policy.lifetime_seconds
-        or review.ingress_bytes > policy.ingress_bytes or review.outbound_bytes > policy.outbound_bytes
+        or (review.ingress_bytes, review.outbound_bytes) != (policy.ingress_bytes, policy.outbound_bytes)
         or (review.solution.install_id if review.solution else None) != workflow.solution_id
     ):
         return None
@@ -178,6 +181,7 @@ def primary_has_no_fit(
 class ContainerAdmissionRefused:
     code: Literal[
         "CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_COOLDOWN", "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED",
+        "CF_CONTAINERS_QUALIFICATION_DEFERRED",
     ] = CONTAINERS_CLEANUP_PENDING
     retry_at: datetime | None = None
 
@@ -257,7 +261,7 @@ async def _container_scope_cooldown(
 
 async def _lock_container_capacity(
     db: AsyncSession, installation_id: UUID, release: VerifiedContainerRelease,
-    *, qualification: bool = False,
+    *, canary: bool = False, qualification: bool = False,
 ) -> _ContainerCapacity | ContainerAdmissionRefused | None:
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": CAPACITY_LOCK})
     installation = await db.get(
@@ -282,6 +286,11 @@ async def _lock_container_capacity(
         return None
     now = await db.scalar(select(func.clock_timestamp()))
     assert now is not None
+    if canary:
+        start, end = usage_period(now)
+        used = await db.scalar(container_canaries_used(installation.account_id, start, end))
+        if (used or 0) >= containers.monthly_qualification_canaries:
+            return ContainerAdmissionRefused(CONTAINERS_QUALIFICATION_DEFERRED, end)
     if await db.scalar(overdue_container_reservations(installation.account_id, now).limit(1)) is not None:
         return ContainerAdmissionRefused()
     if not qualification:
@@ -427,7 +436,9 @@ async def reserve_container_canary(
     ).with_for_update())
     if job_revision is None:
         return None
-    capacity = await _lock_container_capacity(db, installation_id, release, qualification=refresh_primary is None)
+    capacity = await _lock_container_capacity(
+        db, installation_id, release, canary=True, qualification=refresh_primary is None,
+    )
     if not isinstance(capacity, _ContainerCapacity):
         return capacity
     if (

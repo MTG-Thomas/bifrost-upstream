@@ -36,6 +36,7 @@ class CloudflarePreflightRequest(BaseModel):
     policy: dict[str, Any] | None = None
     containers: bool | None = None
     container_instance_hours: int | None = Field(default=None, ge=1, le=1488)
+    container_qualification_canaries: int | None = Field(default=None, ge=0, le=1000)
 
     def request_body(self) -> dict[str, Any]:
         body = self.model_dump(mode="json", exclude_none=True, exclude={"api_token"})

@@ -25,6 +25,8 @@ from src.services.worker_pool.cloudflare_containers_release import ContainerRate
 
 CONTAINERS_SCOPE = "containers"
 CONTAINERS_CLEANUP_PENDING = "CF_CONTAINERS_CLEANUP_PENDING"
+CONTAINERS_QUALIFICATION_DEFERRED = "CF_CONTAINERS_QUALIFICATION_DEFERRED"
+QUALIFICATION_DEFERRED_KEY = "container_qualification_deferred_revision"
 # Match the provider registry's allowance when comparing the two clocks.
 CONTAINER_CLOCK_SKEW = timedelta(seconds=3)
 
@@ -64,6 +66,24 @@ CONTAINERS_PILOT_POLICY = ContainersPolicy(
     ingress_bytes=250_000,
     outbound_bytes=250_000,
 )
+
+
+def container_canaries_used(account_id, start, end):
+    """Count reservations, including voids, across installation lifecycles."""
+    pin = CloudflareWorkerReservation
+    owner = aliased(CloudflareInstallation)
+    return select(func.count()).select_from(pin).join(owner, owner.id == pin.installation_id).where(
+        owner.account_id == account_id, pin.scope == CONTAINERS_SCOPE, pin.canary_job_id.is_not(None),
+        pin.container_reserved_at >= start, pin.container_reserved_at < end,
+    )
+
+
+def qualification_deferred(installation: CloudflareInstallation) -> bool:
+    return (
+        installation.containers_policy.get("enabled") is True
+        and installation.containers_ready_revision != installation.desired_revision
+        and (installation.deployment_evidence or {}).get(QUALIFICATION_DEFERRED_KEY) == installation.desired_revision
+    )
 
 
 def container_envelope(policy: ContainersPolicy, rates: ContainerRates) -> dict[str, str | int]:

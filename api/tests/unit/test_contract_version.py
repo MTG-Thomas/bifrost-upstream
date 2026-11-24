@@ -482,6 +482,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # The same status includes Container readiness, egress, cooldown and receipt reasons.
     # Failed Container egress refresh adds an additive Capacity placement reason.
     # Optional Container opt-in and budget fields preserve older requests.
+    # Workflow approval accepts an optional runtime and defaults to Workers.
     # The CLI passes through response fields, so MIN_CLI_VERSION is unchanged.
     "044666dfe459db87257e3e9aab51b5c451a023461f6d322f89d79b7ee8e1a444"
 )

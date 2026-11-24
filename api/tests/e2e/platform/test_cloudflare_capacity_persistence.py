@@ -1297,7 +1297,7 @@ async def test_container_application_effect_survives_provisioning_failures(
 @pytest.mark.parametrize("canary_result", [
     "missing", "failed", "ready", "retire-timeout", "refresh-failure",
     "pending-wrong-digest", "pending-expired", "pending-near-expiry", "pending-replaced",
-    "hours-exhausted",
+    "hours-exhausted", "canaries-exhausted",
 ])
 async def test_cold_enable_prepares_image_and_deploys_container_application(
     db_session, installation, monkeypatch, tmp_path, canary_result,
@@ -1309,7 +1309,8 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
 
     canary_started = canary_result != "missing"
     canary_ready = canary_result not in ("missing", "failed")
-    revision = 2 if canary_result == "hours-exhausted" else 1
+    deferred = canary_result == "canaries-exhausted"
+    revision = 2 if deferred or canary_result == "hours-exhausted" else 1
     container, image, config = make_release()
     manifest = container.manifest
     workers = SimpleNamespace(digest=manifest.workers_release_digest, manifest=SimpleNamespace(
@@ -1324,22 +1325,29 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     installation.desired_state = "enabled"
     installation.desired_revision = revision
     installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
-    if canary_result == "hours-exhausted":
+    prior_pin = None
+    if deferred or canary_result == "hours-exhausted":
         start, _ = usage_period(datetime.now(UTC))
-        stopped_at = start + timedelta(hours=100)
+        seconds = 1 if deferred else 360_000
+        stopped_at = start + timedelta(seconds=seconds)
         prior = ExecutionWorker(
             id=uuid4(), form="external", state="retired", capacity_scope="containers",
             ended_at=stopped_at, capacity_resource_deleted_at=stopped_at,
         )
         db_session.add(prior)
         await db_session.flush()
-        db_session.add(CloudflareWorkerReservation(
+        prior_pin = CloudflareWorkerReservation(
             worker_id=prior.id, installation_id=installation.id, scope="containers",
             deployment_revision=1, control_root_version=installation.control_root_version,
             container_tenant="prior", container_release=container.digest,
             container_reserved_at=start, container_stopped_at=stopped_at,
-            container_envelope={"seconds": 360_000, "second_usd": "0.00002056", "fixed_usd": "0.0000135"},
-        ))
+            container_envelope={"seconds": seconds, "second_usd": "0.00002056", "fixed_usd": "0.0000135"},
+            canary_job_id=uuid4() if deferred else None,
+            canary_lease_token=uuid4() if deferred else None,
+        )
+        db_session.add(prior_pin)
+        if deferred:
+            installation.containers_policy = {**installation.containers_policy, "monthly_qualification_canaries": 1}
     await db_session.flush()
     connection = await db_session.connection()
     signer = tmp_path / "linux-release-signer"
@@ -1563,7 +1571,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     workers_deployments = {}
 
     async def create_workers(*, api_token, intent, scope_bearer):
-        assert events[-1] == "retire"
+        assert events[-1] == ("application" if deferred else "retire")
         workers_deployments[intent.target.name] = ResourceObservation(intent, str(uuid4()), str(uuid4()))
 
     provisioner = SimpleNamespace(
@@ -1581,6 +1589,45 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     )))
     payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=revision)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        if deferred:
+            assert prior_pin is not None
+            for module in (cloudflare_admission, cloudflare_policy, lifecycle_job):
+                monkeypatch.setattr(module, "installed_workers_release_digest", lambda: workers.digest)
+            result = await enable_job._settle_enable(context, payload, http, workers)
+            assert result["outcome"] == "enabled" and result["containers_qualification_deferred"] is True
+            await db_session.refresh(installation)
+            assert installation.admitted_revision == revision and installation.containers_ready_revision is None
+            assert await db_session.scalar(select(cloudflare_admission.workers_release_matches()).where(
+                CloudflareInstallation.id == installation.id,
+            )) is True
+            capacity = await get_cloudflare_capacity_status(db_session, _platform_operator())
+            assert capacity.installation is not None
+            assert capacity.installation.containers_remaining_qualification_canaries == 0
+            assert capacity.installation.admission_open
+            lane = next(item for item in capacity.lanes if item.lane == "containers")
+            reason = next(item for item in lane.reasons if item.code == "container_qualification_deferred")
+            assert reason.next_eligible_at == usage_period(datetime.now(UTC))[1]
+
+            async def enable_reconcile(ctx, body, **kwargs):
+                return await enable_job._settle_enable(ctx, body, http, workers, **kwargs)
+
+            reconcile_enable = AsyncMock(side_effect=enable_reconcile)
+            monkeypatch.setattr(enable_job, "_enable", reconcile_enable)
+            monkeypatch.setattr(lifecycle_job, "get_db_context", transaction)
+            monkeypatch.setattr(lifecycle_job, "_settle_reconcile", AsyncMock(return_value={"outcome": "verified"}))
+            reconcile = lifecycle_job.CloudflareReconcilePayloadV2(installation_id=installation.id, revision=revision)
+            assert await lifecycle_job._reconcile(context, reconcile) == {"outcome": "verified"}
+            reconcile_enable.assert_not_awaited()
+            # At the UTC cutoff the old reservation belongs to the preceding allowance.
+            prior_pin.container_reserved_at -= timedelta(seconds=2)
+            prior_pin.container_stopped_at -= timedelta(seconds=2)
+            await db_session.flush()
+            assert await lifecycle_job._reconcile(context, reconcile) == {"outcome": "enabled"}
+            reconcile_enable.assert_awaited_once()
+            assert events == ["copy", "prepare", "launcher", "application", "canary", "stop", "retire"]
+            await db_session.refresh(installation)
+            assert installation.admitted_revision == installation.containers_ready_revision == revision
+            return
         if canary_result == "refresh-failure":
             enable_job.record_egress_refresh_failure(installation, datetime.now(UTC))
             await db_session.flush()
@@ -3792,7 +3839,7 @@ async def test_supervisor_reserves_and_retires_without_restarting(
                 lanes = await cloudflare_status.overflow_status(
                     db_session, caller, installation,
                     CloudflareCapacityPolicy.model_validate(installation.policy["limits"]),
-                    now=as_of, approvals=1, blockers=[],
+                    now=as_of, approvals={"workers": 1}, blockers=[],
                 )
                 assert lanes[0].primary_saturated is True
                 assert lanes[0].primary_fit == 1
@@ -3810,7 +3857,7 @@ async def test_supervisor_reserves_and_retires_without_restarting(
             lanes = await cloudflare_status.overflow_status(
                 db_session, caller, installation,
                 CloudflareCapacityPolicy.model_validate(installation.policy["limits"]),
-                now=queued_at, approvals=1, blockers=[],
+                now=queued_at, approvals={"workers": 1}, blockers=[],
             )
             reason, = lanes[0].reasons
             assert reason.code == "waiting_for_launch_gate"
@@ -4345,6 +4392,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
     db.add(Workflow(
         id=workflow_id, name="fixture", function_name="run", path=path, organization_id=owner_id,
         solution_id=solution.id if solution is not None else None,
+        memory_request_mib=1, timeout_seconds=60,
     ))
     await db.flush()
     execution = Execution(
@@ -4356,7 +4404,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         findings=frozenset({"CF_NATIVE"}), release_digest=release.digest, installation_id=installation.id,
         deployment_revision=1, consent_version=installation.consent_version, worker_ingress_origin=origin,
         egress="worker-ingress-only-v1", path=path, function_name="run", source_pins={path: digest}, wheels={},
-        solution=solution_scope, memory_bytes=128, timeout_seconds=60, ingress_bytes=100, outbound_bytes=100,
+        solution=solution_scope, memory_bytes=2**20, timeout_seconds=60, ingress_bytes=100, outbound_bytes=100,
         previous_revision=None, inactive_history_count=0,
     ).model_dump(mode="json")
     approval = CloudflareApproval(
@@ -5177,7 +5225,7 @@ async def test_unadmitted_container_cannot_use_generic_linux_claims(isolated_cap
 @pytest.mark.asyncio
 @pytest.mark.parametrize("race", [
     "installation", "tenant", "prewarm",
-    "claim-installation", "claim-tenant", "prepare-installation", "prepare-tenant",
+    "claim-installation", "claim-tenant", "prepare-installation", "prepare-tenant", "canary-month",
 ])
 async def test_container_reservation_serializes_shared_capacity(isolated_capacity_session_factory, monkeypatch, race) -> None:
     from src.models.orm.cloudflare_approvals import CloudflareApproval
@@ -5185,9 +5233,11 @@ async def test_container_reservation_serializes_shared_capacity(isolated_capacit
     from src.models.orm.workflows import Workflow
     from src.services.worker_pool.cloudflare_containers_admission import (
         LINUX_REVIEW_VERSION,
+        ContainerAdmissionRefused,
         LinuxReview,
         linux_review_digest,
         reserve_container,
+        reserve_container_canary,
     )
     from src.services.worker_pool.cloudflare_containers_policy import (
         container_account_usage,
@@ -5206,6 +5256,7 @@ async def test_container_reservation_serializes_shared_capacity(isolated_capacit
     workflow_ids = [uuid4() for _ in range(3)]
     paths = [f"workflows/{workflow}.py" for workflow in workflow_ids]
     placement_tenants = [tenants[0]] * 3 if shared_tenant else tenants
+    canary_jobs = [(uuid4(), uuid4()), (uuid4(), uuid4())] if race == "canary-month" else []
     monkeypatch.setattr(cloudflare_admission, "installed_workers_release_digest", lambda: "fixture-release")
     async with sessions() as db:
         now = await db.scalar(select(func.clock_timestamp()))
@@ -5228,6 +5279,14 @@ async def test_container_reservation_serializes_shared_capacity(isolated_capacit
         installation.containers_ready_revision = 1
         installation.containers_release_digest = release.digest
         installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
+        if canary_jobs:
+            installation.containers_policy = {**installation.containers_policy, "monthly_qualification_canaries": 1}
+            db.add_all(PlatformJob(
+                id=job_id, job_type="capacity.cloudflare_enable", title="Container qualification",
+                payload={"revision": 1}, status="running", lease_token=lease, lease_expires_at=now + timedelta(minutes=5),
+                resource_type="cloudflare_installation", resource_id=str(installation_id),
+                requested_by_user_id=str(OPERATOR_ID), requested_by_name="fixture", requested_by_email="fixture@example.test",
+            ) for job_id, lease in canary_jobs)
         db.add(seal_credential(
             CredentialRef(installation_id, account, "scope_bearer", "containers", 1),
             SecretStr("synthetic-scope-bearer"), actor=str(OPERATOR_ID), now=now,
@@ -5268,6 +5327,7 @@ async def test_container_reservation_serializes_shared_capacity(isolated_capacit
             db.add(Workflow(
                 id=workflow_id, name=f"native-{workflow_id}", function_name="run", path=path,
                 organization_id=None if workflow_id == workflow_ids[0] else tenant,
+                memory_request_mib=1, timeout_seconds=60,
             ))
             db.add(FileIndex(path=path, content_hash="a" * 64))
         await db.flush()
@@ -5279,7 +5339,7 @@ async def test_container_reservation_serializes_shared_capacity(isolated_capacit
                 deployment_revision=1, consent_version=installation.consent_version,
                 worker_ingress_origin=installation.worker_ingress_origin, egress="worker-ingress-only-v1",
                 path=path, function_name="run", source_pins={path: "a" * 64}, wheels={},
-                memory_bytes=128, timeout_seconds=60, ingress_bytes=100, outbound_bytes=100,
+                memory_bytes=2**20, timeout_seconds=60, ingress_bytes=100, outbound_bytes=100,
                 previous_revision=None, inactive_history_count=0,
             ).model_dump(mode="json")
             owner = None if index == 0 else tenant
@@ -5353,6 +5413,17 @@ async def test_container_reservation_serializes_shared_capacity(isolated_capacit
         async with sessions() as db:
             if contender:
                 await record_connection(db)
+            if canary_jobs:
+                job_id, lease = canary_jobs[len(contender_pids) - 1]
+                canary = await reserve_container_canary(
+                    db, installation_id=installation_id, controller_id=uuid4(), release=release,
+                    job_id=job_id, lease_token=lease,
+                )
+                await db.commit()
+                if isinstance(canary, CloudflareWorkerReservation):
+                    return True
+                assert canary == ContainerAdmissionRefused("CF_CONTAINERS_QUALIFICATION_DEFERRED", usage_period(now)[1])
+                return False
             result = await reserve_container(
                 db, installation_id=installation_id, controller_id=uuid4(),
                 primary=primary_pool, release=release, verified_egress=egress,
@@ -5403,6 +5474,8 @@ async def test_container_reservation_serializes_shared_capacity(isolated_capacit
             results = await asyncio.gather(*contenders)
     assert len(set(contender_pids)) == 2
     assert sum(results) == 1
+    if canary_jobs:
+        return
     async with sessions() as db:
         saved = await db.get(CloudflareInstallation, installation_id)
         assert saved is not None
@@ -8125,7 +8198,7 @@ async def test_status_explains_placement_over_rest(
     )
     monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=caller))
     monkeypatch.setattr(cloudflare_approval, "current_visible_approval_count", AsyncMock(
-        return_value=0 if code == "workflow_review_required" else 1,
+        return_value={} if code == "workflow_review_required" else {"workers": 1},
     ))
     monkeypatch.setattr(cloudflare_policy, "installed_workers_release_digest", lambda: (
         None if code == "release_mismatch" else installation.policy["bounds_release"]
@@ -8363,3 +8436,94 @@ async def test_rotation_staging_binds_reference_to_the_active_installation(
         db_session, staged.credential_ref, actor_id=OPERATOR_ID, account_id=installation.account_id,
         purpose="rotate", installation_id=installation.id,
     ) == token
+
+
+@pytest.mark.asyncio
+async def test_public_linux_approval_binds_reviewed_runtime_and_scope(
+    db_session, installation, lifecycle_audit_actor, monkeypatch,
+):
+    from bifrost.cloudflare_analysis import AnalysisRejected
+    from src.models.orm import FileIndex, Workflow
+    from src.routers import workflows
+    from src.services.execution import cloudflare_eligibility
+
+    caller = _platform_operator()
+    outsider_id, tenant_id = uuid4(), uuid4()
+    outsider = Caller(
+        UserPrincipal(outsider_id, "tenant@example.test", tenant_id),
+        AuthorizationContext(outsider_id, tenant_id, uuid4(), False, frozenset({"workflows.read"})),
+    )
+    current_caller = caller
+    monkeypatch.setattr(cloudflare_approval, "load_caller", AsyncMock(side_effect=lambda *_: current_caller))
+    release, _, _ = make_release()
+    wheels = {"PyYAML-6.0-py3-none-any.whl": "3" * 64, "python_dotenv-1.0-py3-none-any.whl": "4" * 64}
+    release = replace(release, manifest=release.manifest.model_copy(update={"wheels": wheels}))
+    monkeypatch.setattr(cloudflare_eligibility, "load_workers_release", object)
+    monkeypatch.setattr(cloudflare_eligibility, "load_containers_release", AsyncMock(return_value=release))
+    installation.desired_state = "enabled"
+    installation.admitted_revision = installation.containers_ready_revision = installation.desired_revision
+    installation.containers_release_digest = release.digest
+    installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
+    installation.policy = {**installation.policy, "fleet_envelope_usd": "1.25", "containers_fleet_envelope_usd": "2.75"}
+
+    source = b"import yaml\nimport dotenv\n\ndef run():\n    return 1\n"
+    workflow = Workflow(id=uuid4(), name="Reviewed Linux", path="reviewed_linux.py", function_name="run",
+                        memory_request_mib=96, timeout_seconds=45)
+    db_session.add_all([workflow, FileIndex(path=workflow.path, content_hash=sha256(source).hexdigest())])
+    await db_session.flush()
+    storage = SimpleNamespace(read=AsyncMock(return_value=source))
+    monkeypatch.setattr(cloudflare_eligibility, "_source_storage", lambda _: storage)
+
+    @asynccontextmanager
+    async def transaction():
+        yield db_session
+
+    monkeypatch.setattr(cloudflare_eligibility, "get_db_context", transaction)
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(workflows.router)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: current_caller.principal
+    path = f"/api/workflows/{workflow.id}/cloudflare-approval"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        proposal = await http.post(f"{path}/propose", json={"runtime": "containers"})
+        assert proposal.status_code == 200, proposal.text
+        reviewed = proposal.json()["proposal"]
+        assert reviewed["container"]["wheels"] == wheels
+        assert reviewed["container"]["findings"] == ["CF_PACKAGE"]
+
+        reviewed_directly = await cloudflare_eligibility.propose_approval(
+            workflow.id, containers=True, subrequest_allowance=10, cpu_budget_ms=1000,
+        )
+        for field, invalid in (("timeout_seconds", 65), ("memory_request_mib", 97)):
+            original = getattr(workflow, field)
+            setattr(workflow, field, invalid)
+            await db_session.flush()
+            with pytest.raises(AnalysisRejected, match="limits changed during review"):
+                await cloudflare_eligibility.accept_proposal(db_session, reviewed_directly, accepted_by=str(OPERATOR_ID))
+            setattr(workflow, field, original)
+            await db_session.flush()
+
+        body = {"runtime": "containers", "review_sha256": reviewed["review_sha256"]}
+        current_caller = outsider
+        assert (await http.get(path)).status_code == 404
+        assert (await http.post(f"{path}/accept", json=body)).status_code == 403
+        current_caller = caller
+        accepted = await http.post(f"{path}/accept", json=body)
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["status"] == "approved"
+        await db_session.flush()
+
+        # A limits-only update rolls the deployment without changing Linux eligibility.
+        installation.desired_revision += 1
+        installation.admitted_revision = installation.containers_ready_revision = installation.desired_revision
+        installation.containers_policy = {**installation.containers_policy, "monthly_instance_hours": 80}
+        await db_session.flush()
+        assert (await http.get(path)).json()["status"] == "approved"
+        assert await cloudflare_approval.current_visible_approval_count(db_session, caller) == {"containers": 1}
+        status = await get_cloudflare_capacity_status(db_session, caller)
+        assert status.installation is not None
+        assert status.installation.workers_fleet_envelope_usd == Decimal("1.25")
+        assert status.installation.containers_fleet_envelope_usd == Decimal("2.75")
+        assert status.installation.fleet_envelope_usd == Decimal("4.00")
+        assert (await http.delete(path)).json()["current_revision"] is None

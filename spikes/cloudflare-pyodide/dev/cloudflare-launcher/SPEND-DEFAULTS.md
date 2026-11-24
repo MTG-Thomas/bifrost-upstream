@@ -10,6 +10,10 @@ The budget resets at the UTC month boundary. Exhausting it pauses Container
 workflow placement and routine refresh only. Qualification canaries still
 count toward instance-hours but may exceed the hours budget to admit the
 joint revision under the shared dollar limit, backoff and seat caps.
+The suggested qualification allowance is 30 Container canary reservations
+per account per UTC month, about $0.15 from the pilot release. Qualification
+and refresh both debit it. Exhaustion leaves Workers eligible on a verified
+revision and defers Container qualification until the allowance has room.
 The signed release rates price the Container allocation for
 the joint fleet check. Compute for 100 hours is about $7.40 before outbound
 and control holds.

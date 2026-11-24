@@ -348,14 +348,18 @@ async def accept_proposal(
     linux = proposal.container
     if linux is not None:
         installation = await db.get(CloudflareInstallation, linux.installation_id, populate_existing=True)
+        policy = ContainersPolicy.model_validate(installation.containers_policy) if installation else None
         if (
             installation is None or installation.admitted_revision != linux.deployment_revision
+            or policy is None or not policy.enabled
             or installation.retired_at is not None or installation.containers_ready_revision != linux.deployment_revision
             or installation.containers_release_digest != linux.release_digest
             or installation.consent_version != linux.consent_version
             or installation.worker_ingress_origin != linux.worker_ingress_origin
             or workflow is None or workflow.timeout_seconds != linux.timeout_seconds
             or (workflow.memory_request_mib or 0) * 2**20 != linux.memory_bytes
+            or linux.timeout_seconds + policy.idle_seconds >= policy.lifetime_seconds
+            or (linux.ingress_bytes, linux.outbound_bytes) != (policy.ingress_bytes, policy.outbound_bytes)
         ):
             raise AnalysisRejected("Container policy or workflow limits changed during review")
     if (

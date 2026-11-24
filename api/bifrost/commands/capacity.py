@@ -94,6 +94,7 @@ def _preflight_options(command):
         click.option("--policy", type=click.File("r", encoding="utf-8"), help="Advanced capacity policy JSON file."),
         click.option("--containers", is_flag=True, default=None, help="Include the paid Containers pilot in the preflight."),
         click.option("--container-instance-hours", type=click.IntRange(1, 1488), help="Monthly Container instance-hours."),
+        click.option("--container-qualification-canaries", type=click.IntRange(0, 1000), help="Monthly Container qualification canaries."),
     )):
         command = option(command)
     return command
@@ -102,6 +103,8 @@ def _preflight_options(command):
 def _preflight_body(policy: TextIO | None, credential_ref: UUID | None, fields: dict[str, Any]) -> CloudflarePreflightRequest:
     if fields.get("container_instance_hours") is not None and not fields.get("containers"):
         raise click.UsageError("--container-instance-hours requires --containers.")
+    if fields.get("container_qualification_canaries") is not None and not fields.get("containers"):
+        raise click.UsageError("--container-qualification-canaries requires --containers.")
     return CloudflarePreflightRequest(
         **fields, credential_ref=credential_ref, policy=_read_policy(policy) if policy else None,
         api_token=None if credential_ref else click.prompt("Cloudflare API Token", hide_input=True),
@@ -164,7 +167,8 @@ async def activate(
         click.echo(
             f"Containers: {containers['instance_type']}, {containers['installation_instances']} maximum, "
             f"{containers['tenant_instances']} per tenant, {containers['workflow_slots']} workflow per instance, "
-            f"{containers['idle_seconds']} s idle stop, {containers['monthly_instance_hours']} instance-hours/month.",
+            f"{containers['idle_seconds']} s idle stop, {containers['monthly_instance_hours']} instance-hours/month, "
+            f"{containers['monthly_qualification_canaries']} qualification canaries/month.",
             err=True,
         )
     click.echo(f"Account: {account} ({plan['account_id']})", err=True)

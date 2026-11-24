@@ -53,7 +53,7 @@ from src.services.worker_pool.cloudflare_containers_egress import (
     read_pending_qualification,
     read_verified_egress,
 )
-from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
+from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy, qualification_deferred
 from src.services.worker_pool.cloudflare_provisioning import ObservationCheck, OwnershipCheck, OwnershipResource
 from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admission, tenant_key
 from src.services.worker_pool.controller import (
@@ -137,6 +137,11 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
         "Container Instance Budget Exhausted",
         "Wait for next month's budget reset or review the Container instance-hour budget in Capacity.",
     ),
+    "container_qualification_deferred": (
+        "Container Qualification Deferred",
+        "Automatic Reconcile will qualify Containers when the monthly allowance permits. "
+        "Wait for the UTC reset or update the allowance in Capacity.",
+    ),
 }
 
 
@@ -173,7 +178,6 @@ def recovery_for_job(
         "CF_PRIOR_WORKERS_LIVE": PLACEMENT["cleanup_pending"][1],
         "CF_PROVIDER_UNAVAILABLE": PLACEMENT["cloudflare_capacity_unavailable"][1],
         "CF_CONTAINERS_UNVERIFIED": PLACEMENT["container_readiness_unverified"][1],
-        "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED": PLACEMENT["container_instance_budget_exhausted"][1],
         "CF_CONTAINERS_CLEANUP_PENDING": "Wait for the Container canary to retire, then retry Enable.",
         QUALIFICATION_BACKOFF_CODE: "Retry this capacity action after the Container qualification backoff.",
         "CF_CONTAINERS_RELEASE_UNAVAILABLE": PLACEMENT["release_mismatch"][1],
@@ -208,17 +212,14 @@ def recovery_for_job(
             )
         elif pending is not None:
             remedy = "Retry Enable within 45 minutes of verification to reuse the proof. Scale In invalidates it."
-    if code in (QUALIFICATION_BACKOFF_CODE, "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED"):
+    if code == QUALIFICATION_BACKOFF_CODE:
         retry_at = result.get("retry_at")
         if isinstance(retry_at, str):
             try:
                 retry = datetime.fromisoformat(retry_at)
                 if retry.utcoffset() is not None:
                     at = retry.astimezone(UTC).isoformat()
-                    remedy = (
-                        f"Wait for the budget reset at {at} or review the Container instance-hour budget in Capacity."
-                        if code == "CF_CONTAINERS_INSTANCE_BUDGET_EXHAUSTED" else f"Retry this capacity action at or after {at}."
-                    )
+                    remedy = f"Retry this capacity action at or after {at}."
             except (ValueError, OverflowError):
                 pass
     return CloudflareRecoveryDetails(code=code, remedy=remedy, **sanitized)
@@ -479,7 +480,8 @@ async def primary_cleanup_limits(
 
 async def overflow_status(
     db: AsyncSession, caller: Caller, installation: CloudflareInstallation, policy: CloudflareCapacityPolicy,
-    *, now: datetime, approvals: int, blockers: list[CloudflarePlacementReason],
+    *, now: datetime, approvals: dict[str, int], blockers: list[CloudflarePlacementReason],
+    qualification_reset: datetime | None = None,
 ) -> list[CloudflareLaneStatus]:
     pin = CloudflareWorkerReservation
     claim = ExecutionWorkerClaim
@@ -561,7 +563,6 @@ async def overflow_status(
                 CloudflareApproval.is_current, CloudflareApproval.policy_version == LINUX_REVIEW_VERSION,
                 review["release_digest"].as_string() == installation.containers_release_digest,
                 review["installation_id"].as_string() == str(installation.id),
-                review["deployment_revision"].as_integer() == installation.admitted_revision,
                 review["worker_ingress_origin"].as_string() == installation.worker_ingress_origin,
                 review["path"].as_string() == Workflow.path, review["function_name"].as_string() == Workflow.function_name,
                 WorkDispatch.memory_request_bytes <= review["memory_bytes"].as_integer(),
@@ -589,7 +590,9 @@ async def overflow_status(
         lane_blockers = blockers
         if lane == "containers":
             lane_blockers = list(blockers)
-            if installation.containers_ready_revision != installation.desired_revision:
+            if qualification_deferred(installation):
+                lane_blockers.append(reason("container_qualification_deferred", qualification_reset))
+            elif installation.containers_ready_revision != installation.desired_revision:
                 lane_blockers.append(reason("container_readiness_unverified"))
             elif read_verified_egress(installation, now) is None:
                 lane_blockers.append(_container_refresh_reason(installation, now))
@@ -600,7 +603,7 @@ async def overflow_status(
             lane=lane, eligible_queued=len(demand), claimed=reserved, running=running, primary_fit=observation.primary_fit,
             primary_saturated=saturated, oldest_eligible_queue_age_seconds=max(0, (now - oldest).total_seconds()) if oldest else None,
             launch_gate_seconds=gate,
-            reasons=lane_reasons(observation, now=now, gate_seconds=gate, approvals=approvals, blockers=lane_blockers),
+            reasons=lane_reasons(observation, now=now, gate_seconds=gate, approvals=approvals.get(lane, 0), blockers=lane_blockers),
         ))
     return statuses
 

@@ -45,6 +45,7 @@ from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_CLEANUP_PENDING,
     ContainersPolicy,
     container_account_usage,
+    container_canaries_used,
     fleet_envelope,
     overdue_container_reservations,
     unresolved_container_reservation,
@@ -246,7 +247,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None,
             suggested_policy=suggested_cloudflare_policy(),
             observed_at=observed_at,
-            approved_workflow_count=approvals,
+            approved_workflow_count=sum(approvals.values()),
             placement_reasons=[reason("setup_required")],
             disconnected_at=retired_at,
         )
@@ -255,13 +256,20 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
     period_start, period_end = usage_period(as_of)
     container_hours = None
     remaining_container_hours = None
+    remaining_canaries = None
     if installation.containers_policy.get("enabled") is True:
-        container_hours = ContainersPolicy.model_validate(installation.containers_policy).monthly_instance_hours
+        containers = ContainersPolicy.model_validate(installation.containers_policy)
+        container_hours = containers.monthly_instance_hours
         consumed = await db.scalar(select(container_account_usage(
             as_of, instance_seconds=True, account_id=installation.account_id,
         )))
         remaining_container_hours = max(Decimal(0), Decimal(container_hours) - Decimal(consumed or 0) / 3600)
-        policy = policy.model_copy(update={"container_instance_hours": container_hours})
+        used = await db.scalar(container_canaries_used(installation.account_id, period_start, period_end))
+        remaining_canaries = max(0, containers.monthly_qualification_canaries - (used or 0))
+        policy = policy.model_copy(update={
+            "container_instance_hours": container_hours,
+            "container_qualification_canaries": containers.monthly_qualification_canaries,
+        })
     rate = installation.policy.get("rate_table_version")
     advisory = (
         CloudflareUsageAdvisory.model_validate(installation.usage_advisory)
@@ -327,7 +335,10 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
                              or job_code in ("CF_CLEANUP_PENDING", "CF_CLEANUP_SETTLING", "CF_PRIOR_WORKERS_LIVE")),
         connector_session=deployment.connector_session, job_code=job_code, cooldown_until=cooldown,
     )
-    lanes = await overflow_status(db, caller, installation, policy, now=as_of, approvals=approvals, blockers=blockers)
+    lanes = await overflow_status(
+        db, caller, installation, policy, now=as_of, approvals=approvals, blockers=blockers,
+        qualification_reset=period_end if remaining_canaries == 0 else None,
+    )
     if remaining_container_hours == 0:
         for lane in lanes:
             if lane.lane == "containers" and not any(
@@ -346,7 +357,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         consent_text=CONSENT_TEXT,
         latest_job_id=latest_job.id if latest_job else None,
         observed_at=as_of,
-        approved_workflow_count=approvals,
+        approved_workflow_count=sum(approvals.values()),
         lanes=lanes,
         placement_reasons=blockers,
         deployment=deployment,
@@ -374,6 +385,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             "owned_resources_pending": owned_resources_pending + overdue_containers,
             "spend": spend,
             "containers_remaining_instance_hours": remaining_container_hours,
+            "containers_remaining_qualification_canaries": remaining_canaries,
             "containers_instance_budget_resets_at": period_end if container_hours is not None else None,
         }),
     )
@@ -600,8 +612,13 @@ async def save_cloudflare_policy(
         current_containers = containers.model_dump(mode="json")
         if policy.container_instance_hours is not None:
             containers = containers.model_copy(update={"monthly_instance_hours": policy.container_instance_hours})
+        if policy.container_qualification_canaries is not None:
+            containers = containers.model_copy(update={"monthly_qualification_canaries": policy.container_qualification_canaries})
         desired_containers = containers.model_dump(mode="json")
-        desired = _price_policy(policy.model_copy(update={"container_instance_hours": containers.monthly_instance_hours}), bounds)
+        desired = _price_policy(policy.model_copy(update={
+            "container_instance_hours": containers.monthly_instance_hours,
+            "container_qualification_canaries": containers.monthly_qualification_canaries,
+        }), bounds)
         container_floor = fleet_envelope(containers, containers_release.manifest.rates, 31 * 86400).quantize(
             Decimal("0.01"), rounding=ROUND_CEILING,
         )
@@ -615,6 +632,7 @@ async def save_cloudflare_policy(
     if current_containers.get("enabled") is True:
         current_limits = dict(row.policy["limits"])
         current_limits["container_instance_hours"] = current_containers["monthly_instance_hours"]
+        current_limits["container_qualification_canaries"] = current_containers["monthly_qualification_canaries"]
         current["limits"] = current_limits
     compared = {key: value for key, value in desired.items() if key != "containers_fleet_envelope_usd"}
     if current != compared or current_containers != desired_containers:

@@ -24,6 +24,18 @@ Obtain explicit owner approval for each outward-facing effect before starting.
 4. Use keyless cosign signing. This writes a permanent public Rekor entry
    identifying the fork repository and release workflow.
 
+## Manual read-only checklist
+
+- Before activation, record the expected signer identity, release repository,
+  tag and source revision from the pinned API image and signed Linux manifest.
+  Compare them with the images selected for the trial.
+- Before activation and after Disconnect, record the provider usage window
+  and attributed instance-seconds, outbound bytes, requests, and CPU. Keep
+  the opening and closing samples together for the same account and window.
+- Before accepting canary evidence, record DNS resolution for the alternate
+  peer as seen from the API and whether the API can connect to the alternate
+  worker origin on TCP 2053 and the probe peer on TCP 8443.
+
 ## Sequence and evidence
 
 | Step | Action and evidence to retain | Hosted question |
@@ -48,7 +60,8 @@ The existing Workers Paid subscription is **$5/month**.
 Compare provider instance-seconds, outbound bytes, requests and CPU against
 the Bifrost ledger. Included allowances can make the incremental invoice $0.
 
-Use incremental spend above the opening baseline. Calculate the approved
+The runner applies absolute thresholds to the ledger of its fresh database.
+Calculate provider usage above the opening baseline. Calculate the approved
 thresholds before activation from the signed manifest's instance-second
 rate `r`, outbound GB rate `e`, per-start control `f`, and
 `cleanup_seconds` `c`. Use at most two Container canaries and one workload
@@ -79,6 +92,8 @@ Those estimates used the local signed-release fixture rates.
 - Hosted DNS resolution, API reachability on the probe ports and provider
   raw-TCP denial remain unqualified. If any witness fails, require admission
   to stay closed, skip steps 3–5 and go straight to Disconnect.
+- The suggested monthly allowance is 30 Container canaries, about $0.15 at
+  pilot rates. Confirm at least two remain before the trial.
 - Treat `CF_CONTAINERS_CLEANUP_PENDING` and
   `CF_CONTAINERS_QUALIFICATION_BACKOFF` as stop conditions. Neither permits a
   third canary. Record Capacity lane state, the original dispatch/claim fence,

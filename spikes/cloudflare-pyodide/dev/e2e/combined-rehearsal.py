@@ -1101,6 +1101,7 @@ class HostedContainers(ContainerRehearsal):
         self.live_cap = Decimal(self.cfg["live_abort_usd"])
         self.settled_cap = Decimal(self.cfg["settled_cap_usd"])
         self.high_water = Decimal(0)
+        self.enable_attempts = []
         assert 0 < self.settled_cap <= self.live_target < self.live_cap
 
     def verify_isolation(self, *, successor=None):
@@ -1108,14 +1109,31 @@ class HostedContainers(ContainerRehearsal):
 
     def provider(self, path, method="GET", payload=None, *, status=200):
         assert path.startswith("/client/v4/accounts/" + self.account + "/") and method == "GET" and payload is None
+        if path.endswith(("/workers/durable_objects/namespaces", "/workers/scripts")):
+            assert status == 200
+            inventory = []
+            for page in range(1, 101):
+                code, data = request_json(
+                    self.provider_origin + path + f"?page={page}&per_page=100", "GET",
+                    token=self.cfg["managementToken"],
+                )
+                assert code == 200 and data["success"]
+                rows = data["result"]
+                inventory.extend(rows)
+                if len(rows) < 100:
+                    return inventory
+            raise RuntimeError("Worker inventory did not settle")
         code, data = request_json(self.provider_origin + path, "GET", token=self.cfg["managementToken"])
         if code != status or (status == 200 and not data["success"]):
             raise RuntimeError(f"Expected provider read HTTP {status}, received {code}")
         return data["result"] if status == 200 else None
 
-    def canaries(self):
-        return self.sql("""SELECT count(*) FROM cloudflare_worker_reservations
-            WHERE scope='containers' AND canary_job_id IS NOT NULL""")
+    def canaries(self, *, job=None, settled=False):
+        filters = (" AND container_stopped_at IS NOT NULL" if settled else "")
+        if job is not None:
+            filters += f" AND canary_job_id='{UUID(job)}'"
+        return self.sql(f"""SELECT count(*) FROM cloudflare_worker_reservations
+            WHERE scope='containers' AND canary_job_id IS NOT NULL{filters}""")
 
     def completed(self, job, outcome, *, window=90):
         if outcome != "enabled":
@@ -1126,12 +1144,16 @@ class HostedContainers(ContainerRehearsal):
             result = state.get("result") or {}
             code = result.get("code") or (state.get("error") or {}).get("code")
             count = self.canaries()
-            if code in {"CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_QUALIFICATION_BACKOFF"} or state["attempt"] > 1 or count > 2:
+            if (
+                code in {"CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_QUALIFICATION_BACKOFF"}
+                or count > 2 or self.canaries(job=job) > 1
+            ):
                 raise RuntimeError(f"Qualification stopped ({code or 'canary fence'})")
             self.observe_scheduler("qualification")
             if state["status"] not in ACTIVE_JOB:
                 if state["status"] != "succeeded" or result.get("outcome") != outcome:
                     raise RuntimeError(f"Enable did not succeed ({code})")
+                self.enable_attempts.append(state["attempt"])
                 return result
             return None
 
@@ -1168,6 +1190,7 @@ class HostedContainers(ContainerRehearsal):
             self.observe_scheduler("before-enable", starting=True)
         super().enable()
         assert self.canaries() == before + 1
+        assert self.canaries(settled=True) == before + 1
 
     def run(self):
         root = f"/client/v4/accounts/{self.account}/containers/applications"
@@ -1377,7 +1400,10 @@ def main():
                 "provider_origin": fixture.boundary, "compose_files": ["rehearsal-compose.yml", "rehearsal-overlay.yml"],
                 "live_target_usd": "0.03", "live_abort_usd": "0.05", "settled_cap_usd": "0.02",
             }))
-            HostedContainers(config).run()
+            trial = HostedContainers(config)
+            trial.run()
+            if fixture.cfg["workerNamespaceLagMs"]:
+                assert trial.enable_attempts[0] > 1
         return
     if args.containers_only:
         ContainerRehearsal().run()

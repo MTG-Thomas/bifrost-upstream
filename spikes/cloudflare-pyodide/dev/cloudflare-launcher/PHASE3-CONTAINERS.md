@@ -351,9 +351,16 @@ witnessed runtime. The budget resets with the UTC spend window. A Container
 reservation that would exceed the hours budget is refused with the reset
 time, and Workers remain eligible under the shared dollar limit. Enable
 qualification canaries record their runtime even when the hours budget is
-spent. The joint revision still needs qualification to admit Workers.
-Qualification remains subject to the shared dollar limit, backoff and seat
-caps. Routine refresh canaries stop when the hours budget is exhausted.
+spent. The suggested monthly allowance is 30 Container canary reservations
+per account, about $0.15 at the pilot rates. The UTC allowance includes
+routine refresh and reserves a start even if the attempt is later voided.
+Backoff limits how quickly attempts can occur. The allowance bounds their
+monthly count, and the shared dollar limit and seat caps still apply.
+Exhaustion defers Container qualification while a verified Workers revision
+can admit. Reconcile qualifies the deferred lane after capacity returns to
+the allowance and the qualification backoff expires. Routine refresh still
+requires overflow demand and remaining instance-hours. Failed qualification
+and conflicting egress evidence close both lanes.
 
 ## Joint drain, replacement and teardown
 

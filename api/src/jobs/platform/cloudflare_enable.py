@@ -65,7 +65,7 @@ from src.services.worker_ingress_probes import CanaryFailure, probe_worker_ingre
 from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_admission import PrimaryPool, joint_container_readiness
 from src.services.worker_pool.cloudflare_canary import CANARY_DEADLINE_SECONDS, canary_session_failure, run_workers_canary
-from src.services.worker_pool.cloudflare_containers_admission import reserve_container_canary
+from src.services.worker_pool.cloudflare_containers_admission import ContainerAdmissionRefused, reserve_container_canary
 from src.services.worker_pool.cloudflare_containers_control import reconcile_container_stop
 from src.services.worker_pool.cloudflare_containers_egress import (
     EGRESS_PROOF_MAX_AGE,
@@ -82,7 +82,14 @@ from src.services.worker_pool.cloudflare_containers_egress import (
     record_egress_refresh_failure,
     verify_container_egress,
 )
-from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, ContainersPolicy, fleet_envelope
+from src.services.worker_pool.cloudflare_containers_policy import (
+    CONTAINERS_QUALIFICATION_DEFERRED,
+    CONTAINERS_SCOPE,
+    QUALIFICATION_DEFERRED_KEY,
+    ContainersPolicy,
+    fleet_envelope,
+    qualification_deferred,
+)
 from src.services.worker_pool.cloudflare_containers_release import (
     ContainersReleaseFetchError,
     ContainersReleaseUnavailable,
@@ -258,7 +265,8 @@ async def _settle_enable(
             CloudflareInstallation.id == row.id,
         ))
         containers_enabled = row.containers_policy.get("enabled") is True
-        if joint_ready is not True and row.admitted_revision is not None:
+        deferred = qualification_deferred(row) and row.admitted_revision == payload.revision
+        if joint_ready is not True and row.admitted_revision is not None and not deferred:
             launcher = await _container_launcher_namespace(db, row) if containers_enabled else None
             row.admitted_revision = None
             wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
@@ -330,6 +338,15 @@ async def _settle_enable(
         if not already_admitted:
             await _require_legacy_cleanup(db)
     if refresh and container_release is not None:
+        if deferred:
+            await context.report("Qualifying Deferred Cloudflare Container Ingress")
+            result = await _qualify_container_revision(
+                context, payload, http, container_adapter, management_token, container_release,
+                recovering_deferred=True,
+            )
+            return {"outcome": "container_qualification_deferred" if result == "deferred" else (
+                "enabled" if result is True else "superseded"
+            )}
         from src.services.worker_pool.cloudflare_supervisor import read_primary_pool
 
         settings = get_settings()
@@ -390,16 +407,18 @@ async def _settle_enable(
         if not await _wait_for_container_application(context, payload, container_adapter, container_release):
             return {"outcome": "superseded"}
         await context.report("Qualifying Cloudflare Container Ingress")
-        if not await _qualify_container_revision(
+        qualification = await _qualify_container_revision(
             context, payload, http, container_adapter, management_token, container_release,
-        ):
+        )
+        if not qualification:
             return {"outcome": "superseded"}
+        deferred = qualification == "deferred"
 
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
         if row is None:
             return {"outcome": "superseded"}
-        if container_release is not None and (
+        if container_release is not None and not deferred and (
             row.containers_release_digest != container_release.digest
             or await db.scalar(select(joint_container_readiness(payload.revision)).where(
                 CloudflareInstallation.id == row.id,
@@ -535,10 +554,10 @@ async def _settle_enable(
         joint_ready = await db.scalar(select(joint_container_readiness(payload.revision)).where(
             CloudflareInstallation.id == row.id,
         ))
-        if joint_ready is not True or (
+        if not deferred and (joint_ready is not True or (
             row.containers_policy.get("enabled")
             and (container_release is None or row.containers_release_digest != container_release.digest)
-        ):
+        )):
             raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
                 "code": "CF_CONTAINERS_UNVERIFIED",
             })
@@ -561,6 +580,8 @@ async def _settle_enable(
                 (ingress.runtime_canary.verified_at if ingress.runtime_canary else None) or probe_completed_at
             ).isoformat(),
         }
+        if deferred:
+            row.deployment_evidence = {**row.deployment_evidence, QUALIFICATION_DEFERRED_KEY: payload.revision}
         row.admitted_revision = payload.revision
         row.deployed_revision = payload.revision
         floor = workers_release_floor(row)
@@ -570,20 +591,27 @@ async def _settle_enable(
         row.upgrade_release = None
         row.upgrade_drained_at = None
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
-    return {"outcome": "enabled", "http_connections": ingress.http_connections_as_result()}
+    return {
+        "outcome": "enabled", "http_connections": ingress.http_connections_as_result(),
+        **({"containers_qualification_deferred": True} if deferred else {}),
+    }
 
 
 async def _qualify_container_revision(
     context: PlatformJobContext, payload: CloudflareEnablePayload, http: httpx.AsyncClient,
     adapter: ContainersRest, management_token: SecretStr, release: VerifiedContainerRelease,
-    *, refresh_primary: PrimaryPool | None = None,
-) -> bool | Literal["failed", "backoff"] | None:
+    *, refresh_primary: PrimaryPool | None = None, recovering_deferred: bool = False,
+) -> bool | Literal["failed", "backoff", "deferred"] | None:
     refresh = refresh_primary is not None
     async with get_db_context() as db:
         installation = await _locked_current(db, context, payload)
         if installation is None:
             return False
         if refresh and installation.admitted_revision != payload.revision:
+            return False
+        if recovering_deferred and (
+            installation.admitted_revision != payload.revision or not qualification_deferred(installation)
+        ):
             return False
         if not refresh and installation.containers_release_digest == release.digest and await db.scalar(
             select(joint_container_readiness(payload.revision)).where(CloudflareInstallation.id == installation.id),
@@ -630,6 +658,8 @@ async def _qualify_container_revision(
     if pending is not None and read_pending_qualification(installation, datetime.now(UTC)) is not None:
         return await _commit_container_egress(context, payload, release, pending, refresh=False)
     if retry is not None and retry.retry_at > datetime.now(UTC):
+        if recovering_deferred:
+            return "deferred"
         if refresh:
             return "backoff"
         retry_at = retry.retry_at.isoformat()
@@ -643,6 +673,10 @@ async def _qualify_container_revision(
             job_id=context.job_id, lease_token=context.lease_token, release=release, refresh_primary=refresh_primary,
         )
     if not isinstance(reserved, CloudflareWorkerReservation):
+        if not refresh and isinstance(reserved, ContainerAdmissionRefused) and reserved.code == CONTAINERS_QUALIFICATION_DEFERRED:
+            return "deferred"
+        if recovering_deferred:
+            return "deferred"
         if refresh:
             return None
         raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
@@ -679,12 +713,15 @@ async def _qualify_container_revision(
     except ContainerEgressMismatch:
         mismatch = True
     finally:
-        if mismatch and refresh:
+        if (mismatch and refresh) or (recovering_deferred and verified is None):
             async with get_db_context() as db:
                 installation = await _locked_current(db, context, payload)
                 if installation is not None:
                     installation.admitted_revision = installation.containers_ready_revision = None
                     installation.containers_release_digest = None
+                    evidence = dict(installation.deployment_evidence or {})
+                    evidence.pop(QUALIFICATION_DEFERRED_KEY, None)
+                    installation.deployment_evidence = evidence
                     wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
         try:
             await retire(reserved.worker_id)
@@ -730,10 +767,13 @@ async def _commit_container_egress(
             or installation.worker_ingress_origin != verified.origin
             or verified.observed_at < datetime.now(UTC) - EGRESS_PROOF_MAX_AGE
         ):
-            if not refresh:
+            if not refresh and not qualification_deferred(installation):
                 raise ObservationPending("Cloudflare Container application changed after ingress qualification")
             installation.admitted_revision = installation.containers_ready_revision = None
             installation.containers_release_digest = None
+            evidence = dict(installation.deployment_evidence or {})
+            evidence.pop(QUALIFICATION_DEFERRED_KEY, None)
+            installation.deployment_evidence = evidence
             wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
         else:
             evidence = dict(installation.deployment_evidence or {})
@@ -742,7 +782,7 @@ async def _commit_container_egress(
             else:
                 installation.containers_ready_revision = payload.revision
                 installation.containers_release_digest = release.digest
-                for key in (EGRESS_REFRESH_KEY, QUALIFICATION_BACKOFF_KEY, PENDING_QUALIFICATION_KEY):
+                for key in (EGRESS_REFRESH_KEY, QUALIFICATION_BACKOFF_KEY, PENDING_QUALIFICATION_KEY, QUALIFICATION_DEFERRED_KEY):
                     evidence.pop(key, None)
                 evidence["container_egress"] = verified.as_record()
             installation.deployment_evidence = evidence

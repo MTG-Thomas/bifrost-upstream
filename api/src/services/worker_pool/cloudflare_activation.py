@@ -37,7 +37,13 @@ from src.services.audit import emit_audit
 from src.services.authorization.enforce import Caller
 from src.services.kubernetes_control import may_manage_jobs
 from src.services.worker_pool.cloudflare_connector_channel import connector_channel_ready
-from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_PILOT_POLICY, container_account_usage, fleet_envelope
+from src.services.worker_pool.cloudflare_containers_policy import (
+    CONTAINERS_PILOT_POLICY,
+    container_account_usage,
+    container_canaries_used,
+    fleet_envelope,
+)
+from src.services.worker_pool.cloudflare_spend import usage_period
 from src.services.worker_pool.cloudflare_containers_release import load_containers_release
 from src.services.worker_pool.cloudflare_credentials import (
     StagedCloudflareCredentialUnavailable,
@@ -163,17 +169,32 @@ async def preflight_cloudflare(
     policy = body.policy or proposal
     if not body.containers and (body.container_instance_hours is not None or policy.container_instance_hours is not None):
         raise CloudflarePreflightFieldError("container_instance_hours", "Opt in to Containers before setting instance-hours.")
+    if not body.containers and (
+        body.container_qualification_canaries is not None or policy.container_qualification_canaries is not None
+    ):
+        raise CloudflarePreflightFieldError("container_qualification_canaries", "Opt in to Containers before setting qualification canaries.")
     workers_release = load_workers_release()
     bounds = release_meter_bounds(workers_release)
     priced = _price_policy(policy, bounds)
     container_policy = None
     if body.containers:
         container_policy = CONTAINERS_PILOT_POLICY
-        proposal = proposal.model_copy(update={"container_instance_hours": container_policy.monthly_instance_hours})
+        proposal = proposal.model_copy(update={
+            "container_instance_hours": container_policy.monthly_instance_hours,
+            "container_qualification_canaries": container_policy.monthly_qualification_canaries,
+        })
         hours = body.container_instance_hours or policy.container_instance_hours
         if hours is not None:
             container_policy = container_policy.model_copy(update={"monthly_instance_hours": hours})
-        policy = policy.model_copy(update={"container_instance_hours": container_policy.monthly_instance_hours})
+        canaries = body.container_qualification_canaries
+        if canaries is None:
+            canaries = policy.container_qualification_canaries
+        if canaries is not None:
+            container_policy = container_policy.model_copy(update={"monthly_qualification_canaries": canaries})
+        policy = policy.model_copy(update={
+            "container_instance_hours": container_policy.monthly_instance_hours,
+            "container_qualification_canaries": container_policy.monthly_qualification_canaries,
+        })
     actor = caller.principal.user_id
     bound_account, token, credential_expiry = await _credential(db, actor, body)
     preset_b = policy.model_dump(exclude={"monthly_limit_usd"}) == proposal.model_dump(exclude={"monthly_limit_usd"})
@@ -208,11 +229,15 @@ async def preflight_cloudflare(
             accounts = [account for account in accounts if account.id == bound_account]
         account_id = bound_account or _selection(accounts, body.account_id, "account_id")
         remaining_hours = None
+        remaining_canaries = None
         if container_policy is not None:
             used = await db.scalar(select(container_account_usage(
                 func.now(), account_id=account_id, instance_seconds=True,
             ))) if account_id is not None else 0
             remaining_hours = max(Decimal(0), Decimal(container_policy.monthly_instance_hours) - Decimal(used or 0) / 3600)
+            start, end = usage_period(datetime.now(UTC))
+            canaries_used = await db.scalar(container_canaries_used(account_id, start, end)) if account_id is not None else 0
+            remaining_canaries = max(0, container_policy.monthly_qualification_canaries - (canaries_used or 0))
         result = CloudflarePreflight(
             accounts=accounts, account_id=account_id, connector_channel=settings.cloudflare_tunnel_channel,
             connector_ready=ready,
@@ -226,6 +251,7 @@ async def preflight_cloudflare(
                 containers_policy=container_policy,
                 containers_fleet_envelope_usd=container_floor,
                 containers_remaining_instance_hours=remaining_hours,
+                containers_remaining_qualification_canaries=remaining_canaries,
             ),
             consent_version=CONTAINERS_CONSENT_VERSION if containers_release else CONSENT_TEXT_VERSION,
             consent_text=f"{CONSENT_TEXT} {CONTAINERS_CONSENT_TEXT}" if containers_release else CONSENT_TEXT,

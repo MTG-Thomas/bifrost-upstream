@@ -17,7 +17,11 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker
-from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_deadline_sql
+from src.services.worker_pool.cloudflare_containers_policy import (
+    CONTAINERS_SCOPE,
+    QUALIFICATION_DEFERRED_KEY,
+    container_deadline_sql,
+)
 from src.services.worker_pool.cloudflare_release import installed_workers_release_digest
 from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
 from src.services.worker_pool.eligibility import timeout_fits_workers_deadline
@@ -171,7 +175,13 @@ def workers_release_matches() -> ColumnElement[bool]:
     return and_(
         CloudflareInstallation.upgrade_release.is_(None),
         CloudflareInstallation.policy["bounds_release"].astext == release,
-        joint_container_readiness(CloudflareInstallation.admitted_revision),
+        or_(
+            joint_container_readiness(CloudflareInstallation.admitted_revision),
+            func.coalesce(
+                CloudflareInstallation.deployment_evidence[QUALIFICATION_DEFERRED_KEY].as_integer()
+                == CloudflareInstallation.admitted_revision, False,
+            ),
+        ),
     )
 
 

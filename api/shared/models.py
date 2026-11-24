@@ -24,6 +24,7 @@ SEMVER_PATTERN = (
 )
 
 CONTAINERS_PILOT_INSTANCE_HOURS = 100
+CONTAINERS_PILOT_QUALIFICATION_CANARIES = 30
 
 
 class CloudflareWorkersPolicy(BaseModel):
@@ -55,6 +56,7 @@ class CloudflareCapacityPolicy(BaseModel):
     )
     shared_managed_worker_cap: int | None = Field(default=None, ge=1, le=1000)
     container_instance_hours: int | None = Field(default=None, ge=1, le=1488)
+    container_qualification_canaries: int | None = Field(default=None, ge=0, le=1000)
 
 
 class CloudflareUsageAdvisory(BaseModel):
@@ -89,6 +91,7 @@ CloudflarePlacementCode = Literal[
     "container_readiness_unverified", "container_egress_stale", "container_allocation_cooldown",
     "container_receipt_limit",
     "container_instance_budget_exhausted",
+    "container_qualification_deferred",
     "container_egress_refresh_failed",
 ]
 
@@ -154,6 +157,7 @@ class CloudflareInstallationStatus(BaseModel):
     owned_resources_pending: int
     spend: CloudflareSpendStatus | None = None
     containers_remaining_instance_hours: Decimal | None = None
+    containers_remaining_qualification_canaries: int | None = None
     containers_instance_budget_resets_at: datetime | None = None
 
 
@@ -247,6 +251,7 @@ class ContainersPolicy(BaseModel):
     workflow_slots: Literal[1] = 1
     idle_seconds: int = Field(default=120, ge=1, le=120)
     monthly_instance_hours: int = Field(default=CONTAINERS_PILOT_INSTANCE_HOURS, ge=1, le=1488)
+    monthly_qualification_canaries: int = Field(default=CONTAINERS_PILOT_QUALIFICATION_CANARIES, ge=0, le=1000)
     start_timeout_seconds: int = Field(ge=1, le=3600)
     lifetime_seconds: int = Field(ge=121, le=86400)
     queue_wait_seconds: int = Field(ge=1, le=3600)
@@ -263,6 +268,7 @@ class CloudflarePreflightRequest(CloudflareCredentialInput):
     policy: CloudflareCapacityPolicy | None = None
     containers: bool | None = None
     container_instance_hours: int | None = Field(default=None, ge=1, le=1488)
+    container_qualification_canaries: int | None = Field(default=None, ge=0, le=1000)
 
 
 class CloudflareDiscoveryChoice(BaseModel):
@@ -279,6 +285,7 @@ class CloudflareActivationPreview(BaseModel):
     containers_policy: ContainersPolicy | None = None
     containers_fleet_envelope_usd: Decimal | None = None
     containers_remaining_instance_hours: Decimal | None = None
+    containers_remaining_qualification_canaries: int | None = None
 
 
 class CloudflarePreflight(BaseModel):

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
 	ApprovalReviewError,
 	acceptCloudflareApproval,
@@ -106,11 +107,14 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 					<fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
 						<div className="space-y-1.5">
 							<Label htmlFor={`${id}-runtime`}>Runtime</Label>
-							<select id={`${id}-runtime`} name="runtime" className="block rounded-md border bg-background p-2"
+							<Select name="runtime" disabled={busy} onValueChange={() => setOptionsEdited(true)}
 								defaultValue={state.proposal?.container || state.current_container ? "containers" : "workers"}>
-								<option value="workers">Workers</option>
-								<option value="containers">Containers (Linux)</option>
-							</select>
+								<SelectTrigger id={`${id}-runtime`}><SelectValue /></SelectTrigger>
+								<SelectContent>
+									<SelectItem value="workers">Workers</SelectItem>
+									<SelectItem value="containers">Containers (Linux)</SelectItem>
+								</SelectContent>
+							</Select>
 						</div>
 						<div className="space-y-1.5">
 							<Label htmlFor={`${id}-subrequests`}>Subrequest Allowance</Label>

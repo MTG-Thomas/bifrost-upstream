@@ -35,6 +35,7 @@ from src.models.contracts.cloudflare_approval import (
 )
 from src.models.orm import CloudflareApproval, Solution, SolutionFileIndex, Workflow
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
+from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import (
     Caller,
@@ -124,9 +125,12 @@ def _state_from_observations(
             state.status = "approved"
         if container is not None and current.organization_id == workflow.organization_id:
             state.current_container = container
+            limits = ContainersPolicy.model_validate(installation.containers_policy) if installation else None
             if (
                 installation is not None and installation.id == container.installation_id
-                and installation.admitted_revision == container.deployment_revision
+                and limits is not None and limits.enabled
+                and installation.admitted_revision is not None
+                and installation.containers_ready_revision == installation.admitted_revision
                 and installation.containers_release_digest == container.release_digest
                 and installation.worker_ingress_origin == container.worker_ingress_origin
                 and installation.consent_version == container.consent_version
@@ -134,6 +138,8 @@ def _state_from_observations(
                 and container.solution == placement
                 and container.timeout_seconds == workflow.timeout_seconds
                 and container.memory_bytes == (workflow.memory_request_mib or 0) * 2**20
+                and container.timeout_seconds + limits.idle_seconds < limits.lifetime_seconds
+                and (container.ingress_bytes, container.outbound_bytes) == (limits.ingress_bytes, limits.outbound_bytes)
                 and all(pins.get(path) == pin for path, pin in container.source_pins.items())
             ):
                 state.status = "approved"
@@ -277,15 +283,18 @@ async def _visible_workflows(db: AsyncSession, caller: Caller, *, current_only: 
     if current_only:
         query = query.where(select(CloudflareApproval.revision).where(
             CloudflareApproval.workflow_id == Workflow.id, CloudflareApproval.is_current,
-            CloudflareApproval.policy_version == POLICY_VERSION,
+            CloudflareApproval.policy_version.in_((POLICY_VERSION, LINUX_REVIEW_VERSION)),
         ).exists())
     return [workflow for workflow in await db.scalars(query) if _can_see(caller, workflow, can_propose)]
 
 
-async def current_visible_approval_count(db: AsyncSession, caller: Caller) -> int:
+async def current_visible_approval_count(db: AsyncSession, caller: Caller) -> dict[str, int]:
     workflows = await _visible_workflows(db, caller, current_only=True)
     states = await _states(db, workflows, _can_propose(caller), include_review=False)
-    return sum(state.status == "approved" for state in states)
+    return dict(Counter(
+        "containers" if state.current_container is not None else "workers"
+        for state in states if state.status == "approved"
+    ))
 
 
 async def list_approvals(db: AsyncSession, user: UserPrincipal) -> CloudflareApprovalList:

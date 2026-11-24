@@ -74,6 +74,7 @@ const fieldNames: Record<string, string> = {
 	queue_prewarm_per_tenant: "queue_prewarm",
 	monthly_limit_usd: "monthly_limit",
 	shared_managed_worker_cap: "shared_cap",
+	container_qualification_canaries: "policy_container_qualification_canaries",
 	work_kinds: "workflows",
 };
 
@@ -234,6 +235,7 @@ type CapacityPolicy = components["schemas"]["CloudflareCapacityPolicy-Input"];
 function readPolicy(fields: FormData): CapacityPolicy {
 	const sharedCap = String(fields.get("shared_cap") ?? "");
 	const containerHours = String(fields.get("policy_container_instance_hours") ?? "");
+	const canaries = String(fields.get("policy_container_qualification_canaries") ?? "");
 		return {
 			version: 1 as const,
 			workers: {
@@ -249,6 +251,7 @@ function readPolicy(fields: FormData): CapacityPolicy {
 			monthly_limit_usd: String(fields.get("monthly_limit")),
 			shared_managed_worker_cap: sharedCap ? Number(sharedCap) : null,
 			container_instance_hours: containerHours ? Number(containerHours) : undefined,
+			container_qualification_canaries: canaries ? Number(canaries) : undefined,
 		};
 }
 
@@ -276,6 +279,15 @@ function PolicyFields({ settings, fieldProps = () => ({}), fieldError = () => nu
 								min={1} max={1488} defaultValue={settings.container_instance_hours} required
 								{...fieldProps("policy_container_instance_hours")} />
 							{fieldError("policy_container_instance_hours")}
+						</div>
+					)}
+					{settings.container_qualification_canaries != null && (
+						<div>
+							<Label htmlFor="cf-policy-container-canaries">Monthly Container Qualification Canaries</Label>
+							<Input id="cf-policy-container-canaries" name="policy_container_qualification_canaries" type="number"
+								min={0} max={1000} defaultValue={settings.container_qualification_canaries} required
+								{...fieldProps("policy_container_qualification_canaries")} />
+							{fieldError("policy_container_qualification_canaries")}
 						</div>
 					)}
 				</div>
@@ -350,6 +362,8 @@ function CloudflareSetupForm({ status, onAccepted, onCancel, onRefresh }: {
 					containers: containers || undefined,
 					container_instance_hours: containers && value("container_instance_hours")
 						? Number(value("container_instance_hours")) : undefined,
+					container_qualification_canaries: containers && value("container_qualification_canaries")
+						? Number(value("container_qualification_canaries")) : undefined,
 				});
 				setPreflight(next);
 				setStale(false);
@@ -389,10 +403,13 @@ function CloudflareSetupForm({ status, onAccepted, onCancel, onRefresh }: {
 				Include Paid Containers Pilot
 			</label>
 			{containers && (
-				<div>
+				<div className="space-y-2">
 					<Label htmlFor="cf-container-hours">Monthly Container Instance-Hours</Label>
 					<Input id="cf-container-hours" name="container_instance_hours" type="number"
 						min={1} max={1488} onChange={invalidate} />
+					<Label htmlFor="cf-container-canaries">Monthly Container Qualification Canaries</Label>
+					<Input id="cf-container-canaries" name="container_qualification_canaries" type="number"
+						min={0} max={1000} onChange={invalidate} />
 				</div>
 			)}
 			{failure && <CapacityFormError failure={failure} formRef={formRef} onRefresh={() => {
@@ -482,7 +499,7 @@ function CloudflareSetupForm({ status, onAccepted, onCancel, onRefresh }: {
 						<h3 className="font-semibold">Workers Capacity Preview</h3>
 						<p>{preview.policy.workers.launcher_cap} launchers × {preview.policy.workers.slots_per_launcher} slots, {preview.policy.workers.installation_slots} installation slots, and a {preview.policy.workers.max_lifetime_seconds.toLocaleString()}-second lifetime.</p>
 						<dl className="grid gap-2 text-sm sm:grid-cols-2">
-							<div><dt>Estimated Overflow Usage</dt><dd>{showForecast
+							<div><dt>Estimated Workers Overflow Usage</dt><dd>{showForecast
 								? `About $${Number(preview.estimated_usage_min_usd)}–$${Number(preview.estimated_usage_max_usd)}/month`
 								: "Forecast Unavailable for Edited Policy"}</dd></div>
 							<div><dt>Workers Paid Subscription</dt><dd>{amount(preview.workers_paid_subscription_usd)}/month, billed separately</dd></div>
@@ -496,6 +513,7 @@ function CloudflareSetupForm({ status, onAccepted, onCancel, onRefresh }: {
 									{" "}{preview.containers_policy.workflow_slots} workflow per instance, and a {preview.containers_policy.idle_seconds}-second idle stop.</p>
 								<p>Containers Fleet Minimum: {amount(preview.containers_fleet_envelope_usd)}/month. The fleet minimum above includes both lanes.</p>
 								<p>{Number(preview.containers_remaining_instance_hours ?? 0).toLocaleString()} of {preview.containers_policy.monthly_instance_hours} instance-hours available this month.</p>
+								<p>{preview.containers_remaining_qualification_canaries} of {preview.containers_policy.monthly_qualification_canaries} qualification canaries available this month.</p>
 							</div>
 						)}
 						<p className="text-sm text-muted-foreground">At the usage limit, new work stays on the primary. Overflow can pause earlier if usage or the next reservation cannot be verified.</p>
@@ -986,6 +1004,12 @@ export function CloudflareCapacity() {
 									{installation.containers_instance_budget_resets_at && (
 										<dd>Resets {new Date(installation.containers_instance_budget_resets_at).toISOString().slice(0, 10)} UTC</dd>
 									)}
+								</div>
+							)}
+							{installation.containers_remaining_qualification_canaries != null && (
+								<div>
+									<dt className="text-muted-foreground">Remaining Container Qualification Canaries</dt>
+									<dd>{installation.containers_remaining_qualification_canaries} of {installation.policy.container_qualification_canaries}</dd>
 								</div>
 							)}
 							{installation.spend && (
