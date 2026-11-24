@@ -820,7 +820,7 @@ def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_o
     }).status_code == 403
     body = {"installation_id": str(uuid4()), "expected_revision": 1}
     assert e2e_client.patch(path, headers=provider_org_user.headers, json={
-        **body, "action": "policy", "policy": {
+        **body, "action": "policy", "expected_policy_version": 1, "policy": {
             "workers": {"launcher_cap": 1, "slots_per_launcher": 2, "max_lifetime_seconds": 3600, "work_kinds": ["workflow"]},
             "monthly_limit_usd": "10.00",
         },
@@ -8072,15 +8072,21 @@ async def test_workers_only_policy_normalizes_legacy_counters(db_session, instal
 
 
 async def test_workers_sql_rejects_deferral_for_old_admitted_revision(db_session, installation):
+    from sqlalchemy.sql.visitors import replacement_traverse
+
     installation.containers_policy = {"enabled": True}
+    installation.desired_state = "enabled"
     installation.admitted_revision = installation.desired_revision
     installation.deployment_evidence = {"container_qualification_deferred_revision": installation.admitted_revision}
-    deferral = select(cloudflare_admission.workers_release_matches()).where(CloudflareInstallation.id == installation.id)
+    deferral = cloudflare_admission.workers_release_matches()
+    scope = CloudflareInstallation.id == installation.id
     await db_session.flush()
-    assert await db_session.scalar(deferral) is True
-    installation.desired_revision += 1
-    await db_session.flush()
-    assert await db_session.scalar(deferral) is False
+    assert await db_session.scalar(select(deferral).where(scope)) is True
+    # Exercise the SQL's own fence with a projected revision. The table check
+    # also prevents persisting an admitted row with a stale desired revision.
+    desired = CloudflareInstallation.__table__.c.desired_revision
+    stale = replacement_traverse(deferral, {}, lambda node: desired + 1 if node.compare(desired) else None)
+    assert await db_session.scalar(select(stale).where(scope)) is False
 
 
 @pytest.mark.asyncio
