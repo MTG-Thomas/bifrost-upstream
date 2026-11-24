@@ -49,4 +49,4 @@ jq -e -nS --arg revision "$revision" --arg repo "$repository" --arg digest "$ima
   workers_release_digest: $workers, provider_modules: {"container-registry.mjs": $module},
   wheels: $wheels, rates: $rates
 }' > "$output/manifest.json"
-cosign sign-blob --yes --bundle "$output/manifest.sigstore.json" "$output/manifest.json"
+cosign sign-blob --yes --new-bundle-format --bundle "$output/manifest.sigstore.json" "$output/manifest.json"

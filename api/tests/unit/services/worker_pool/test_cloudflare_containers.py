@@ -124,7 +124,12 @@ async def test_descriptor_requires_release_signer_and_exact_source(tmp_path, mon
             if not trust_metadata_available:
                 raise ContainersReleaseUnavailable("Fixture TUF download failed")
             return b""
-        assert args[:4] == ("verify-blob", "--certificate-identity", signer, "--offline")
+        assert args == (
+            "verify-blob", "--new-bundle-format", "--offline", "--trusted-root",
+            ".sigstore/root/targets/trusted_root.json", "--certificate-identity", signer,
+            "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+            "--bundle", "manifest.sigstore.json", "manifest.json",
+        )
         if not trusted:
             raise ContainersReleaseUnavailable("Invalid signature")
         return b""
@@ -185,7 +190,8 @@ async def test_load_matched_release_follows_only_github_asset_redirects(tmp_path
         if args == ("version",):
             return b"GitVersion: v2.4.1\n"
         if args != ("initialize",):
-            assert args[:4] == ("verify-blob", "--certificate-identity", signer, "--offline")
+            assert args[:3] == ("verify-blob", "--new-bundle-format", "--offline")
+            assert args[5:7] == ("--certificate-identity", signer)
         return b""
 
     monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_release.run_oci_tool", tool)

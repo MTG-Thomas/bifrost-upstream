@@ -1,0 +1,320 @@
+{
+  "manifest_version": 1,
+  "source_revision": "85e761039753a4421e872f40cda8c792e3fc5e4c",
+  "release_version": "2.0.0-rc.2026112402",
+  "release_sequence": 135,
+  "runtime_sha256": "11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254",
+  "pyodide_version": "314.0.6",
+  "compatibility_date": "2026-10-30",
+  "compatibility_flags": [],
+  "capacity_protocol": 2,
+  "credential_protocol": 2,
+  "runtime_profile": "cloudflare-python-v1",
+  "capabilities": [
+    [
+      "workflow.execute",
+      1
+    ]
+  ],
+  "max_slots_per_launcher": 4,
+  "meter_bounds": {
+    "qualification": {
+      "source_run": "22529613-b865-4cab-9f7d-49361b3568a0",
+      "observed_manifest_sha256": "b4d55400c080dc014b85054f1560e8a0e4da2470d597c71ab5c501790801f112",
+      "bundle_sha256": "e9097384c9dd6986a7289c937c81c5b4a019221f6761d37b10ccc60f262da9f8",
+      "capacity_module_sha256": "0805f8fe9ff4dc7f5c6db03714924dd334b5383576a0e3be79ee79885ddbd138",
+      "cpu_reference": {
+        "source_run": "46eb01a8-f3d7-415f-8092-be70e73ed6a0",
+        "requalification_run": "057233e7-7fb2-458d-b698-79dc5247ab07",
+        "startup_reserve_ms": 48522,
+        "samples": {
+          "capacity_profile": {
+            "samples": 100,
+            "p99_us": 1927
+          },
+          "capacity_observe": {
+            "samples": 100,
+            "p99_us": 2375
+          },
+          "capacity_prepare": {
+            "samples": 4,
+            "p99_us": 11152
+          },
+          "capacity_start": {
+            "samples": 4,
+            "p99_us": 3577
+          },
+          "capacity_delete": {
+            "samples": 4,
+            "p99_us": 9318
+          },
+          "boot": {
+            "samples": 4,
+            "p99_us": 7314646
+          },
+          "warm": {
+            "samples": 100,
+            "p99_us": 43918
+          },
+          "exercise": {
+            "samples": 100,
+            "p99_us": 71399
+          },
+          "cold_exercise": {
+            "samples": 4,
+            "p99_us": 4852122
+          },
+          "loose": {
+            "samples": 4,
+            "p99_us": 213253
+          },
+          "solution": {
+            "samples": 4,
+            "p99_us": 106114
+          }
+        }
+      },
+      "sdk_requests": 4,
+      "safety_margin": 10,
+      "launcher_reference": {
+        "source": "local-workerd:170x2s:release-9b4067d99",
+        "observed": {
+          "sqlite_rows_written": 68,
+          "do_requests": 6,
+          "log_events": 2
+        }
+      }
+    },
+    "cleanup_margin_seconds": 300,
+    "per_launcher_second": {
+      "worker_requests": "2",
+      "worker_cpu_ms": "62245",
+      "do_requests": "64",
+      "do_gb_seconds": "1",
+      "sqlite_rows_read": "128",
+      "sqlite_rows_written": "128",
+      "sqlite_stored_gb_month": "0.0001",
+      "log_events": "64",
+      "log_ingested_gb": "0.0001",
+      "log_stored_gb_month": "0.0001",
+      "transfer_gb": "0"
+    },
+    "per_fleet_fixed": {
+      "worker_requests": "200",
+      "worker_cpu_ms": "6000000",
+      "do_requests": "1000",
+      "do_gb_seconds": "600",
+      "sqlite_rows_read": "1000",
+      "sqlite_rows_written": "1000",
+      "sqlite_stored_gb_month": "0.1",
+      "log_events": "1000",
+      "log_ingested_gb": "0.01",
+      "log_stored_gb_month": "0.01",
+      "transfer_gb": "0"
+    }
+  },
+  "workers": {
+    "launcher": {
+      "main_module": "launcher.mjs",
+      "modules": [
+        {
+          "name": "launcher.mjs",
+          "sha256": "976cd2cf24c59978bbea2bcf8241522da1ff3ea4f3d079adf0425fb47903df66",
+          "bytes": 22178175,
+          "gzip_bytes": 7703200,
+          "mime_type": "application/javascript+module"
+        }
+      ],
+      "exports": {
+        "CloudflareLauncher": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        },
+        "TenantHost": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        }
+      },
+      "public_endpoint": false,
+      "bindings": [
+        {
+          "name": "LOADER",
+          "type": "worker_loader"
+        },
+        {
+          "name": "API_ORIGIN",
+          "type": "plain_text",
+          "source": "worker_ingress_origin"
+        },
+        {
+          "name": "BIFROST_TENANT_LINGER_SECONDS",
+          "type": "plain_text",
+          "source": "linger_seconds"
+        },
+        {
+          "name": "BIFROST_CLOUDFLARE_MANAGED",
+          "type": "plain_text",
+          "text": "true"
+        },
+        {
+          "name": "BIFROST_METER_GENERATIONS",
+          "type": "plain_text",
+          "text": "true"
+        },
+        {
+          "name": "BIFROST_METER_RECEIPTS",
+          "type": "plain_text",
+          "text": "true"
+        },
+        {
+          "name": "TENANT_GATEWAY",
+          "type": "service",
+          "script": "gateway"
+        },
+        {
+          "name": "RUNTIME_SHA256",
+          "type": "plain_text",
+          "text": "11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254"
+        },
+        {
+          "name": "BIFROST_METER_SDK_REQUESTS",
+          "type": "plain_text",
+          "text": "40"
+        },
+        {
+          "name": "BIFROST_METER_ENGINE_CPU_MS",
+          "type": "plain_text",
+          "text": "30000"
+        },
+        {
+          "name": "BIFROST_METER_BOOT_CPU_MS",
+          "type": "plain_text",
+          "text": "30000"
+        },
+        {
+          "name": "BIFROST_METER_WARM_CPU_MS",
+          "type": "plain_text",
+          "text": "440"
+        },
+        {
+          "name": "BIFROST_METER_EXERCISE_CPU_MS",
+          "type": "plain_text",
+          "text": "714"
+        },
+        {
+          "name": "BIFROST_LAUNCHER_METERS",
+          "type": "plain_text",
+          "text": "{\"do_requests\":60,\"log_events\":20,\"sqlite_rows_written\":680}"
+        },
+        {
+          "name": "BIFROST_LAUNCHER_METERS_PER_SECOND",
+          "type": "plain_text",
+          "text": "{\"do_requests\":64,\"log_events\":64,\"sqlite_rows_written\":128}"
+        }
+      ],
+      "cpu_ms": 30000,
+      "preview_urls": false
+    },
+    "gateway": {
+      "main_module": "gateway.mjs",
+      "modules": [
+        {
+          "name": "gateway.mjs",
+          "sha256": "6fb1025b11b308d3a628bed063cb5aa5d11f141819eb3ddd1c0b8153621847d5",
+          "bytes": 3246,
+          "gzip_bytes": 1564,
+          "mime_type": "application/javascript+module"
+        }
+      ],
+      "exports": {},
+      "public_endpoint": false,
+      "bindings": [
+        {
+          "name": "API_ORIGIN",
+          "type": "plain_text",
+          "source": "worker_ingress_origin"
+        },
+        {
+          "name": "SDK_SCOPE",
+          "type": "plain_text",
+          "text": "sdk"
+        }
+      ],
+      "cpu_ms": 2133,
+      "preview_urls": false
+    },
+    "capacity": {
+      "main_module": "capacity.mjs",
+      "modules": [
+        {
+          "name": "capacity.mjs",
+          "sha256": "0805f8fe9ff4dc7f5c6db03714924dd334b5383576a0e3be79ee79885ddbd138",
+          "bytes": 10567,
+          "gzip_bytes": 3784,
+          "mime_type": "application/javascript+module"
+        }
+      ],
+      "exports": {
+        "ScopeRegistry": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        },
+        "WorkerLedger": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        }
+      },
+      "public_endpoint": true,
+      "bindings": [
+        {
+          "name": "SCOPE_REGISTRY",
+          "type": "durable_object_namespace",
+          "class_name": "ScopeRegistry"
+        },
+        {
+          "name": "WORKER_LEDGER",
+          "type": "durable_object_namespace",
+          "class_name": "WorkerLedger"
+        },
+        {
+          "name": "CLOUDFLARE_LAUNCHER",
+          "type": "durable_object_namespace",
+          "class_name": "CloudflareLauncher",
+          "script": "launcher"
+        },
+        {
+          "name": "CAPACITY_TOKEN",
+          "type": "secret_text",
+          "source": "scope_bearer"
+        },
+        {
+          "name": "MAX_WORKERS",
+          "type": "plain_text",
+          "source": "launcher_cap"
+        },
+        {
+          "name": "MAX_LIFETIME_SECONDS",
+          "type": "plain_text",
+          "source": "max_lifetime_seconds"
+        },
+        {
+          "name": "WORKFLOW_SLOTS",
+          "type": "plain_text",
+          "source": "slots_per_launcher"
+        },
+        {
+          "name": "WORKER_VERSION",
+          "type": "plain_text",
+          "source": "worker_version"
+        },
+        {
+          "name": "SCOPE",
+          "type": "plain_text",
+          "text": "workers"
+        }
+      ],
+      "cpu_ms": 112,
+      "preview_urls": false
+    }
+  }
+}

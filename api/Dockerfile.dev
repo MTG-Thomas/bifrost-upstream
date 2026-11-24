@@ -5,6 +5,9 @@
 # Match the production App build runtime.
 FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS node-toolchain
 
+# Exercise the same Cosign parser as release CI and the production API.
+FROM ghcr.io/sigstore/cosign/cosign:v2.4.1@sha256:b03690aa52bfe94054187142fba24dc54137650682810633901767d8a3e15b31 AS cosign-toolchain
+
 # =============================================================================
 # Stage 1: Builder
 # =============================================================================
@@ -69,6 +72,7 @@ RUN sh /usr/local/bin/install-npm.sh && rm /usr/local/bin/install-npm.sh
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.15/site-packages /usr/local/lib/python3.15/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=cosign-toolchain /ko-app/cosign /usr/local/bin/cosign
 RUN mv /usr/local/bin/uvicorn /usr/local/bin/uvicorn-real
 
 # Keep OpenSSL's system/private CA selection. Exclude only retired distro

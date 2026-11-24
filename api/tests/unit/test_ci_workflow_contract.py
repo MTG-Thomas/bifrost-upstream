@@ -7,6 +7,7 @@ that candidate reaches ``main``. The live required-check settings are audited
 separately because they are GitHub repository configuration, not source code.
 """
 
+import inspect
 import json
 import os
 import re
@@ -19,6 +20,7 @@ import pytest
 import yaml
 
 from scripts.verify_merge_candidate import REQUIRED_JOBS
+from src.services.worker_pool import cloudflare_containers_release
 
 
 def _repository_root() -> Path:
@@ -48,6 +50,19 @@ def _load_workflow(path: Path) -> dict[str, Any]:
 
 def _normalized(expression: str) -> str:
     return " ".join(expression.split())
+
+
+def test_container_release_signing_and_verification_use_the_same_bundle_contract() -> None:
+    steps = _load_workflow(CI_WORKFLOW)["jobs"]["build-api"]["steps"]
+    install, = [step for step in steps if step.get("name") == "Install cosign for the Linux release descriptor"]
+    assert install["with"]["cosign-release"] == cloudflare_containers_release._COSIGN_VERSION
+    assert any('install -Dm0755 "$(command -v cosign)"' in step.get("run", "") for step in steps)
+    assert any("bash deploy/capacity/cloudflare/build-containers.sh" in step.get("run", "") for step in steps)
+    signing = (REPO_ROOT / "deploy/capacity/cloudflare/build-containers.sh").read_text()
+    assert re.search(r'^cosign sign-blob --yes --new-bundle-format --bundle "\$output/manifest\.sigstore\.json"', signing, re.M)
+    verifier = inspect.getsource(cloudflare_containers_release.verify_containers_release)
+    assert '"verify-blob", "--new-bundle-format", "--offline"' in verifier
+    assert '"--bundle", "manifest.sigstore.json"' in verifier
 
 
 def test_promotion_verifier_requires_every_merge_candidate_job() -> None:

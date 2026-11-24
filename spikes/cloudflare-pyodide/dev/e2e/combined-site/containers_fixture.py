@@ -38,7 +38,8 @@ def configure_release(module):
                 return b"GitVersion: v2.4.1\n"
             case "cosign", ("initialize",):
                 return b""
-            case "cosign", ("verify-blob", "--certificate-identity", signer, "--offline",
+            case "cosign", ("verify-blob", "--new-bundle-format", "--offline",
+                            "--trusted-root", ".sigstore/root/targets/trusted_root.json", "--certificate-identity", signer,
                             "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
                             "--bundle", "manifest.sigstore.json", "manifest.json"):
                 if re.fullmatch(r"https://github\.com/rehearsal/containers/\.github/workflows/ci\.yml@refs/tags/v[^/\s]+", signer):

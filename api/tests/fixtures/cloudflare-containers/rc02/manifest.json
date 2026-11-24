@@ -1,0 +1,28 @@
+{
+  "capacity_protocol": 2,
+  "entrypoint": [
+    "/usr/local/bin/python",
+    "-m",
+    "src.worker.remote.container_entrypoint"
+  ],
+  "image_digest": "sha256:815ea3d06b811fb6bbe8fb8635df86a608208f6c9e4a38b929b9ac4798a47ee5",
+  "ingress_contract": "worker-ingress-only-v1",
+  "instance_type": "standard-1",
+  "manifest_version": 1,
+  "platform": "linux/amd64",
+  "provider_modules": {
+    "container-registry.mjs": "4f93107ff097db70c153941d3159ea8bd27ffdb50c8f0b0937a9518084658a1d"
+  },
+  "rates": {
+    "cleanup_seconds": 60,
+    "control_usd": "0.000001",
+    "instance_second_usd": "0.00002056",
+    "outbound_gb_usd": "0.05",
+    "version": "standard-1-v1"
+  },
+  "repository": "ghcr.io/mtg-thomas/bifrost-api-cloudflare-linux",
+  "sdk_protocol": 1,
+  "source_revision": "85e761039753a4421e872f40cda8c792e3fc5e4c",
+  "wheels": {},
+  "workers_release_digest": "813c35875a7a2531b6e6fee856687cd310c97cce5660abc65f39c2a7d1b0febd"
+}

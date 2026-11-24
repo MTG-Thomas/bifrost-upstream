@@ -34,6 +34,9 @@ _RELEASE_FILES = {
 }
 _ASSET_ORIGINS = frozenset({"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"})
 _COSIGN = Path("/app/artifacts/cloudflare/bin/cosign")
+_COSIGN_VERSION = "v2.4.1"
+_TRUSTED_ROOT_TARGET = ".sigstore/root/targets/trusted_root.json"
+_GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 
 
 class ContainersReleaseUnavailable(Exception):
@@ -146,8 +149,8 @@ async def verify_containers_release(
     if _RELEASE_SIGNER.fullmatch(signer) is None:
         raise ContainersReleaseUnavailable("Expected an exact trusted release workflow identity")
     version = await run_oci_tool(cosign, "version", cwd=workspace)
-    if re.findall(rb"(?m)^GitVersion:[ \t]*(\S+)[ \t]*\r?$", version) != [b"v2.4.1"]:
-        raise ContainersReleaseUnavailable("Expected cosign v2.4.1")
+    if re.findall(rb"(?m)^GitVersion:[ \t]*(\S+)[ \t]*\r?$", version) != [_COSIGN_VERSION.encode("ascii")]:
+        raise ContainersReleaseUnavailable(f"Expected cosign {_COSIGN_VERSION}")
     try:
         content = (path / "manifest.json").read_bytes()
         bundle = (path / "manifest.sigstore.json").read_bytes()
@@ -161,15 +164,17 @@ async def verify_containers_release(
             raise ValueError
         (workspace / "manifest.json").write_bytes(content)
         (workspace / "manifest.sigstore.json").write_bytes(bundle)
-        # Populate a private, trust-checked TUF cache first. A failed fetch
-        # must be distinguishable from a rejected release signature.
+        # Bootstrap TUF from cosign's embedded root. Pass the authenticated
+        # target explicitly because the new-bundle verifier otherwise fetches
+        # trust material itself, even when given --offline.
         try:
             await run_oci_tool(cosign, "initialize", cwd=workspace)
         except ContainersReleaseUnavailable:
             raise ContainersReleaseFetchError("Sigstore trust metadata is unavailable") from None
         await run_oci_tool(
-            cosign, "verify-blob", "--certificate-identity", signer, "--offline",
-            "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+            cosign, "verify-blob", "--new-bundle-format", "--offline",
+            "--trusted-root", _TRUSTED_ROOT_TARGET,
+            "--certificate-identity", signer, "--certificate-oidc-issuer", _GITHUB_OIDC_ISSUER,
             "--bundle", "manifest.sigstore.json", "manifest.json", cwd=workspace,
         )
     except (OSError, ValueError, ValidationError):
