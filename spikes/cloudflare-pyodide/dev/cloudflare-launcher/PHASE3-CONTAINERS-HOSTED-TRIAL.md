@@ -5,7 +5,8 @@ trials and a dedicated Bifrost installation using Existing HTTPS. The
 [CT128 hosted-shaped rehearsal](../e2e/README.md) uses a provider stub,
 pinned Miniflare and the paired Docker guest. The hosted trial uses the
 normal signed release verifier and provider adapters from the approved
-`85e761039` images. Keep the working directory at the prepared Compose
+rc03 image digests once published. See [Release Readiness](RELEASE-PREP.md)
+for the frozen source commit. Keep the working directory at the prepared Compose
 checkout and invoke the runner from the shared-account harness checkout.
 
 ```sh
@@ -27,9 +28,9 @@ activation receipt and the naming code in the running API image. Stop on an
 existing exact script, namespace attributed to a trial script, application
 name, or tagged image in the intended registry repository. Save the opening
 foreign inventory counts and ID fingerprints. Leave other account changes
-paused until the closing comparison. The pinned release requires every
-namespace inventory row to have a script during initial deployment readback.
-Confirm this with the read-only namespace list before using that release.
+paused until the closing comparison. The trial runner requires a script
+attribution for every namespace. Confirm this with the read-only list before
+starting the trial.
 Create a dedicated, expiring management token scoped to that
 account with **Account Settings Read**, **Workers Scripts Write**, and
 **Workers Containers Write**. Add **Account Analytics Read** only if the trial
