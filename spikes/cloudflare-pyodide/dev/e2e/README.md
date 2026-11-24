@@ -113,7 +113,9 @@ socket checks separate from the TLS intercept on
 port 443, which can accept a handshake before it sees the request. The
 local proxy accepts the raw handshake even when the peer refuses it. The
 driver supplies the provider-side denial with an output rule inside the
-exact disposable guest namespace before forwarding its hello. The API
+exact disposable guest namespace before forwarding its hello. The same hook
+applies the `standard-1` 4 GiB cgroup limit to the Docker guest because the
+local engine leaves it unbounded. The API
 still reaches the peer. The guest must observe a real failed connection.
 Hosted DNS behavior, control-endpoint reachability on the probe ports,
 and provider raw TCP denial remain unqualified.

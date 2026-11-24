@@ -935,13 +935,24 @@ async def {name}(case: str, hold: int):
 
 
 class ContainerRehearsal(Rehearsal):
-    def deny_raw_guest_tcp(self, incarnation):
+    def prepare_local_guest(self, incarnation):
         image = self.cfg["containers"]["imageId"]
         identities = subprocess.check_output(["docker", "ps", "-q", "--filter", f"ancestor={image}"], text=True).split()
         guests = json.loads(subprocess.check_output(["docker", "inspect", *identities]))
         guest, = [item for item in guests if item["Image"] == image and item["State"]["Running"]
                   and f"BIFROST_WORKER_INCARNATION_ID={incarnation}" in item["Config"]["Env"]]
         assert guest["HostConfig"]["NetworkMode"] != "host"
+        # The local Docker engine does not apply the provider's standard-1
+        # limit. Give the guest the same cgroup boundary before relaying hello.
+        # Otherwise launcher pressure is sampled from the whole test host.
+        memory = str(4 * 1024**3)
+        subprocess.run([
+            "docker", "update", "--memory", memory, "--memory-swap", memory, guest["Id"],
+        ], stdout=subprocess.DEVNULL, check=True)
+        actual = subprocess.check_output([
+            "docker", "inspect", "--format", "{{.HostConfig.Memory}}", guest["Id"],
+        ], text=True).strip()
+        assert actual == memory
         with open(f"/proc/{guest['State']['Pid']}/ns/net", "rb") as namespace:
             fd = namespace.fileno()
             assert os.fstat(fd).st_ino != os.stat("/proc/self/ns/net").st_ino
@@ -949,7 +960,7 @@ class ContainerRehearsal(Rehearsal):
                 "nsenter", f"--net=/proc/self/fd/{fd}", "--", "iptables", "-I", "OUTPUT",
                 "-p", "tcp", "-m", "multiport", "--dports", "2053,8443", "-j", "REJECT", "--reject-with", "tcp-reset",
             ], check=True, pass_fds=(fd,))
-        evidence("container-raw-tcp-boundary", {"worker": str(incarnation)})
+        evidence("container-raw-tcp-boundary", {"worker": str(incarnation), "memory_bytes": int(actual)})
 
     @contextmanager
     def raw_tcp_boundary(self):
@@ -960,7 +971,7 @@ class ContainerRehearsal(Rehearsal):
         class Handler(socketserver.StreamRequestHandler):
             def handle(handler):
                 incarnation = UUID(handler.rfile.readline(38).decode("ascii").strip())
-                self.deny_raw_guest_tcp(incarnation)
+                self.prepare_local_guest(incarnation)
                 handler.wfile.write(b"ready\n")
 
         try:
