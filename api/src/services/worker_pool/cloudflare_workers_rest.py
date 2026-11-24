@@ -425,13 +425,10 @@ class WorkersRestCleanup:
                         OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_PAGINATION,
                     )
                 seen.add(row["id"])
+                # The account inventory can include namespaces with no script
+                # attribution. Only an exact script or journal receipt binds one.
                 if row["id"] in namespace_ids or row.get("script") == target.name:
                     owned.append(row)
-                elif not isinstance(row.get("script"), str) and not namespace_ids:
-                    raise ObservationPending(
-                        "Cloudflare namespace is unassigned and no exact namespace receipt exists",
-                        OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_UNASSIGNED,
-                    )
             reported_total = info.get("total_count", total)
             pages = info.get("total_pages")
             if (

@@ -66,7 +66,6 @@ class ObservationCheck(Enum):
     SCRIPT_CHANGED_DURING_READBACK = ("script_readback", "absent", "exact_observed_script")
     NAMESPACE_PAGE = ("namespace_inventory", "malformed_page", "valid_page")
     NAMESPACE_IDENTITY = ("namespace_inventory", "invalid_identity", "valid_identity")
-    NAMESPACE_UNASSIGNED = ("namespace_assignment", "unassigned_without_receipt", "script_or_exact_receipt")
     NAMESPACE_PAGINATION = ("namespace_inventory", "inconsistent_pages", "complete_snapshot")
     NAMESPACE_LIMIT = ("namespace_inventory", "incomplete", "complete_snapshot")
     NAMESPACE_EXPORTS_PENDING = ("namespace_exports", "missing_expected_classes", "exact_export_set")

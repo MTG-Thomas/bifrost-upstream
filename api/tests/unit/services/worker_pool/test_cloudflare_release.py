@@ -16,6 +16,8 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ObservationCheck,
     ObservationPending,
     ObservationSettling,
+    OwnershipCheck,
+    OwnershipConflict,
     ResourceIntent,
     ResourceTarget,
     observe_owned,
@@ -354,7 +356,10 @@ async def test_namespace_pagination_cannot_verify_absence_while_settling(second_
     assert failure.value.check is ObservationCheck.NAMESPACE_PAGINATION
 
 
-@pytest.mark.parametrize("readback", ["confirmed", "endpoint_mismatch", "missing_namespace", "unexpected_namespace"])
+@pytest.mark.parametrize("readback", [
+    "confirmed", "endpoint_mismatch", "missing_namespace", "unexpected_namespace", "foreign_namespaces",
+    "namespace_collision",
+])
 async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint(release: Path, readback: str) -> None:
     path = release / "manifest.json"
     manifest = json.loads(path.read_bytes())
@@ -414,6 +419,13 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
                 result.pop()
             elif readback == "unexpected_namespace":
                 result[-1]["class"] = "Unexpected"
+            elif readback == "foreign_namespaces":
+                result.extend([
+                    {"id": "3" * 32, "name": "foreign", "class": "WorkerLedger", "preview": False},
+                    {"id": "4" * 32, "script": target.name + "-other", "class": "WorkerLedger", "preview": False},
+                ])
+            elif readback == "namespace_collision":
+                result.append({"id": "3" * 32, "script": target.name, "class": "WorkerLedger", "preview": False})
         elif request.url.path.endswith("/workers/subdomain"):
             result = {"subdomain": "test-account"}
         else:
@@ -437,6 +449,12 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
         )
         observed = await observe_owned(adapter, api_token=token, intent=intent, recorded=None)
         assert observed is not None and observed.provider_version == version
+        if readback == "namespace_collision":
+            with pytest.raises(OwnershipConflict) as conflict:
+                await adapter.configure_endpoint(api_token=token, expected=observed)
+            assert conflict.value.check is OwnershipCheck.NAMESPACE_BINDINGS
+            assert mutations == ["PUT"]
+            return
         if readback == "endpoint_mismatch":
             with pytest.raises(ObservationPending, match="did not confirm the requested settings") as failure:
                 await adapter.configure_endpoint(api_token=token, expected=observed)
