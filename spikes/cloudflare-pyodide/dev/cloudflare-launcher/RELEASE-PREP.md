@@ -2,7 +2,7 @@
 
 **Prepared locally. Publication is held for the frozen-target release review,
 owner approval, and fork settings checks.**
-The exact rc03 release candidate is `7fa8fa72634cbd866c26ac0c756be1d95b923661`
+The exact rc03 release candidate is `b7d2bdaa84342b281c9fc71d9fac4418f1b2b525`
 on local branch `t3/cloudflare-release-rc03`. It includes the shared-account
 namespace fix, runner evidence fixes, and the Sigstore v0.3 verifier fix.
 The approved release body is byte-identical to rc02. Push the pinned candidate to
@@ -64,9 +64,9 @@ destination branch. Use only the explicit `personal` refspecs below.
 Never use `git push --tags` or `git push --follow-tags`. The commands remain unrun.
 
 ```sh
-git tag -a v2.0.0-rc.2026112403 7fa8fa72634cbd866c26ac0c756be1d95b923661 -m "Cloudflare Containers Trial"
-test "$(git rev-parse 'v2.0.0-rc.2026112403^{commit}')" = 7fa8fa72634cbd866c26ac0c756be1d95b923661 || exit 1
-git -c push.followTags=false push personal 7fa8fa72634cbd866c26ac0c756be1d95b923661:refs/heads/trial/cloudflare-containers-20261124
+git tag -a v2.0.0-rc.2026112403 b7d2bdaa84342b281c9fc71d9fac4418f1b2b525 -m "Cloudflare Containers Trial"
+test "$(git rev-parse 'v2.0.0-rc.2026112403^{commit}')" = b7d2bdaa84342b281c9fc71d9fac4418f1b2b525 || exit 1
+git -c push.followTags=false push personal b7d2bdaa84342b281c9fc71d9fac4418f1b2b525:refs/heads/trial/cloudflare-containers-20261124
 git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112403:refs/tags/v2.0.0-rc.2026112403
 ```
 
