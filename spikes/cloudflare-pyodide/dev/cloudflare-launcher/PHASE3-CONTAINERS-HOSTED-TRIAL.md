@@ -4,15 +4,21 @@ This trial requires owner approval for one disposable Workers Paid account
 and one Bifrost installation using Existing HTTPS. The sequence passed
 the [CT128 hosted-shaped rehearsal](../e2e/README.md) using
 `combined-rehearsal.py --containers-hosted-shape` with an empty provider stub,
-pinned Miniflare and the paired Docker guest. For the hosted trial, use
-`combined-rehearsal.py --hosted-containers-config` with the normal signed
-release verifier and provider adapters. Keep the config private. It names the
+pinned Miniflare and the paired Docker guest. The hosted trial uses the
+normal signed release verifier and provider adapters. From the trial checkout, run:
+
+```sh
+python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py \
+  --containers-hosted-shape --hosted-containers-config /absolute/private/containers-trial.json
+```
+
+Keep the config private. It names the
 test Compose project, network, Compose files, account, dedicated hostname,
 authorized management token, and the three approved spend thresholds.
 The runner uses the dedicated instance's operator account. By default its
 provider reads target the public Cloudflare API.
 
-## Publication approvals
+## Owner approvals
 
 Obtain explicit owner approval for each outward-facing effect before starting.
 
@@ -23,6 +29,9 @@ Obtain explicit owner approval for each outward-facing effect before starting.
 3. Make the digest-pinned GHCR Linux image publicly readable.
 4. Use keyless cosign signing. This writes a permanent public Rekor entry
    identifying the fork repository and release workflow.
+5. Approve the exact policy and its combined monthly fleet floor from preflight.
+6. Approve the calculated live target, live abort threshold, and settled cap.
+   Record the signed rates and cleanup margin used for those calculations.
 
 ## Manual read-only checklist
 
@@ -81,7 +90,9 @@ additional rounded live reservation allowance above it, reserved for cleanup.
 Round the expected cost plus the supporting allowances up to the next cent
 for the **settled cap**. For illustration, `c=60` and `f=$0.000001` with the
 pinned rates give $0.03 live, $0.05 abort and $0.02 settled. Replace those
-figures with the actual signed inputs before seeking approval. Check spend
+figures with the actual signed inputs before seeking approval. Write the
+approved values to `live_target_usd`, `live_abort_usd`, and `settled_cap_usd`
+in the private config. Check spend
 at each transition and before a new start. Treat missing spend evidence as
 a stop condition. [Prior hosted receipts](PHASE1-PILOT.md) · [Bifrost spend assumptions](SPEND-DEFAULTS.md)
 
@@ -123,3 +134,20 @@ public Rekor entry remains permanently even if the tag, assets and image are rem
 Keep sanitized timestamps, digests, usage and absence receipts. If a read
 is inconclusive, preserve the ownership record and leave the trial open
 for cleanup verification.
+
+## Qualification remaining after a successful trial
+
+- The trial exercises one workflow and two settled canaries on one account,
+  one ingress, one release, and the pilot instance type. Higher concurrency,
+  other instance types, different account or ingress configurations, and
+  sustained load remain unqualified.
+- The workflow covers its own busy interval and single-use retirement.
+  Unused-instance idle timing, prolonged busy-work inactivity, and hosted
+  restart and handoff remain unqualified.
+- The observed egress results cover the exercised host, route, redirect, DNS
+  and TCP probes. Other network paths and provider failure modes remain
+  unqualified.
+- One attributed trial window gives a billing comparison for its exercised
+  usage. Meter completeness, attribution during concurrent workloads and
+  steady-state monthly billing remain unqualified. If the provider reports
+  delayed or unattributable usage, the trial's billing comparison remains open.

@@ -558,7 +558,8 @@ function CloudflareConfigurationForm({ installation, onSaved, onCancel, onRefres
 	onRefresh: () => void;
 	busy: boolean;
 }) {
-	const settings = installation.policy;
+	const [reviewed] = useState(installation);
+	const settings = reviewed.policy;
 	const [saving, setSaving] = useState(false);
 	const { failure, setFailure, formRef, fieldProps, fieldError } = useCapacityFormErrors();
 
@@ -578,8 +579,9 @@ function CloudflareConfigurationForm({ installation, onSaved, onCancel, onRefres
 		}
 		const request = {
 			action: "policy" as const,
-			installation_id: installation.installation_id,
-			expected_revision: installation.desired_revision,
+			installation_id: reviewed.installation_id,
+			expected_revision: reviewed.desired_revision,
+			expected_policy_version: reviewed.policy_version,
 			policy: readPolicy(fields),
 		};
 		setSaving(true);
@@ -917,7 +919,9 @@ export function CloudflareCapacity() {
 						installation={installation}
 						onSaved={finishConfiguration}
 						onCancel={cancelConfiguration}
-						onRefresh={() => void refetch()}
+						onRefresh={() => void refetch().then(({ isSuccess }) => {
+							if (isSuccess) cancelConfiguration();
+						})}
 						busy={busy}
 					/>
 				)}

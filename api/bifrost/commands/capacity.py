@@ -13,6 +13,7 @@ from bifrost.contracts.cloudflare_capacity import (
     CloudflareAccountTokenRotation,
     CloudflareActivateRequest,
     CloudflareCapacityAction,
+    CloudflarePolicyFence,
     CloudflarePreflightRequest,
     CloudflareReconcileAction,
 )
@@ -163,13 +164,15 @@ async def activate(
     mode = "Managed Tunnel" if plan["reachability_mode"] == "managed_tunnel" else "Existing HTTPS Endpoint"
     preview = plan["preview"]
     if containers := preview.get("containers_policy"):
-        click.echo(f"Containers minimum: {preview['containers_fleet_envelope_usd']} USD/month", err=True)
+        if (floor := preview.get("containers_fleet_envelope_usd")) is not None:
+            click.echo(f"Containers minimum: {floor} USD/month", err=True)
         click.echo(
             f"Containers: {containers['instance_type']}, {containers['installation_instances']} maximum, "
             f"{containers['tenant_instances']} per tenant, {containers['workflow_slots']} workflow per instance, "
             f"{containers['idle_seconds']} s idle stop, {containers['monthly_instance_hours']} instance-hours/month.",
             err=True,
         )
+        # Older servers can return a Containers preview without the canary budget.
         if (canaries := containers.get("monthly_qualification_canaries")) is not None:
             click.echo(f"Containers qualification allowance: {canaries} canaries/month.", err=True)
     click.echo(f"Account: {account} ({plan['account_id']})", err=True)
@@ -214,7 +217,7 @@ async def stage_credential(
 
 
 @cloudflare_group.command("policy")
-@_apply_flags(_ACTION_FLAGS)
+@_apply_flags(build_cli_flags(CloudflarePolicyFence, exclude=set(), verb_ref_lookups={}))
 @click.option("--policy", type=click.File("r", encoding="utf-8"), required=True, help="Cloudflare capacity policy JSON file.")
 @click.pass_context
 @pass_resolver
@@ -223,7 +226,7 @@ async def policy(
     ctx: click.Context, policy: TextIO, *, client: BifrostClient, resolver: RefResolver, **fields: Any,
 ) -> None:
     """Update the current Cloudflare capacity policy."""
-    current = CloudflareCapacityAction.model_validate(fields)
+    current = CloudflarePolicyFence.model_validate(fields)
     response = await client.patch(_PATH, json={
         **current.model_dump(mode="json"), "action": "policy", "policy": _read_policy(policy),
     })

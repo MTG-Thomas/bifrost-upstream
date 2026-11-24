@@ -86,6 +86,7 @@ from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_QUALIFICATION_DEFERRED,
     CONTAINERS_SCOPE,
     QUALIFICATION_DEFERRED_KEY,
+    QUALIFICATION_DEFERRED_RELEASE_KEY,
     ContainersPolicy,
     fleet_envelope,
     qualification_deferred,
@@ -317,6 +318,7 @@ async def _settle_enable(
                 row.admitted_revision = None
                 evidence = dict(row.deployment_evidence or {})
                 evidence.pop(QUALIFICATION_DEFERRED_KEY, None)
+                evidence.pop(QUALIFICATION_DEFERRED_RELEASE_KEY, None)
                 row.deployment_evidence = evidence
                 wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
             raise PlatformJobRequiresAction("Install the Matched Cloudflare Linux Release", {
@@ -438,7 +440,7 @@ async def _settle_enable(
             CloudflareCredential.ciphertext.is_not(None),
         ).values(ciphertext=None))
         if replacement_policy is not None:
-            row.policy = replacement_policy
+            row.policy = {**row.policy, **replacement_policy}
             await db.flush()
         await _require_budget(db, row)
         prefix = f"bifrost-{row.id.hex}-{payload.revision:x}"
@@ -584,9 +586,11 @@ async def _settle_enable(
             ).isoformat(),
         }
         if deferred:
+            assert container_release is not None
             row.containers_ready_revision = None
             row.containers_release_digest = None
             evidence[QUALIFICATION_DEFERRED_KEY] = payload.revision
+            evidence[QUALIFICATION_DEFERRED_RELEASE_KEY] = container_release.digest
         row.deployment_evidence = evidence
         row.admitted_revision = payload.revision
         row.deployed_revision = payload.revision
@@ -727,6 +731,7 @@ async def _qualify_container_revision(
                     installation.containers_release_digest = None
                     evidence = dict(installation.deployment_evidence or {})
                     evidence.pop(QUALIFICATION_DEFERRED_KEY, None)
+                    evidence.pop(QUALIFICATION_DEFERRED_RELEASE_KEY, None)
                     installation.deployment_evidence = evidence
                     wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
         try:
@@ -779,6 +784,7 @@ async def _commit_container_egress(
             installation.containers_release_digest = None
             evidence = dict(installation.deployment_evidence or {})
             evidence.pop(QUALIFICATION_DEFERRED_KEY, None)
+            evidence.pop(QUALIFICATION_DEFERRED_RELEASE_KEY, None)
             installation.deployment_evidence = evidence
             wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
         else:
@@ -788,7 +794,10 @@ async def _commit_container_egress(
             else:
                 installation.containers_ready_revision = payload.revision
                 installation.containers_release_digest = release.digest
-                for key in (EGRESS_REFRESH_KEY, QUALIFICATION_BACKOFF_KEY, PENDING_QUALIFICATION_KEY, QUALIFICATION_DEFERRED_KEY):
+                for key in (
+                    EGRESS_REFRESH_KEY, QUALIFICATION_BACKOFF_KEY, PENDING_QUALIFICATION_KEY,
+                    QUALIFICATION_DEFERRED_KEY, QUALIFICATION_DEFERRED_RELEASE_KEY,
+                ):
                     evidence.pop(key, None)
                 evidence["container_egress"] = verified.as_record()
             installation.deployment_evidence = evidence

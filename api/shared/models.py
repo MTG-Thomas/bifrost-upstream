@@ -145,6 +145,7 @@ class CloudflareInstallationStatus(BaseModel):
     consent_version: str
     consent_at: datetime
     desired_revision: int
+    policy_version: int
     deployed_revision: int | None = None
     upgrade_pending: bool = False
     upgrade_available: bool = False
@@ -225,6 +226,7 @@ class CloudflareStagedCredential(BaseModel):
 
 class CloudflarePolicyUpdate(CloudflareCapacityAction):
     action: Literal["policy"]
+    expected_policy_version: int = Field(gt=0)
     policy: CloudflareCapacityPolicy
 
 

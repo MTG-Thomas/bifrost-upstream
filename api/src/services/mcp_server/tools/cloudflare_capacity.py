@@ -135,10 +135,12 @@ async def bifrost_cloudflare_account_token_replace(
 
 
 async def bifrost_cloudflare_policy_update(
-    context: Any, installation_id: UUID, expected_revision: int, policy: CloudflareCapacityPolicy,
+    context: Any, installation_id: UUID, expected_revision: int, expected_policy_version: int,
+    policy: CloudflareCapacityPolicy,
 ) -> ToolResult:
     request = CloudflarePolicyUpdate(
         action="policy", installation_id=installation_id, expected_revision=expected_revision, policy=policy,
+        expected_policy_version=expected_policy_version,
     )
     status, body = await call_rest(context, "PATCH", _PATH, json_body=request.model_dump(mode="json"))
     if status != 200:

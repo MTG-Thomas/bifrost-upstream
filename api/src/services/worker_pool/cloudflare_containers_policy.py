@@ -27,6 +27,7 @@ CONTAINERS_SCOPE = "containers"
 CONTAINERS_CLEANUP_PENDING = "CF_CONTAINERS_CLEANUP_PENDING"
 CONTAINERS_QUALIFICATION_DEFERRED = "CF_CONTAINERS_QUALIFICATION_DEFERRED"
 QUALIFICATION_DEFERRED_KEY = "container_qualification_deferred_revision"
+QUALIFICATION_DEFERRED_RELEASE_KEY = "container_qualification_deferred_release"
 # Match the provider registry's allowance when comparing the two clocks.
 CONTAINER_CLOCK_SKEW = timedelta(seconds=3)
 

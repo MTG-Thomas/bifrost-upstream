@@ -13,6 +13,7 @@ from functools import lru_cache
 # dispatch until they are upgraded.
 # 1.4.3 carries Cloudflare preflight and activate. Earlier CLI builds still
 # submit the removed connect variant to PATCH /api/capacity/cloudflare.
+# The same unreleased CLI includes the required Cloudflare policy save fence.
 MIN_CLI_VERSION = "1.4.3"
 
 

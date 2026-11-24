@@ -4502,6 +4502,11 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         await db.flush()
         status = await get_cloudflare_capacity_status(db, _platform_operator())
         lane = next(lane for lane in status.lanes if lane.lane == "containers")
+        assert not any(reason.code == "container_qualification_deferred" for reason in lane.reasons)
+        canary.container_stopped_at = now + timedelta(seconds=1)
+        await db.flush()
+        status = await get_cloudflare_capacity_status(db, _platform_operator())
+        lane = next(lane for lane in status.lanes if lane.lane == "containers")
         deferred = next(reason for reason in lane.reasons if reason.code == "container_qualification_deferred")
         assert deferred.next_eligible_at == reset
         assert status.installation is not None and status.installation.admission_open
@@ -4520,6 +4525,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         reconcile = lifecycle_job.CloudflareReconcilePayloadV2(installation_id=installation.id, revision=1)
         assert await lifecycle_job._reconcile(ctx, reconcile) == {"outcome": "verified"}
         reconcile_enable.assert_not_awaited()
+        canary.container_stopped_at = None
         canary.container_envelope = {**(canary.container_envelope or {}), "seconds": 0}
         await db.flush()
         assert await reserve_container_canary(db, **args, **booking) == ContainerAdmissionRefused()
@@ -5839,7 +5845,7 @@ async def test_upgrade_policy_save_fences_older_replicas_without_enqueuing_upgra
         60, zero, zero, "current", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000, newer,
     )
     revision = await save_cloudflare_policy(
-        db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
+        db_session, installation_id=installation.id, expected_revision=1, expected_policy_version=1, policy=policy, bounds=bounds,
     )
     assert revision == 2
     assert installation.workers_release_version == newer.version
@@ -7927,13 +7933,13 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
     bounds = WorkersReleaseMeterBounds(60, zero, fixed, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000, TEST_ORDER)
     with pytest.raises(CloudflareBudgetTooLow):
         await save_cloudflare_policy(
-            db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
+            db_session, installation_id=installation.id, expected_revision=1, expected_policy_version=1, policy=policy, bounds=bounds,
         )
     assert installation.admitted_revision == 1
 
     policy.monthly_limit_usd = Decimal("11.00")
     assert await save_cloudflare_policy(
-        db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
+        db_session, installation_id=installation.id, expected_revision=1, expected_policy_version=1, policy=policy, bounds=bounds,
     ) == 2
     assert installation.admitted_revision is None
     assert installation.policy["rate_table_version"] == WORKERS_RATE_TABLE_VERSION
@@ -7941,16 +7947,18 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
     assert installation.policy["bounds_release"] == "fixture-release"
     assert len(installation.policy["bounds_digest"]) == 64
     assert await save_cloudflare_policy(
-        db_session, installation_id=installation.id, expected_revision=2, policy=policy, bounds=bounds,
+        db_session, installation_id=installation.id, expected_revision=2, expected_policy_version=2, policy=policy, bounds=bounds,
     ) == 2
     with pytest.raises(CloudflarePolicyConflict):
         await save_cloudflare_policy(
-            db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
+            db_session, installation_id=installation.id, expected_revision=1, expected_policy_version=1, policy=policy, bounds=bounds,
         )
 
 
 @pytest.mark.asyncio
-async def test_container_policy_save_checks_the_signed_hours_envelope(db_session, installation):
+async def test_container_policy_save_checks_the_signed_hours_envelope(
+    db_session, installation, monkeypatch, lifecycle_audit_actor,
+):
     from dataclasses import replace
 
     release, _, _ = make_release()
@@ -7966,7 +7974,7 @@ async def test_container_policy_save_checks_the_signed_hours_envelope(db_session
     release = replace(release, manifest=release.manifest.model_copy(update={"workers_release_digest": bounds.release}))
     legacy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
     assert await save_cloudflare_policy(
-        db_session, installation_id=installation.id, expected_revision=1, policy=legacy,
+        db_session, installation_id=installation.id, expected_revision=1, expected_policy_version=1, policy=legacy,
         bounds=bounds, containers_release=release,
     ) == 1
     policy = CloudflareCapacityPolicy.model_validate({
@@ -7974,7 +7982,7 @@ async def test_container_policy_save_checks_the_signed_hours_envelope(db_session
     })
     with pytest.raises(CloudflareBudgetTooLow):
         await save_cloudflare_policy(
-            db_session, installation_id=installation.id, expected_revision=1, policy=policy,
+            db_session, installation_id=installation.id, expected_revision=1, expected_policy_version=2, policy=policy,
             bounds=bounds, containers_release=release,
         )
     assert installation.desired_revision == 1
@@ -7986,7 +7994,7 @@ async def test_container_policy_save_checks_the_signed_hours_envelope(db_session
         CloudflareWorkerReservation.canary_job_id.is_not(None),
     ))
     assert await save_cloudflare_policy(
-        db_session, installation_id=installation.id, expected_revision=1, policy=policy,
+        db_session, installation_id=installation.id, expected_revision=1, expected_policy_version=2, policy=policy,
         bounds=bounds, containers_release=release,
     ) == 1
     assert installation.admitted_revision == 1
@@ -7996,6 +8004,41 @@ async def test_container_policy_save_checks_the_signed_hours_envelope(db_session
         CloudflareWorkerReservation.canary_job_id.is_not(None),
     )) == prior_canaries
 
+    monkeypatch.setattr(cloudflare_connection, "load_workers_release", lambda: _release())
+    monkeypatch.setattr(cloudflare_connection, "release_meter_bounds", lambda _: bounds)
+    monkeypatch.setattr(cloudflare_connection, "load_containers_release", AsyncMock(return_value=release))
+    monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=_platform_operator()))
+    reviewed = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert reviewed.installation is not None
+    snapshot = reviewed.installation
+    form = {
+        "action": "policy", "installation_id": str(installation.id),
+        "expected_revision": snapshot.desired_revision, "expected_policy_version": snapshot.policy_version,
+    }
+    limits = snapshot.policy.model_dump(mode="json")
+    first = CloudflarePolicyUpdate.model_validate({
+        **form, "policy": {**limits, "container_qualification_canaries": 0},
+    })
+    saved = await capacity_routes.configure_cloudflare_capacity(first, db_session, object())
+    assert saved.installation is not None and saved.installation.policy_version == snapshot.policy_version + 1
+    assert saved.installation.desired_revision == snapshot.desired_revision
+    stale = CloudflarePolicyUpdate.model_validate({**form, "policy": {**limits, "monthly_limit_usd": "80"}})
+    with pytest.raises(HTTPException, match="Cloudflare policy changed") as conflict:
+        await capacity_routes.configure_cloudflare_capacity(stale, db_session, object())
+    assert conflict.value.status_code == 409
+    assert installation.containers_policy["monthly_qualification_canaries"] == 0
+    audit = await db_session.scalar(select(AuditLog).where(
+        AuditLog.resource_id == installation.id, AuditLog.action == "capacity.cloudflare_policy_updated",
+        AuditLog.details["policy_version"].as_integer() == saved.installation.policy_version,
+    ))
+    assert audit is not None
+    assert audit.details["container_counters_before"] == {
+        "container_instance_hours": 90, "container_qualification_canaries": 45,
+    }
+    assert audit.details["container_counters_after"] == {
+        "container_instance_hours": 90, "container_qualification_canaries": 0,
+    }
+
 
 @pytest.mark.parametrize("field", ["container_instance_hours", "container_qualification_canaries"])
 async def test_workers_only_policy_rejects_container_budgets(db_session, installation, field):
@@ -8004,8 +8047,39 @@ async def test_workers_only_policy_rejects_container_budgets(db_session, install
     policy = CloudflareCapacityPolicy.model_validate({**installation.policy["limits"], field: 10})
     with pytest.raises(CloudflarePolicyConflict, match="Opt in to Containers"):
         await save_cloudflare_policy(
-            db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
+            db_session, installation_id=installation.id, expected_revision=1, expected_policy_version=1, policy=policy, bounds=bounds,
         )
+
+
+async def test_workers_only_policy_normalizes_legacy_counters(db_session, installation):
+    zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
+    bounds = WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000, TEST_ORDER)
+    keys = {"container_instance_hours", "container_qualification_canaries"}
+    policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
+    installation.policy = cloudflare_policy._price_policy(policy, bounds)
+    installation.policy = {**installation.policy, "limits": {**installation.policy["limits"], **dict.fromkeys(keys, 10)}}
+    await db_session.flush()
+    status = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert status.installation is not None
+    reviewed = status.installation
+    assert keys.isdisjoint(reviewed.policy.model_dump(exclude_none=True))
+    assert await save_cloudflare_policy(
+        db_session, installation_id=installation.id, expected_revision=reviewed.desired_revision,
+        expected_policy_version=reviewed.policy_version, policy=reviewed.policy, bounds=bounds,
+    ) == reviewed.desired_revision
+    assert keys.isdisjoint(installation.policy["limits"])
+
+
+async def test_workers_sql_rejects_deferral_for_old_admitted_revision(db_session, installation):
+    installation.containers_policy = {"enabled": True}
+    installation.admitted_revision = installation.desired_revision
+    installation.deployment_evidence = {"container_qualification_deferred_revision": installation.admitted_revision}
+    deferral = select(cloudflare_admission.workers_release_matches()).where(CloudflareInstallation.id == installation.id)
+    await db_session.flush()
+    assert await db_session.scalar(deferral) is True
+    installation.desired_revision += 1
+    await db_session.flush()
+    assert await db_session.scalar(deferral) is False
 
 
 @pytest.mark.asyncio
@@ -8290,7 +8364,7 @@ async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
 
     async def save(limit: str, revision: int):
         request = CloudflarePolicyUpdate(
-            action="policy", installation_id=installation.id, expected_revision=revision,
+            action="policy", installation_id=installation.id, expected_revision=revision, expected_policy_version=revision,
             policy=CloudflareCapacityPolicy(workers=workers, monthly_limit_usd=Decimal(limit)),
         )
         return await capacity_routes.configure_cloudflare_capacity(request, db_session, object())
@@ -8676,7 +8750,15 @@ async def test_public_linux_approval_binds_reviewed_runtime_and_scope(
         assert status.installation.fleet_envelope_usd == Decimal("4.00")
         installation.containers_ready_revision = None
         installation.containers_release_digest = None
-        installation.deployment_evidence = {"container_qualification_deferred_revision": installation.admitted_revision}
+        installation.deployment_evidence = {
+            "container_qualification_deferred_revision": installation.admitted_revision,
+            "container_qualification_deferred_release": "0" * 64,
+        }
+        await db_session.flush()
+        assert (await http.get(path)).json()["status"] == "revision_changed"
+        installation.deployment_evidence = {
+            **installation.deployment_evidence, "container_qualification_deferred_release": release.digest,
+        }
         await db_session.flush()
         assert (await http.get(path)).json()["status"] == "waiting_for_container_qualification"
         attempted = await http.post(f"{path}/accept", json=body)
