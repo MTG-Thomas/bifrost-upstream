@@ -186,7 +186,8 @@ function runtime(capacity) {
   const owner = capacity.owner.split(':')[0];
   const revision = capacity.owner.split(':')[2];
   const cohort = [...workers.values()].filter((item) =>
-    !item.meta.containers?.length && item.owner.startsWith(owner + ':') && item.owner.split(':')[2] === revision);
+    !item.foreign && !item.meta.containers?.length && item.owner.startsWith(owner + ':')
+    && item.owner.split(':')[2] === revision);
   assert.equal(cohort.length, 3);
   const origins = [...new Set(cohort.flatMap(({meta}) =>
     meta.bindings.filter(({name}) => name === 'API_ORIGIN').map(({text}) => text)))];
