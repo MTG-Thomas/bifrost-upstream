@@ -1329,6 +1329,7 @@ class HostedContainers(ContainerRehearsal):
             self.observe_scheduler("qualification")
             if state["status"] not in ACTIVE_JOB:
                 if state["status"] != "succeeded" or result.get("outcome") != outcome:
+                    evidence("hosted-shaped-enable-failed", {"code": code, "canary_failure": result.get("canary_failure")})
                     raise RuntimeError(f"Enable did not succeed ({code})")
                 assert job_canaries == self.canaries(job=job, settled=True) == 1
                 evidence("hosted-shaped-enable", {"attempt": state["attempt"], "settled_canaries": job_canaries})
