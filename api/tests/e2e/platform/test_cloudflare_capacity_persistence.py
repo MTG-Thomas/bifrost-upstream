@@ -8057,8 +8057,10 @@ async def test_workers_only_policy_normalizes_legacy_counters(db_session, instal
     bounds = WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000, TEST_ORDER)
     keys = {"container_instance_hours", "container_qualification_canaries"}
     policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
-    installation.policy = cloudflare_policy._price_policy(policy, bounds)
-    installation.policy = {**installation.policy, "limits": {**installation.policy["limits"], **dict.fromkeys(keys, 10)}}
+    priced = cloudflare_policy._price_policy(policy, bounds)
+    limits = priced["limits"]
+    assert isinstance(limits, dict)
+    installation.policy = {**priced, "limits": {**limits, **dict.fromkeys(keys, 10)}}
     await db_session.flush()
     status = await get_cloudflare_capacity_status(db_session, _platform_operator())
     assert status.installation is not None
