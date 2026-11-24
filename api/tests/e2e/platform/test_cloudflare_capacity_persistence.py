@@ -4503,7 +4503,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         status = await get_cloudflare_capacity_status(db, _platform_operator())
         lane = next(lane for lane in status.lanes if lane.lane == "containers")
         assert not any(reason.code == "container_qualification_deferred" for reason in lane.reasons)
-        canary.container_stopped_at = now + timedelta(seconds=1)
+        canary.container_stopped_at = canary.container_reserved_at
         await db.flush()
         status = await get_cloudflare_capacity_status(db, _platform_operator())
         lane = next(lane for lane in status.lanes if lane.lane == "containers")
@@ -8023,9 +8023,10 @@ async def test_container_policy_save_checks_the_signed_hours_envelope(
     assert saved.installation is not None and saved.installation.policy_version == snapshot.policy_version + 1
     assert saved.installation.desired_revision == snapshot.desired_revision
     stale = CloudflarePolicyUpdate.model_validate({**form, "policy": {**limits, "monthly_limit_usd": "80"}})
-    with pytest.raises(HTTPException, match="Cloudflare policy changed") as conflict:
+    with pytest.raises(StructuredRequestRefusal, match="Cloudflare policy changed") as conflict:
         await capacity_routes.configure_cloudflare_capacity(stale, db_session, object())
     assert conflict.value.status_code == 409
+    assert conflict.value.details["code"] == "CF_REVIEW_REQUIRED"
     assert installation.containers_policy["monthly_qualification_canaries"] == 0
     audit = await db_session.scalar(select(AuditLog).where(
         AuditLog.resource_id == installation.id, AuditLog.action == "capacity.cloudflare_policy_updated",

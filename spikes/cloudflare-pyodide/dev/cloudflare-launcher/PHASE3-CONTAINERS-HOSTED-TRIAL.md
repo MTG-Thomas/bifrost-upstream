@@ -41,7 +41,7 @@ Obtain explicit owner approval for each outward-facing effect before starting.
 - Before activation and after Disconnect, record the provider usage window
   and attributed instance-seconds, outbound bytes, requests, and CPU. Keep
   the opening and closing samples together for the same account and window.
-- Before accepting canary evidence, record DNS resolution for the alternate
+- Before activation, record DNS resolution for the alternate
   peer as seen from the API and whether the API can connect to the alternate
   worker origin on TCP 2053 and the probe peer on TCP 8443.
 

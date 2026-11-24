@@ -739,12 +739,14 @@ Usage: capacity cloudflare policy [OPTIONS]
   Update the current Cloudflare capacity policy.
 
 Options:
-  --installation-id TEXT       installation_id (UUID).  [required]
-  --expected-revision INTEGER  expected_revision  [required]
-  --policy FILENAME            Cloudflare capacity policy JSON file.
-                               [required]
-  --json                       Emit JSON instead of human-readable output.
-  --help                       Show this message and exit.
+  --installation-id TEXT          installation_id (UUID).  [required]
+  --expected-revision INTEGER     expected_revision  [required]
+  --expected-policy-version INTEGER
+                                  expected_policy_version  [required]
+  --policy FILENAME               Cloudflare capacity policy JSON file.
+                                  [required]
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
 ```
 
 #### `capacity cloudflare preflight`

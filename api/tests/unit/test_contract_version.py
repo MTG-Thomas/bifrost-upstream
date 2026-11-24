@@ -486,7 +486,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Approval status can report that the Containers lane is awaiting qualification.
     # Workflow approval accepts an optional runtime and defaults to Workers.
     # The CLI passes through response fields, so MIN_CLI_VERSION is unchanged.
-    "17fdab7fc4d0840b7f79371d110ef94764dbfc74fa09b2311e0d4fcdc6b86ca6"
+    # Cloudflare policy saves require the independently reviewed policy version.
+    # The unreleased 1.4.3 CLI floor includes the matching flag.
+    "6ec8a8b712d6810a2d288f47cca5638ddaff352a56245236e2d12225bed952d6"
 )
 
 

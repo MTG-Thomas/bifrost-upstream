@@ -16948,6 +16948,8 @@ export interface components {
             consent_at: string;
             /** Desired Revision */
             desired_revision: number;
+            /** Policy Version */
+            policy_version: number;
             /** Deployed Revision */
             deployed_revision?: number | null;
             /**
@@ -17039,6 +17041,8 @@ export interface components {
              * @constant
              */
             action: "policy";
+            /** Expected Policy Version */
+            expected_policy_version: number;
             policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
         };
         /** CloudflarePreflight */
