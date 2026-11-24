@@ -55,7 +55,7 @@ _USER_SEED = """
 """
 _ATTEMPT_SEED = ("""
     INSERT INTO agent_runs (id, trigger_type, status, caller_user_id)
-    VALUES (:run, 'api', 'completed', :user)
+    VALUES (:run, 'api', 'completed', :caller)
 """, """
     INSERT INTO cloudflare_agent_attempts (claim_id, run_id, data)
     VALUES (:claim, :run, '{}')
@@ -149,7 +149,7 @@ async def _seed(
     connection: AsyncConnection, table: str, column: str | None,
 ) -> None:
     params: dict[str, str | UUID] = {key: uuid4() for key in ("id", "worker", "workflow", "user", "run", "claim", "conversation")}
-    params.update(account="a" * 32, purpose="scope_bearer", scope="test")
+    params.update(account="a" * 32, purpose="scope_bearer", scope="test", caller=str(params["user"]))
     statements = []
     if table in _CAPACITY_TABLES - {_STAGED}:
         has_retirement = await connection.scalar(sa.text("""
