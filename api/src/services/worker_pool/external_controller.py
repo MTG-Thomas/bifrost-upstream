@@ -156,6 +156,8 @@ class ExternalWorkerPoolController(WorkerCapacityController):
 
     async def reconcile(self) -> None:
         self._profile_read = False
+        # Managed Workers read capabilities every pass because their launch
+        # path skips the refresh-on-reserve guard.
         if self.managed_cloudflare_scope is not None:
             await self._read_profile()
         else:

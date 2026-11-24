@@ -984,6 +984,44 @@ async def test_unbound_absence_finality_is_limited_to_lost_rows(db, capacity, mo
         assert capacity.provider.requests
 
 
+async def test_unbound_external_cloudflare_loss_waits_for_cleanup_grace(db, capacity, monkeypatch):
+    provider = capacity.provider
+    provider.profile = provider.profile.model_copy(update={
+        "protocol_version": 2,
+        "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
+    })
+    pool = ExternalWorkerPoolController(capacity.client, SETTINGS, provider.profile)
+    ended_at = controller._now()
+    async with db.context() as session:
+        worker = ExecutionWorker(
+            form="external", capacity_scope=provider.profile.scope, version=provider.profile.worker_version,
+            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, state="lost", ended_at=ended_at,
+        )
+        session.add(worker)
+        await session.flush()
+        worker_id = worker.id
+
+    grace_end = ended_at + external_controller.UNBOUND_LOSS_CLEANUP_GRACE
+    now = grace_end - timedelta(microseconds=1)
+    monkeypatch.setattr(external_controller, "_now", lambda: now)
+    provider.requests.clear()
+    await pool.reconcile_worker(worker_id, capacity.policy)
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert worker.capacity_resource_deleted_at is None
+        assert worker.capacity_resource_uid is None
+
+    now = grace_end + timedelta(microseconds=1)
+    await pool.reconcile_worker(worker_id, capacity.policy)
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert worker.state == "lost"
+        assert worker.capacity_resource_deleted_at is not None
+        assert worker.capacity_resource_uid is None
+    assert provider.requests == [("GET", f"/v1/workers/{worker_id}")] * 2
+
+
 async def test_fixed_size_provider_measures_one_cold_worker_before_admission(db, capacity):
     from src.services import work_dispatch
     from tests.unit.services.worker_pool.test_worker_pool import (

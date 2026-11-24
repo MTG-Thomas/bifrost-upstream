@@ -186,6 +186,31 @@ async def test_refused_second_work_offer_preserves_idle_time(managed_launcher, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("idle_draining", [True, False], ids=["idle-draining", "no-guest"])
+async def test_container_refuses_before_reading_workflow_context(managed_launcher, monkeypatch, idle_draining) -> None:
+    launcher, guest = managed_launcher
+    launcher._idle_draining = idle_draining
+    if not idle_draining:
+        launcher.container_guest = None
+    monkeypatch.setattr(launcher, "check_fork_pressure", Mock())
+
+    await launcher.command({
+        "id": "workflow-offer",
+        "action": "workflow",
+        "payload": {"route_id": "route", "execution_id": str(uuid4())},
+    }, generation=1)
+
+    launcher.socket.send.assert_awaited_once()
+    reply = ControlEnvelope.from_json(launcher.socket.send.await_args.args[0]).payload
+    assert reply["error_type"] == "MemoryError"
+    assert reply["error"] == (
+        "Container is draining after its idle deadline"
+        if idle_draining else "Container workflow isolation is unavailable"
+    )
+    guest.take.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["invalid", "mismatched", "pipe-still-open"])
 async def test_container_result_rejects_invalid_data_or_a_guest_crash(managed_launcher, monkeypatch, kind) -> None:
     launcher, guest = managed_launcher
