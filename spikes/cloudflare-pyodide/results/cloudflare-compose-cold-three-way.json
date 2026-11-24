@@ -1,0 +1,1179 @@
+{
+  "images": {
+    "a": {
+      "image-size": "1212385803",
+      "release": "0.0.0-rc.1 1dac2b5e79255a33dd6b1667f921f4d04f31e3022c586ded56b41c0affe15fb2"
+    },
+    "b": {
+      "image-size": "1212458165",
+      "release": "0.0.0-rc.1 b5fa425b477b75492a755c36ff600dcab61205d8de65176505f90d6ca854d002"
+    },
+    "c": {
+      "image-size": "1745580641",
+      "release": "0.0.0-rc.1 b87f5ae1c5fefc6a3770f784d1e9e4326f8ee35eb80d16f7e1b84ba2a4403b46"
+    }
+  },
+  "samples": [
+    {
+      "sample": "1-a",
+      "started_utc": "2026-11-23T23:55:17+00:00",
+      "ended_utc": "2026-11-23T23:57:32+00:00",
+      "cold_queued_utc": "2026-11-23T23:57:04.60216+00:00",
+      "cold_entry_utc": "2026-11-23T23:57:14.564708+00:00",
+      "cold_ms": 9963,
+      "warm_ms": 706,
+      "prepare_to_ready_ms": 6760,
+      "gate_to_prepare_ms": 941,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2173,
+        "launcher_start": 2537,
+        "launcher_accepted": 2549,
+        "hello": 2603,
+        "claim": 2797,
+        "prepare": 2941,
+        "engine_ready": 9701,
+        "dispatch": 3102,
+        "entry": 9798
+      },
+      "ct128_run": {
+        "samples": 128,
+        "cpu_busy_pct": 55.262,
+        "cpu_iowait_pct": 5.682,
+        "cpu_psi_some_pct": 5.356,
+        "io_psi_some_pct": 3.336,
+        "io_psi_full_pct": 2.733,
+        "available_kib_at_start": 8395176,
+        "lowest_available_kib": 6769570
+      },
+      "proxmox_run": {
+        "samples": 20,
+        "cpu_busy_pct": 50.987,
+        "cpu_iowait_pct": 2.108,
+        "cpu_psi_some_pct": 8.386,
+        "io_psi_some_pct": 3.293,
+        "io_psi_full_pct": 2.699,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 10,
+        "cpu_busy_pct": 72.228,
+        "cpu_iowait_pct": 1.008,
+        "cpu_psi_some_pct": 11.248,
+        "io_psi_some_pct": 1.736,
+        "io_psi_full_pct": 1.243,
+        "available_kib_at_start": 7145422,
+        "lowest_available_kib": 6865998
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 60.869,
+        "cpu_iowait_pct": 0.943,
+        "cpu_psi_some_pct": 10.439,
+        "io_psi_some_pct": 1.625,
+        "io_psi_full_pct": 1.218,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "2-b",
+      "started_utc": "2026-11-23T23:57:32+00:00",
+      "ended_utc": "2026-11-23T23:59:49+00:00",
+      "cold_queued_utc": "2026-11-23T23:59:24.355308+00:00",
+      "cold_entry_utc": "2026-11-23T23:59:33.588051+00:00",
+      "cold_ms": 9233,
+      "warm_ms": 381,
+      "prepare_to_ready_ms": 4423,
+      "gate_to_prepare_ms": 2506,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 3917,
+        "launcher_start": 4171,
+        "launcher_accepted": 4179,
+        "hello": 4232,
+        "claim": 4378,
+        "prepare": 4506,
+        "engine_ready": 8929,
+        "dispatch": 4725,
+        "entry": 9016
+      },
+      "ct128_run": {
+        "samples": 129,
+        "cpu_busy_pct": 54.926,
+        "cpu_iowait_pct": 4.629,
+        "cpu_psi_some_pct": 4.808,
+        "io_psi_some_pct": 2.989,
+        "io_psi_full_pct": 2.454,
+        "available_kib_at_start": 8510343,
+        "lowest_available_kib": 6758719
+      },
+      "proxmox_run": {
+        "samples": 20,
+        "cpu_busy_pct": 47.366,
+        "cpu_iowait_pct": 1.744,
+        "cpu_psi_some_pct": 8.735,
+        "io_psi_some_pct": 2.929,
+        "io_psi_full_pct": 2.398,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 9,
+        "cpu_busy_pct": 64.234,
+        "cpu_iowait_pct": 1.422,
+        "cpu_psi_some_pct": 8.544,
+        "io_psi_some_pct": 2.567,
+        "io_psi_full_pct": 2.106,
+        "available_kib_at_start": 7082381,
+        "lowest_available_kib": 6849663
+      },
+      "proxmox_cold": {
+        "samples": 2,
+        "cpu_busy_pct": 50.788,
+        "cpu_iowait_pct": 2.009,
+        "cpu_psi_some_pct": 9.115,
+        "io_psi_some_pct": 2.563,
+        "io_psi_full_pct": 2.16,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "3-c",
+      "started_utc": "2026-11-23T23:59:49+00:00",
+      "ended_utc": "2026-11-24T00:02:33+00:00",
+      "cold_queued_utc": "2026-11-24T00:02:06.58742+00:00",
+      "cold_entry_utc": "2026-11-24T00:02:15.631666+00:00",
+      "cold_ms": 9044,
+      "warm_ms": 647,
+      "prepare_to_ready_ms": 5578,
+      "gate_to_prepare_ms": 1203,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2223,
+        "launcher_start": 2525,
+        "launcher_accepted": 2544,
+        "hello": 2625,
+        "claim": 2904,
+        "prepare": 3203,
+        "engine_ready": 8781,
+        "dispatch": 3503,
+        "entry": 8879
+      },
+      "ct128_run": {
+        "samples": 156,
+        "cpu_busy_pct": 52.102,
+        "cpu_iowait_pct": 7.532,
+        "cpu_psi_some_pct": 4.634,
+        "io_psi_some_pct": 5.988,
+        "io_psi_full_pct": 4.751,
+        "available_kib_at_start": 8469702,
+        "lowest_available_kib": 6744677
+      },
+      "proxmox_run": {
+        "samples": 24,
+        "cpu_busy_pct": 48.32,
+        "cpu_iowait_pct": 3.16,
+        "cpu_psi_some_pct": 8.667,
+        "io_psi_some_pct": 5.963,
+        "io_psi_full_pct": 4.726,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 9,
+        "cpu_busy_pct": 72.033,
+        "cpu_iowait_pct": 1.159,
+        "cpu_psi_some_pct": 11.367,
+        "io_psi_some_pct": 1.672,
+        "io_psi_full_pct": 1.12,
+        "available_kib_at_start": 7131492,
+        "lowest_available_kib": 6846902
+      },
+      "proxmox_cold": {
+        "samples": 2,
+        "cpu_busy_pct": 62.827,
+        "cpu_iowait_pct": 0.773,
+        "cpu_psi_some_pct": 11.578,
+        "io_psi_some_pct": 1.453,
+        "io_psi_full_pct": 0.997,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "4-b",
+      "started_utc": "2026-11-24T00:02:33+00:00",
+      "ended_utc": "2026-11-24T00:04:53+00:00",
+      "cold_queued_utc": "2026-11-24T00:04:26.067017+00:00",
+      "cold_entry_utc": "2026-11-24T00:04:37.149761+00:00",
+      "cold_ms": 11083,
+      "warm_ms": 553,
+      "prepare_to_ready_ms": 6138,
+      "gate_to_prepare_ms": 2469,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 3828,
+        "launcher_start": 4062,
+        "launcher_accepted": 4073,
+        "hello": 4132,
+        "claim": 4305,
+        "prepare": 4469,
+        "engine_ready": 10607,
+        "dispatch": 4712,
+        "entry": 10719
+      },
+      "ct128_run": {
+        "samples": 133,
+        "cpu_busy_pct": 54.946,
+        "cpu_iowait_pct": 3.298,
+        "cpu_psi_some_pct": 4.595,
+        "io_psi_some_pct": 2.073,
+        "io_psi_full_pct": 1.81,
+        "available_kib_at_start": 8472554,
+        "lowest_available_kib": 6720678
+      },
+      "proxmox_run": {
+        "samples": 21,
+        "cpu_busy_pct": 51.194,
+        "cpu_iowait_pct": 1.332,
+        "cpu_psi_some_pct": 8.296,
+        "io_psi_some_pct": 2.059,
+        "io_psi_full_pct": 1.797,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 11,
+        "cpu_busy_pct": 67.372,
+        "cpu_iowait_pct": 0.831,
+        "cpu_psi_some_pct": 9.932,
+        "io_psi_some_pct": 1.694,
+        "io_psi_full_pct": 1.357,
+        "available_kib_at_start": 7085259,
+        "lowest_available_kib": 6823470
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 56.368,
+        "cpu_iowait_pct": 1.264,
+        "cpu_psi_some_pct": 9.563,
+        "io_psi_some_pct": 1.758,
+        "io_psi_full_pct": 1.41,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "5-c",
+      "started_utc": "2026-11-24T00:04:53+00:00",
+      "ended_utc": "2026-11-24T00:06:54+00:00",
+      "cold_queued_utc": "2026-11-24T00:06:29.817107+00:00",
+      "cold_entry_utc": "2026-11-24T00:06:38.118281+00:00",
+      "cold_ms": 8301,
+      "warm_ms": 488,
+      "prepare_to_ready_ms": 3830,
+      "gate_to_prepare_ms": 2375,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 3845,
+        "launcher_start": 4046,
+        "launcher_accepted": 4054,
+        "hello": 4092,
+        "claim": 4234,
+        "prepare": 4375,
+        "engine_ready": 8205,
+        "dispatch": 4515,
+        "entry": 8252
+      },
+      "ct128_run": {
+        "samples": 114,
+        "cpu_busy_pct": 53.613,
+        "cpu_iowait_pct": 2.46,
+        "cpu_psi_some_pct": 4.626,
+        "io_psi_some_pct": 2.025,
+        "io_psi_full_pct": 1.742,
+        "available_kib_at_start": 8491302,
+        "lowest_available_kib": 6701296
+      },
+      "proxmox_run": {
+        "samples": 18,
+        "cpu_busy_pct": 45.976,
+        "cpu_iowait_pct": 1.111,
+        "cpu_psi_some_pct": 8.935,
+        "io_psi_some_pct": 2.021,
+        "io_psi_full_pct": 1.739,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 8,
+        "cpu_busy_pct": 59.012,
+        "cpu_iowait_pct": 0.685,
+        "cpu_psi_some_pct": 6.041,
+        "io_psi_some_pct": 1.56,
+        "io_psi_full_pct": 1.334,
+        "available_kib_at_start": 7063054,
+        "lowest_available_kib": 6835435
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 36.531,
+        "cpu_iowait_pct": 0.804,
+        "cpu_psi_some_pct": 10.243,
+        "io_psi_some_pct": 1.674,
+        "io_psi_full_pct": 1.452,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "6-a",
+      "started_utc": "2026-11-24T00:06:54+00:00",
+      "ended_utc": "2026-11-24T00:08:47+00:00",
+      "cold_queued_utc": "2026-11-24T00:08:24.117949+00:00",
+      "cold_entry_utc": "2026-11-24T00:08:30.785247+00:00",
+      "cold_ms": 6667,
+      "warm_ms": 657,
+      "prepare_to_ready_ms": 3860,
+      "gate_to_prepare_ms": 663,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2117,
+        "launcher_start": 2364,
+        "launcher_accepted": 2372,
+        "hello": 2410,
+        "claim": 2528,
+        "prepare": 2663,
+        "engine_ready": 6523,
+        "dispatch": 2801,
+        "entry": 6590
+      },
+      "ct128_run": {
+        "samples": 106,
+        "cpu_busy_pct": 51.203,
+        "cpu_iowait_pct": 3.363,
+        "cpu_psi_some_pct": 4.741,
+        "io_psi_some_pct": 2.368,
+        "io_psi_full_pct": 2.075,
+        "available_kib_at_start": 8498183,
+        "lowest_available_kib": 6767921
+      },
+      "proxmox_run": {
+        "samples": 18,
+        "cpu_busy_pct": 41.16,
+        "cpu_iowait_pct": 1.411,
+        "cpu_psi_some_pct": 9.174,
+        "io_psi_some_pct": 2.526,
+        "io_psi_full_pct": 2.191,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 6,
+        "cpu_busy_pct": 62.638,
+        "cpu_iowait_pct": 0.705,
+        "cpu_psi_some_pct": 8.39,
+        "io_psi_some_pct": 1.289,
+        "io_psi_full_pct": 1.078,
+        "available_kib_at_start": 7133574,
+        "lowest_available_kib": 6875623
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 41.251,
+        "cpu_iowait_pct": 0.583,
+        "cpu_psi_some_pct": 9.539,
+        "io_psi_some_pct": 1.255,
+        "io_psi_full_pct": 1.108,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "7-c",
+      "started_utc": "2026-11-24T00:08:47+00:00",
+      "ended_utc": "2026-11-24T00:11:07+00:00",
+      "cold_queued_utc": "2026-11-24T00:10:41.654291+00:00",
+      "cold_entry_utc": "2026-11-24T00:10:51.552293+00:00",
+      "cold_ms": 9898,
+      "warm_ms": 599,
+      "prepare_to_ready_ms": 6599,
+      "gate_to_prepare_ms": 1059,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2208,
+        "launcher_start": 2513,
+        "launcher_accepted": 2525,
+        "hello": 2618,
+        "claim": 2847,
+        "prepare": 3059,
+        "engine_ready": 9658,
+        "dispatch": 3337,
+        "entry": 9767
+      },
+      "ct128_run": {
+        "samples": 133,
+        "cpu_busy_pct": 55.578,
+        "cpu_iowait_pct": 3.666,
+        "cpu_psi_some_pct": 4.704,
+        "io_psi_some_pct": 2.598,
+        "io_psi_full_pct": 2.112,
+        "available_kib_at_start": 8466305,
+        "lowest_available_kib": 6716942
+      },
+      "proxmox_run": {
+        "samples": 20,
+        "cpu_busy_pct": 50.81,
+        "cpu_iowait_pct": 1.514,
+        "cpu_psi_some_pct": 8.199,
+        "io_psi_some_pct": 2.561,
+        "io_psi_full_pct": 2.089,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 10,
+        "cpu_busy_pct": 74.719,
+        "cpu_iowait_pct": 0.814,
+        "cpu_psi_some_pct": 11.762,
+        "io_psi_some_pct": 1.21,
+        "io_psi_full_pct": 0.89,
+        "available_kib_at_start": 7091440,
+        "lowest_available_kib": 6824084
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 57.87,
+        "cpu_iowait_pct": 0.638,
+        "cpu_psi_some_pct": 10.034,
+        "io_psi_some_pct": 1.209,
+        "io_psi_full_pct": 0.962,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "8-a",
+      "started_utc": "2026-11-24T00:11:07+00:00",
+      "ended_utc": "2026-11-24T00:13:15+00:00",
+      "cold_queued_utc": "2026-11-24T00:12:49.515273+00:00",
+      "cold_entry_utc": "2026-11-24T00:12:58.197939+00:00",
+      "cold_ms": 8683,
+      "warm_ms": 635,
+      "prepare_to_ready_ms": 5514,
+      "gate_to_prepare_ms": 908,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2164,
+        "launcher_start": 2451,
+        "launcher_accepted": 2462,
+        "hello": 2511,
+        "claim": 2679,
+        "prepare": 2908,
+        "engine_ready": 8422,
+        "dispatch": 3150,
+        "entry": 8491
+      },
+      "ct128_run": {
+        "samples": 120,
+        "cpu_busy_pct": 59.556,
+        "cpu_iowait_pct": 2.882,
+        "cpu_psi_some_pct": 5.705,
+        "io_psi_some_pct": 2.258,
+        "io_psi_full_pct": 1.821,
+        "available_kib_at_start": 8465211,
+        "lowest_available_kib": 6741792
+      },
+      "proxmox_run": {
+        "samples": 19,
+        "cpu_busy_pct": 52.523,
+        "cpu_iowait_pct": 1.325,
+        "cpu_psi_some_pct": 8.557,
+        "io_psi_some_pct": 2.17,
+        "io_psi_full_pct": 1.796,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 9,
+        "cpu_busy_pct": 71.861,
+        "cpu_iowait_pct": 0.599,
+        "cpu_psi_some_pct": 11.173,
+        "io_psi_some_pct": 1.315,
+        "io_psi_full_pct": 1.062,
+        "available_kib_at_start": 7154572,
+        "lowest_available_kib": 6856247
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 53.955,
+        "cpu_iowait_pct": 0.762,
+        "cpu_psi_some_pct": 9.038,
+        "io_psi_some_pct": 1.231,
+        "io_psi_full_pct": 1.009,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "9-b",
+      "started_utc": "2026-11-24T00:13:15+00:00",
+      "ended_utc": "2026-11-24T00:15:24+00:00",
+      "cold_queued_utc": "2026-11-24T00:15:02.233307+00:00",
+      "cold_entry_utc": "2026-11-24T00:15:10.182047+00:00",
+      "cold_ms": 7949,
+      "warm_ms": 393,
+      "prepare_to_ready_ms": 4870,
+      "gate_to_prepare_ms": 887,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2266,
+        "launcher_start": 2512,
+        "launcher_accepted": 2523,
+        "hello": 2574,
+        "claim": 2724,
+        "prepare": 2887,
+        "engine_ready": 7757,
+        "dispatch": 3097,
+        "entry": 7825
+      },
+      "ct128_run": {
+        "samples": 124,
+        "cpu_busy_pct": 59.211,
+        "cpu_iowait_pct": 3.286,
+        "cpu_psi_some_pct": 5.776,
+        "io_psi_some_pct": 2.313,
+        "io_psi_full_pct": 1.901,
+        "available_kib_at_start": 8506290,
+        "lowest_available_kib": 6758878
+      },
+      "proxmox_run": {
+        "samples": 19,
+        "cpu_busy_pct": 51.878,
+        "cpu_iowait_pct": 1.418,
+        "cpu_psi_some_pct": 8.877,
+        "io_psi_some_pct": 2.316,
+        "io_psi_full_pct": 1.904,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 7,
+        "cpu_busy_pct": 71.8,
+        "cpu_iowait_pct": 0.462,
+        "cpu_psi_some_pct": 9.734,
+        "io_psi_some_pct": 0.907,
+        "io_psi_full_pct": 0.789,
+        "available_kib_at_start": 7062403,
+        "lowest_available_kib": 6853438
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 47.753,
+        "cpu_iowait_pct": 0.691,
+        "cpu_psi_some_pct": 9.094,
+        "io_psi_some_pct": 1.217,
+        "io_psi_full_pct": 1.058,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "10-a",
+      "started_utc": "2026-11-24T00:15:24+00:00",
+      "ended_utc": "2026-11-24T00:17:20+00:00",
+      "cold_queued_utc": "2026-11-24T00:16:59.016597+00:00",
+      "cold_entry_utc": "2026-11-24T00:17:05.501384+00:00",
+      "cold_ms": 6485,
+      "warm_ms": 518,
+      "prepare_to_ready_ms": 3732,
+      "gate_to_prepare_ms": 648,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2124,
+        "launcher_start": 2327,
+        "launcher_accepted": 2336,
+        "hello": 2384,
+        "claim": 2495,
+        "prepare": 2648,
+        "engine_ready": 6380,
+        "dispatch": 2799,
+        "entry": 6432
+      },
+      "ct128_run": {
+        "samples": 110,
+        "cpu_busy_pct": 47.223,
+        "cpu_iowait_pct": 3.517,
+        "cpu_psi_some_pct": 4.003,
+        "io_psi_some_pct": 2.825,
+        "io_psi_full_pct": 2.507,
+        "available_kib_at_start": 8512191,
+        "lowest_available_kib": 6747816
+      },
+      "proxmox_run": {
+        "samples": 18,
+        "cpu_busy_pct": 37.547,
+        "cpu_iowait_pct": 1.448,
+        "cpu_psi_some_pct": 9.64,
+        "io_psi_some_pct": 2.829,
+        "io_psi_full_pct": 2.506,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 6,
+        "cpu_busy_pct": 62.368,
+        "cpu_iowait_pct": 0.504,
+        "cpu_psi_some_pct": 7.974,
+        "io_psi_some_pct": 1.202,
+        "io_psi_full_pct": 1.048,
+        "available_kib_at_start": 7046235,
+        "lowest_available_kib": 6879786
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 36.449,
+        "cpu_iowait_pct": 0.527,
+        "cpu_psi_some_pct": 10.268,
+        "io_psi_some_pct": 1.319,
+        "io_psi_full_pct": 1.176,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "11-c",
+      "started_utc": "2026-11-24T00:17:20+00:00",
+      "ended_utc": "2026-11-24T00:19:35+00:00",
+      "cold_queued_utc": "2026-11-24T00:19:06.917932+00:00",
+      "cold_entry_utc": "2026-11-24T00:19:16.894244+00:00",
+      "cold_ms": 9976,
+      "warm_ms": 678,
+      "prepare_to_ready_ms": 6769,
+      "gate_to_prepare_ms": 844,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2176,
+        "launcher_start": 2416,
+        "launcher_accepted": 2426,
+        "hello": 2469,
+        "claim": 2653,
+        "prepare": 2844,
+        "engine_ready": 9613,
+        "dispatch": 3040,
+        "entry": 9708
+      },
+      "ct128_run": {
+        "samples": 127,
+        "cpu_busy_pct": 56.824,
+        "cpu_iowait_pct": 3.031,
+        "cpu_psi_some_pct": 5.235,
+        "io_psi_some_pct": 2.057,
+        "io_psi_full_pct": 1.724,
+        "available_kib_at_start": 8507993,
+        "lowest_available_kib": 6740947
+      },
+      "proxmox_run": {
+        "samples": 20,
+        "cpu_busy_pct": 51.75,
+        "cpu_iowait_pct": 1.28,
+        "cpu_psi_some_pct": 8.559,
+        "io_psi_some_pct": 2.137,
+        "io_psi_full_pct": 1.762,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 10,
+        "cpu_busy_pct": 77.312,
+        "cpu_iowait_pct": 0.222,
+        "cpu_psi_some_pct": 13.121,
+        "io_psi_some_pct": 0.884,
+        "io_psi_full_pct": 0.672,
+        "available_kib_at_start": 7062286,
+        "lowest_available_kib": 6806638
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 60.467,
+        "cpu_iowait_pct": 0.496,
+        "cpu_psi_some_pct": 10.145,
+        "io_psi_some_pct": 0.889,
+        "io_psi_full_pct": 0.733,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "12-b",
+      "started_utc": "2026-11-24T00:19:35+00:00",
+      "ended_utc": "2026-11-24T00:21:37+00:00",
+      "cold_queued_utc": "2026-11-24T00:21:13.441079+00:00",
+      "cold_entry_utc": "2026-11-24T00:21:22.223374+00:00",
+      "cold_ms": 8782,
+      "warm_ms": 565,
+      "prepare_to_ready_ms": 5772,
+      "gate_to_prepare_ms": 762,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2141,
+        "launcher_start": 2377,
+        "launcher_accepted": 2387,
+        "hello": 2450,
+        "claim": 2601,
+        "prepare": 2762,
+        "engine_ready": 8534,
+        "dispatch": 3000,
+        "entry": 8623
+      },
+      "ct128_run": {
+        "samples": 115,
+        "cpu_busy_pct": 58.929,
+        "cpu_iowait_pct": 3.1,
+        "cpu_psi_some_pct": 6.063,
+        "io_psi_some_pct": 2.179,
+        "io_psi_full_pct": 1.77,
+        "available_kib_at_start": 8498063,
+        "lowest_available_kib": 6731003
+      },
+      "proxmox_run": {
+        "samples": 18,
+        "cpu_busy_pct": 52.566,
+        "cpu_iowait_pct": 1.333,
+        "cpu_psi_some_pct": 8.733,
+        "io_psi_some_pct": 2.163,
+        "io_psi_full_pct": 1.76,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 9,
+        "cpu_busy_pct": 67.819,
+        "cpu_iowait_pct": 0.409,
+        "cpu_psi_some_pct": 9.564,
+        "io_psi_some_pct": 1.113,
+        "io_psi_full_pct": 0.864,
+        "available_kib_at_start": 7107345,
+        "lowest_available_kib": 6826120
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 49.878,
+        "cpu_iowait_pct": 0.525,
+        "cpu_psi_some_pct": 9.789,
+        "io_psi_some_pct": 1.129,
+        "io_psi_full_pct": 0.926,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "13-c",
+      "started_utc": "2026-11-24T00:21:37+00:00",
+      "ended_utc": "2026-11-24T00:23:35+00:00",
+      "cold_queued_utc": "2026-11-24T00:23:13.215608+00:00",
+      "cold_entry_utc": "2026-11-24T00:23:19.78332+00:00",
+      "cold_ms": 6568,
+      "warm_ms": 470,
+      "prepare_to_ready_ms": 3789,
+      "gate_to_prepare_ms": 663,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2130,
+        "launcher_start": 2298,
+        "launcher_accepted": 2309,
+        "hello": 2355,
+        "claim": 2529,
+        "prepare": 2663,
+        "engine_ready": 6452,
+        "dispatch": 2809,
+        "entry": 6498
+      },
+      "ct128_run": {
+        "samples": 112,
+        "cpu_busy_pct": 54.706,
+        "cpu_iowait_pct": 2.324,
+        "cpu_psi_some_pct": 5.219,
+        "io_psi_some_pct": 1.799,
+        "io_psi_full_pct": 1.6,
+        "available_kib_at_start": 8503966,
+        "lowest_available_kib": 6712197
+      },
+      "proxmox_run": {
+        "samples": 18,
+        "cpu_busy_pct": 46.089,
+        "cpu_iowait_pct": 1.057,
+        "cpu_psi_some_pct": 9.097,
+        "io_psi_some_pct": 1.843,
+        "io_psi_full_pct": 1.649,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 6,
+        "cpu_busy_pct": 53.869,
+        "cpu_iowait_pct": 1.357,
+        "cpu_psi_some_pct": 7.864,
+        "io_psi_some_pct": 1.74,
+        "io_psi_full_pct": 1.436,
+        "available_kib_at_start": 7096057,
+        "lowest_available_kib": 6850442
+      },
+      "proxmox_cold": {
+        "samples": 2,
+        "cpu_busy_pct": 37.41,
+        "cpu_iowait_pct": 0.703,
+        "cpu_psi_some_pct": 12.88,
+        "io_psi_some_pct": 1.773,
+        "io_psi_full_pct": 1.482,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "14-b",
+      "started_utc": "2026-11-24T00:23:36+00:00",
+      "ended_utc": "2026-11-24T00:25:55+00:00",
+      "cold_queued_utc": "2026-11-24T00:25:12.132278+00:00",
+      "cold_entry_utc": "2026-11-24T00:25:22.714336+00:00",
+      "cold_ms": 10582,
+      "warm_ms": 716,
+      "prepare_to_ready_ms": 5793,
+      "gate_to_prepare_ms": 2513,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 3859,
+        "launcher_start": 4090,
+        "launcher_accepted": 4109,
+        "hello": 4156,
+        "claim": 4329,
+        "prepare": 4513,
+        "engine_ready": 10306,
+        "dispatch": 4680,
+        "entry": 10418
+      },
+      "ct128_run": {
+        "samples": 132,
+        "cpu_busy_pct": 53.737,
+        "cpu_iowait_pct": 3.741,
+        "cpu_psi_some_pct": 4.709,
+        "io_psi_some_pct": 2.573,
+        "io_psi_full_pct": 2.222,
+        "available_kib_at_start": 8476267,
+        "lowest_available_kib": 6742357
+      },
+      "proxmox_run": {
+        "samples": 21,
+        "cpu_busy_pct": 47.004,
+        "cpu_iowait_pct": 1.488,
+        "cpu_psi_some_pct": 8.838,
+        "io_psi_some_pct": 2.56,
+        "io_psi_full_pct": 2.194,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 10,
+        "cpu_busy_pct": 68.828,
+        "cpu_iowait_pct": 0.648,
+        "cpu_psi_some_pct": 10.155,
+        "io_psi_some_pct": 1.052,
+        "io_psi_full_pct": 0.875,
+        "available_kib_at_start": 7131086,
+        "lowest_available_kib": 6842629
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 57.591,
+        "cpu_iowait_pct": 0.62,
+        "cpu_psi_some_pct": 10.211,
+        "io_psi_some_pct": 1.091,
+        "io_psi_full_pct": 0.922,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    },
+    {
+      "sample": "15-a",
+      "started_utc": "2026-11-24T00:25:55+00:00",
+      "ended_utc": "2026-11-24T00:27:57+00:00",
+      "cold_queued_utc": "2026-11-24T00:27:32.805197+00:00",
+      "cold_entry_utc": "2026-11-24T00:27:41.252884+00:00",
+      "cold_ms": 8448,
+      "warm_ms": 581,
+      "prepare_to_ready_ms": 5271,
+      "gate_to_prepare_ms": 783,
+      "cold_stages_ms": {
+        "gate": 2000,
+        "decision": 2150,
+        "launcher_start": 2379,
+        "launcher_accepted": 2394,
+        "hello": 2435,
+        "claim": 2598,
+        "prepare": 2783,
+        "engine_ready": 8054,
+        "dispatch": 2955,
+        "entry": 8149
+      },
+      "ct128_run": {
+        "samples": 115,
+        "cpu_busy_pct": 57.671,
+        "cpu_iowait_pct": 3.641,
+        "cpu_psi_some_pct": 5.349,
+        "io_psi_some_pct": 2.521,
+        "io_psi_full_pct": 2.155,
+        "available_kib_at_start": 8491707,
+        "lowest_available_kib": 6745173
+      },
+      "proxmox_run": {
+        "samples": 17,
+        "cpu_busy_pct": 50.074,
+        "cpu_iowait_pct": 1.493,
+        "cpu_psi_some_pct": 8.538,
+        "io_psi_some_pct": 2.535,
+        "io_psi_full_pct": 2.161,
+        "backup_samples": 0
+      },
+      "ct128_cold": {
+        "samples": 9,
+        "cpu_busy_pct": 68.418,
+        "cpu_iowait_pct": 0.44,
+        "cpu_psi_some_pct": 10.203,
+        "io_psi_some_pct": 0.914,
+        "io_psi_full_pct": 0.805,
+        "available_kib_at_start": 7036286,
+        "lowest_available_kib": 6825690
+      },
+      "proxmox_cold": {
+        "samples": 3,
+        "cpu_busy_pct": 52.766,
+        "cpu_iowait_pct": 0.742,
+        "cpu_psi_some_pct": 8.867,
+        "io_psi_some_pct": 1.412,
+        "io_psi_full_pct": 1.113,
+        "backup_samples": 0
+      },
+      "teardown_ok": true
+    }
+  ],
+  "distributions": {
+    "a": {
+      "cold_ms": {
+        "n": 5,
+        "min": 6485,
+        "median": 8448,
+        "mean": 8049.2,
+        "max": 9963
+      },
+      "warm_ms": {
+        "n": 5,
+        "min": 518,
+        "median": 635,
+        "mean": 619.4,
+        "max": 706
+      },
+      "prepare_to_ready_ms": {
+        "n": 5,
+        "min": 3732,
+        "median": 5271,
+        "mean": 5027.4,
+        "max": 6760
+      },
+      "gate_to_prepare_ms": {
+        "n": 5,
+        "min": 648,
+        "median": 783,
+        "mean": 788.6,
+        "max": 941
+      }
+    },
+    "b": {
+      "cold_ms": {
+        "n": 5,
+        "min": 7949,
+        "median": 9233,
+        "mean": 9525.8,
+        "max": 11083
+      },
+      "warm_ms": {
+        "n": 5,
+        "min": 381,
+        "median": 553,
+        "mean": 521.6,
+        "max": 716
+      },
+      "prepare_to_ready_ms": {
+        "n": 5,
+        "min": 4423,
+        "median": 5772,
+        "mean": 5399.2,
+        "max": 6138
+      },
+      "gate_to_prepare_ms": {
+        "n": 5,
+        "min": 762,
+        "median": 2469,
+        "mean": 1827.4,
+        "max": 2513
+      }
+    },
+    "c": {
+      "cold_ms": {
+        "n": 5,
+        "min": 6568,
+        "median": 9044,
+        "mean": 8757.4,
+        "max": 9976
+      },
+      "warm_ms": {
+        "n": 5,
+        "min": 470,
+        "median": 599,
+        "mean": 576.4,
+        "max": 678
+      },
+      "prepare_to_ready_ms": {
+        "n": 5,
+        "min": 3789,
+        "median": 5578,
+        "mean": 5313,
+        "max": 6769
+      },
+      "gate_to_prepare_ms": {
+        "n": 5,
+        "min": 663,
+        "median": 1059,
+        "mean": 1228.8,
+        "max": 2375
+      }
+    }
+  },
+  "blocks": [
+    {
+      "order": "ABC",
+      "b_minus_a": {
+        "cold_ms": -730,
+        "warm_ms": -325,
+        "prepare_to_ready_ms": -2337,
+        "gate_to_prepare_ms": 1565
+      },
+      "c_minus_a": {
+        "cold_ms": -919,
+        "warm_ms": -59,
+        "prepare_to_ready_ms": -1182,
+        "gate_to_prepare_ms": 262
+      }
+    },
+    {
+      "order": "BCA",
+      "b_minus_a": {
+        "cold_ms": 4416,
+        "warm_ms": -104,
+        "prepare_to_ready_ms": 2278,
+        "gate_to_prepare_ms": 1806
+      },
+      "c_minus_a": {
+        "cold_ms": 1634,
+        "warm_ms": -169,
+        "prepare_to_ready_ms": -30,
+        "gate_to_prepare_ms": 1712
+      }
+    },
+    {
+      "order": "CAB",
+      "b_minus_a": {
+        "cold_ms": -734,
+        "warm_ms": -242,
+        "prepare_to_ready_ms": -644,
+        "gate_to_prepare_ms": -21
+      },
+      "c_minus_a": {
+        "cold_ms": 1215,
+        "warm_ms": -36,
+        "prepare_to_ready_ms": 1085,
+        "gate_to_prepare_ms": 151
+      }
+    },
+    {
+      "order": "ACB",
+      "b_minus_a": {
+        "cold_ms": 2297,
+        "warm_ms": 47,
+        "prepare_to_ready_ms": 2040,
+        "gate_to_prepare_ms": 114
+      },
+      "c_minus_a": {
+        "cold_ms": 3491,
+        "warm_ms": 160,
+        "prepare_to_ready_ms": 3037,
+        "gate_to_prepare_ms": 196
+      }
+    },
+    {
+      "order": "CBA",
+      "b_minus_a": {
+        "cold_ms": 2134,
+        "warm_ms": 135,
+        "prepare_to_ready_ms": 522,
+        "gate_to_prepare_ms": 1730
+      },
+      "c_minus_a": {
+        "cold_ms": -1880,
+        "warm_ms": -111,
+        "prepare_to_ready_ms": -1482,
+        "gate_to_prepare_ms": -120
+      }
+    }
+  ],
+  "revisions": {
+    "a": "d41755718f8fd70e7d026b14cc103512869980f2",
+    "b": "f6cf00b94a328900055bad9857656ddbec40940d",
+    "c": "e90d78af7e34d6f2f2229b7ecff6a3428cde5eb2"
+  },
+  "methodology": {
+    "conditions": "One active fresh Compose stack, installation, provider, and launcher per sample. Container policy and reservations checked off.",
+    "host_start_gate": "No peer Bifrost test stack, at least 8 GiB available, at least 20 GiB scratch and Docker storage, and a fresh negative host backup check.",
+    "fixture": "Common e90d78af7 local rehearsal overlay with upstream error diagnostics. Each API image built and packaged from its exact revision.",
+    "node_version": "26.13.1",
+    "buildx_version": "0.21.3",
+    "workerd_version": "1.20261023.1",
+    "runtime_sha256": "11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254",
+    "pyodide_cache_sha256": "3c3fd5a4179230e21e018e28b0e735e7c4abd8fe8e4ff39d2fd6bb2ea3a2e260",
+    "observations": "CT128 1 s nominal and Proxmox 5 s nominal sampling. Actual timestamp deltas were used, with the wider host window around cold execution.",
+    "placement": "The static primary was held at 24 MiB free before the approved 110 MiB workflow was submitted. Warm runs reused the cold slot. Both received terminal ACKs."
+  },
+  "historical_reference": {
+    "ct128_cold_ms": 6443,
+    "ct128_receipt_commit": "d41755718",
+    "ct128_executed_commit": "97650ad8e19417589b852ec83e4e62793d2dfd62",
+    "hosted_preset_b_cold_ms": 6380
+  },
+  "bootstrap_failure": {
+    "boundary": "Buildx executable staging",
+    "cause": "The first runner reached the build command while the verified private Buildx binary was still transferring. No stack or sample started.",
+    "correction": "After the transfer, the launcher checked the executable SHA-256 and Buildx version before starting the benchmark."
+  },
+  "backup_validation": {
+    "process_scan_matches": 0,
+    "overlapping_proxmox_vzdump_tasks": 0
+  },
+  "independent_teardown": {
+    "projects_checked": 15,
+    "containers": 0,
+    "volumes": 0,
+    "networks": 0,
+    "providers": 0,
+    "runner_processes": 0,
+    "release_image_tags": 0,
+    "generated_scratch_and_credentials_removed": true
+  },
+  "disposition": {
+    "classification": "The historical 6.443 s point is within the run-to-run CT128 variation exhibited by the exact old and current source.",
+    "median_cold_ms": {
+      "d41755718": 8448,
+      "f6cf00b94": 9233,
+      "e90d78af7": 9044
+    },
+    "proxmox_cpu_matched_examples": {
+      "lighter": {
+        "a": "10-a",
+        "c": "13-c"
+      },
+      "heavier": {
+        "a": "1-a",
+        "c": "11-c"
+      }
+    },
+    "decision_stage": "The gate was fixed, but some samples had a later launch decision. Similar phase variation and overlapping cold ranges preclude attributing the earlier larger difference to the Kubernetes changes.",
+    "bisect": "No reproducible material source effect in the three-way comparison."
+  }
+}

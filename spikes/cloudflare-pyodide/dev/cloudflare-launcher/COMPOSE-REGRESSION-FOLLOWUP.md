@@ -45,6 +45,56 @@ sample image tags and generated credential files were verified absent.
 
 [Paired measurements and host samples](../../results/cloudflare-compose-cold-paired.json)
 
+## Three-Way Cold Start
+
+A second CT128 benchmark compared five fresh cold starts each on
+`d41755718`, `f6cf00b94`, and `e90d78af7`. The blocks ran ABC, BCA,
+CAB, ACB, and CBA. Every sample used the same `e90d78af7` local provider
+and driver, plus the same pinned workerd and offline Pyodide bundle.
+The API image and release manifest came from the exact revision under
+test. Containers were off. Each cold workflow ran with the static primary
+held at 24 MiB free, and the warm repeat reused its slot.
+
+| Block order | `d41755718` cold | `f6cf00b94` cold | `e90d78af7` cold |
+| --- | ---: | ---: | ---: |
+| ABC | 9.963 s | 9.233 s | 9.044 s |
+| BCA | 6.667 s | 11.083 s | 8.301 s |
+| CAB | 8.683 s | 7.949 s | 9.898 s |
+| ACB | 6.485 s | 8.782 s | 9.976 s |
+| CBA | 8.448 s | 10.582 s | 6.568 s |
+| Median | 8.448 s | 9.233 s | 9.044 s |
+
+The older revision's median and range place the historical 6.443 s
+local result near the fast end of its own distribution. The actual
+historical run used `97650ad8e`. The changes through `d41755718` were
+documentation and receipt files. The hosted Preset B reference was
+6.380 s. The current local spike reached 6.568 s when Proxmox CPU busy
+was 37.410%. The old revision reached 6.485 s at 36.449%. Their
+prepare-to-engine-ready intervals were 3.789 s and 3.732 s. Under
+roughly 60.5–60.9% Proxmox CPU busy they took 9.976 s and 9.963 s, with
+engine-ready intervals of 6.769 s and 6.760 s. These load matches support
+run-to-run variance as the explanation for the single earlier result.
+
+The launch-age gate stayed at 2 seconds. Three `f6cf00b94` samples took
+2.469–2.513 s from the gate to preparation, compared with 0.762–0.887 s
+in its other two samples. The current spike also had a 2.375 s sample
+in that stage. The previous five-sample run of the same `f6cf00b94`
+revision had a median of 0.865 s in that stage. The supervisor and
+two-second reconciliation spacing were unchanged from `d41755718` to
+`f6cf00b94`. The later launch decisions are consistent with an extra
+controller pass. The data do not identify a revision-specific delay
+of the earlier magnitude.
+
+Proxmox CPU busy ranged from 36.449% to 62.827% in the cold windows.
+CT128 CPU pressure ranged from 6.041% to 13.121%, and full I/O pressure
+ranged from 0.672% to 2.106%. Both process sampling and Proxmox task
+history showed zero overlapping backups. All 15 cold workflows and their warm
+workflows had terminal ACKs. Independent teardown found zero owned
+containers, volumes, networks, providers, runner processes, and
+release image tags. The generated scratch and credentials were removed.
+
+[Three-way samples and host counters](../../results/cloudflare-compose-cold-three-way.json)
+
 ## Upgrade Receipt Ownership
 
 The duplicate-revision bug was confined to the rehearsal driver. The
