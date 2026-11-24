@@ -1729,7 +1729,7 @@ async def test_opted_in_enable_admits_only_the_verified_revision(
     revision = installation.desired_revision
     release, _, _ = make_release()
     installation.desired_state = "enabled"
-    installation.containers_policy = {"enabled": True}
+    installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
     installation.containers_ready_revision = None if scenario == "missing_readiness" else revision
     installation.containers_release_digest = None if scenario == "missing_readiness" else release.digest
     primary_failed = scenario.startswith("primary-")
