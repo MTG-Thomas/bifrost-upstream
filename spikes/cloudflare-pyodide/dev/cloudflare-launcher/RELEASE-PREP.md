@@ -140,11 +140,13 @@ Use a fresh, dedicated Compose installation with the approved images pinned
 by digest, normal provider adapters, no host-published API or worker ports,
 and an empty opening ledger. Prepare separate hosted Compose files with
 names matching the private config.
-Use the previously approved shared account and zone. Check the exact
-trial script names, script attribution on namespaces, application name and
-registry repository for collisions before activation. Save the foreign
-inventory and verify it is unchanged after Disconnect. Confirm that every
-namespace row reports a script for the trial runner's opening check.
+Use the previously approved shared account and zone. Check the exact trial
+script names, namespace script references, application name and registry
+repository for collisions before activation. Retain unattributed rows in the
+foreign inventory. Verify the foreign inventory after Disconnect and check
+that journaled namespace IDs are absent. Run the current harness against the
+published rc03 image pins. See the
+[hosted response audit](../e2e/CONTAINERS-HOSTED-RESPONSE-AUDIT.md).
 For Existing HTTPS the zone is operator metadata and the
 runner does not send it or mutate DNS. The `.env` operator credentials and
 the runner config stay private. Set the config mode to `0600`.

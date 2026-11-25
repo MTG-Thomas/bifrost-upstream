@@ -28,9 +28,10 @@ activation receipt and the naming code in the running API image. Stop on an
 existing exact script, namespace attributed to a trial script, application
 name, or tagged image in the intended registry repository. Save the opening
 foreign inventory counts and ID fingerprints. Leave other account changes
-paused until the closing comparison. The trial runner requires a script
-attribution for every namespace. Confirm this with the read-only list before
-starting the trial.
+paused until the closing comparison. The runner reads all numbered namespace
+pages, including when Cloudflare omits `total_pages`. It retains unattributed
+foreign rows and checks owned namespaces by exact script or journaled ID.
+See the [hosted response audit](../e2e/CONTAINERS-HOSTED-RESPONSE-AUDIT.md).
 Create a dedicated, expiring management token scoped to that
 account with **Account Settings Read**, **Workers Scripts Write**, and
 **Workers Containers Write**. Add **Account Analytics Read** only if the trial
