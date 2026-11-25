@@ -6,6 +6,8 @@ The Containers pilot shares the $75 monthly limit with Workers. The
 suggested 100 instance-hours allow two concurrent `standard-1` instances
 within a monthly allocation. The ledger books startup, lifetime and cleanup
 seconds for each reservation, including canaries, then settles from receipts.
+A closed start fence with a failed actor and no reported start keeps the
+conservative reservation charge and adds zero measured runtime.
 The budget resets at the UTC month boundary. Exhausting it pauses Container
 workflow placement and routine refresh only. Qualification canaries still
 count toward instance-hours but may exceed the hours budget to admit the

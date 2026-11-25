@@ -67,7 +67,7 @@ _IMAGE_COPY_LEASE_INTERVAL = 5
 
 @dataclass(frozen=True, slots=True)
 class InstanceStop:
-    started_at: datetime
+    started_at: datetime | None
     stopped_at: datetime
     terminal_state: str
     exit_code: int | None
@@ -325,15 +325,15 @@ class ContainersRest(WorkersRestCleanup):
         observed = await self.observe_instance_outcome(
             token, application, instance_id=instance_id, image=image, not_before=not_before,
         )
-        if observed is None:
-            raise ObservationPending("Missing instance readback does not witness a stopped placement")
+        if observed is None or observed.started_at is None:
+            raise ObservationPending("Missing start readback does not witness a stopped placement")
         return observed
 
     async def observe_instance_outcome(
         self, token: SecretStr, application: ResourceObservation, *, instance_id: str,
         image: str, not_before: datetime,
     ) -> InstanceStop | None:
-        """Read a confirmed stop or a missing exact actor for fenced reconciliation."""
+        """Read a stopped, failed-before-start, or missing exact actor."""
         placement = await self._instance_inventory(token, application, instance_id)
         if placement is None:
             return None
@@ -344,15 +344,23 @@ class ContainersRest(WorkersRestCleanup):
             state = status["state"]
             if state not in _TERMINAL_INSTANCE_STATES:
                 raise ValueError
-            started_at = datetime.fromisoformat(placement["started_at"])
             stopped_at = datetime.fromisoformat(status["updated_at"])
-            if not not_before - CONTAINER_CLOCK_SKEW <= started_at <= stopped_at <= datetime.now(UTC) + CONTAINER_CLOCK_SKEW:
+            earliest = not_before - CONTAINER_CLOCK_SKEW
+            if not earliest <= stopped_at <= datetime.now(UTC) + CONTAINER_CLOCK_SKEW:
                 raise ValueError
+            started_at = placement.get("started_at")
+            if started_at is not None or state != "failed":
+                started_at = datetime.fromisoformat(started_at)
+                if not earliest <= started_at <= stopped_at:
+                    raise ValueError
         except (KeyError, TypeError, ValueError):
             raise ObservationPending("Provider has not witnessed a bounded stop for this placement") from None
         code = status.get("exit_code")
         exit_code = code if type(code) is int and -(2**31) <= code < 2**31 else None
-        return InstanceStop(started_at.astimezone(UTC), stopped_at.astimezone(UTC), state, exit_code)
+        return InstanceStop(
+            started_at.astimezone(UTC) if started_at is not None else None,
+            stopped_at.astimezone(UTC), state, exit_code,
+        )
 
     async def observe_no_placement(self, token: SecretStr, application: ResourceObservation, instance_id: str) -> None:
         if await self._instance_inventory(token, application, instance_id) is not None:

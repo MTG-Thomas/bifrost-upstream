@@ -94,10 +94,18 @@ def close_evidence(code: int, reason: str | None = None) -> dict[str, str | int]
     # standardized code without retaining any part of the text itself.
     if not 1000 <= code < 5000:
         code = 1006
-    category = {
-        1000: "normal", 1001: "going-away", 1002: "protocol", 1005: "no-status", 1006: "transport-lost",
-        1008: "policy", 1009: "size-limit", 1011: "internal", 1012: "restart", 1013: "unavailable",
-    }.get(code, "other")
-    if code == 1011 and reason == "Container relay transport lost":
-        category = "transport-lost"
+    categories = {
+        1000: "normal", 1001: "going-away", 1002: "protocol", 1003: "unsupported-data",
+        1005: "no-status", 1006: "transport-lost", 1007: "invalid-payload", 1008: "policy",
+        1009: "size-limit", 1010: "extension", 1011: "internal", 1012: "restart",
+        1013: "unavailable", 1014: "gateway",
+    }
+    category = categories.get(code, "other")
+    if code == 1011:
+        if reason == "Container relay transport lost":
+            category = "transport-lost"
+        elif isinstance(reason, str) and reason.startswith("Container relay close fallback "):
+            original = reason.removeprefix("Container relay close fallback ")
+            if len(original) == 4 and original.isascii() and original.isdecimal():
+                category = categories.get(int(original), "other")
     return {"close_code": code, "close_category": category}

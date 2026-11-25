@@ -37,7 +37,8 @@ const applications = new Map();
 const images = new Map();
 const preparationReads = new Map();
 let preparationMode = 'ready';
-let failGuestAfterHello = false;
+let guestFatalMode = 'off';
+const droppedBootstraps = new Set();
 const foreignImages = new Set();
 const unattachedNamespaces = [];
 const placements = new Map();
@@ -161,8 +162,10 @@ function containerRuntime(item) {
                         throw new Error("Unpinned local Docker start");
                     }
                     native.start({...options, image: native.images["bifrost-linux"],
-                        env: {...options.env, ...(${item.failGuestAfterHello === true}
-                            ? {PYTHONPATH: "/app", REHEARSAL_FAIL_GUEST_AFTER_HELLO: "1"} : {})}});
+                        env: {...options.env, ...${JSON.stringify(item.guestFatalMode === 'off' ? {} : {
+                            PYTHONPATH: '/app',
+                            REHEARSAL_FAIL_GUEST_AFTER_HELLO: item.guestFatalMode === 'reconnect' ? '2' : '1',
+                        })}}});
                 },
                 destroy: native.destroy.bind(native),
                 interceptOutboundHttps: native.interceptOutboundHttps.bind(native),
@@ -282,6 +285,7 @@ function upgrade(req, socket, head) {
   upstream.on('error', () => socket.destroy());
   upstream.on('open', () => transport.handleUpgrade(req, socket, head, (worker) => {
     let identity;
+    let managedGuest = false;
     const connection = ++connectionSequence;
     const terminate = new Map();
     const challenges = new Set();
@@ -290,6 +294,7 @@ function upgrade(req, socket, head) {
       if (frame.event === 'hello' && frame.hello?.incarnation_id) {
         identity = frame.hello.incarnation_id;
         if (config.containers && frame.hello.container_release) {
+          managedGuest = true;
           worker.pause();
           try {
             await fenceRawTcp(identity);
@@ -329,6 +334,13 @@ function upgrade(req, socket, head) {
     });
     upstream.on('message', (message) => {
       const frame = controlFrame(message);
+      if (guestFatalMode === 'reconnect' && managedGuest && frame.kind === 'bootstrap'
+          && !droppedBootstraps.has(identity)) {
+        droppedBootstraps.add(identity);
+        event('bootstrap-drop', {worker: identity, connection});
+        close(1012);
+        return;
+      }
       if (frame.kind === 'ack' && frame.payload?.event_id) {
         event('ack', {worker: identity, connection, id: frame.payload.event_id});
       }
@@ -474,9 +486,10 @@ async function provider(req, res) {
   if (relative === '/workers/scripts') return ok([...workers.keys()].map((id) => ({id})));
   if (config.containers) {
     if (path === '/local/guest-fatal-mode' && method === 'POST') {
-      const {enabled} = await json();
-      assert.equal(typeof enabled, 'boolean');
-      failGuestAfterHello = enabled;
+      const {mode} = await json();
+      assert.ok(['off', 'fatal', 'reconnect'].includes(mode));
+      guestFatalMode = mode;
+      droppedBootstraps.clear();
       return ok(null);
     }
     if (path === '/local/image-preparation-mode' && method === 'POST') {
@@ -652,7 +665,7 @@ async function provider(req, res) {
         .filter(([key]) => key !== 'metadata').map(async ([key, value]) => [key, module(await value.text())])));
       const owner = meta.bindings.find(({name: key}) => key === 'BIFROST_CAPACITY_OWNER').text;
       workers.set(name, {name, meta, modules, owner, deployment: randomUUID(), version: randomUUID(),
-        failGuestAfterHello: Boolean(meta.containers?.length) && failGuestAfterHello,
+        guestFatalMode: meta.containers?.length ? guestFatalMode : 'off',
         endpoint: {enabled: false, previews_enabled: false},
         namespaces: Object.entries(meta.exports)
           .filter(([, value]) => !meta.containers?.length || value.type === 'durable-object').map(([exported]) =>

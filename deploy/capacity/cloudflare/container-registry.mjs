@@ -556,8 +556,18 @@ export function relayControlSockets(registry, uid, instance, guest, ingress) {
         if (closed) return;
         closed = true;
         clearTimeout(alarm);
-        for (const socket of [guest, ingress]) {
-            try { socket.close(code, reason); } catch { /* Socket already closed. */ }
+        for (const socket of [ingress, guest]) {
+            try {
+                socket.close(code, reason);
+            } catch {
+                // A refused close frame must not leave a live upstream leg.
+                try {
+                    socket.close(1011, `Container relay close fallback ${code}`);
+                } catch {
+                    // A socket that has already closed may reject even 1011.
+                    try { socket.close(); } catch { /* Already closed. */ }
+                }
+            }
         }
     };
     const now = Date.now();

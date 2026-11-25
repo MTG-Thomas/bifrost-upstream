@@ -95,6 +95,7 @@ from src.worker.remote.ownership import (
     acquire_remote_owner,
     owns_remote_session,
     release_remote_owner,
+    remote_enrollment_is_live,
     renew_remote_owner,
 )
 from src.worker.remote.platform_stage_host import PlatformStageBackend
@@ -2349,8 +2350,14 @@ async def _record_guest_socket_evidence(
             raise AuthenticationError("Guest diagnostic requires a managed Container session")
         return
     try:
-        async with asyncio.timeout(0.5), get_liveness_db_context() as db:
-            worker = await db.get(ExecutionWorker, lease.worker_id, with_for_update={"read": True})
+        async with asyncio.timeout(0.5), get_db_context() as db:
+            query = select(ExecutionWorker).where(ExecutionWorker.id == lease.worker_id)
+            if event is not None:
+                query = query.where(
+                    ExecutionWorker.remote_owner_lease_expires_at > func.now(),
+                    remote_enrollment_is_live(lease.container_release),
+                )
+            worker = await db.scalar(query.with_for_update(read=True, nowait=True, of=ExecutionWorker))
             if (
                 worker is None or worker.remote_launcher_id != lease.launcher_id
                 or worker.remote_session_generation != lease.session_generation
@@ -2360,16 +2367,17 @@ async def _record_guest_socket_evidence(
                 if event is not None:
                     raise AuthenticationError("Guest diagnostic session was replaced")
                 return
-            pin = await db.get(CloudflareWorkerReservation, lease.worker_id, with_for_update=True)
+            pin = await db.get(CloudflareWorkerReservation, lease.worker_id, with_for_update={"nowait": True})
             if pin is None or pin.container_release != lease.container_release or pin.container_envelope is None:
                 if event is not None:
                     raise AuthenticationError("Guest diagnostic lacks a managed reservation")
                 return
-            evidence = dict(pin.container_envelope.get("guest_diagnostic") or {})
+            previous = pin.container_envelope.get("guest_diagnostic") or {}
+            evidence = dict(previous)
             if close_code is not None:
                 evidence.update(close_evidence(close_code, close_reason), close_generation=lease.session_generation)
             elif event is None:
-                evidence.update(stage="hello", generation=lease.session_generation)
+                evidence = {"stage": "hello", "generation": lease.session_generation}
             else:
                 key = await load_managed_control_key(db, pin, worker.capacity_resource_uid)
                 diagnostic = verify_guest_diagnostic(key, lease.session_generation, sequence, event)
@@ -2379,7 +2387,8 @@ async def _record_guest_socket_evidence(
                         fatal_stage=diagnostic["stage"], fatal_generation=lease.session_generation,
                         exception_class=diagnostic["exception_class"], reason=diagnostic["reason"],
                     )
-            pin.container_envelope = {**pin.container_envelope, "guest_diagnostic": evidence}
+            if evidence != previous:
+                pin.container_envelope = {**pin.container_envelope, "guest_diagnostic": evidence}
     except (DBAPIError, SQLAlchemyTimeoutError, TimeoutError):
         # Diagnostic writes are best effort. The ordinary session and
         # qualification fences continue to enforce readiness independently.
@@ -2423,6 +2432,12 @@ async def remote_control(socket: WebSocket) -> None:
             logical = assembler.feed(frame)
             if logical is None:
                 continue
+            if logical.kind == "event" and logical.payload.get("event") in GUEST_DIAGNOSTIC_EVENTS:
+                # Diagnostic persistence checks the exact generation, expiry,
+                # and live enrollment on the regular pool. No heartbeat-pool
+                # read is needed for events that have no other consumers.
+                await _record_guest_socket_evidence(session.lease, event=logical.payload, sequence=logical.sequence)
+                continue
             owns = await session.may_accept(logical.kind, logical.payload)
             if (
                 session.bridge.socket is not socket
@@ -2434,11 +2449,8 @@ async def remote_control(socket: WebSocket) -> None:
                 raise ProtocolError("remote API owner fence was replaced")
             if logical.kind != "event":
                 raise ProtocolError("launcher may only send events")
-            if logical.payload.get("event") in GUEST_DIAGNOSTIC_EVENTS:
-                await _record_guest_socket_evidence(session.lease, event=logical.payload, sequence=logical.sequence)
-            else:
-                with remote_owner_context(LeaseRef(session.lease)):
-                    await session.bridge.receive(logical.payload)
+            with remote_owner_context(LeaseRef(session.lease)):
+                await session.bridge.receive(logical.payload)
             if logical.payload.get("event") == "inventory":
                 session.reconcile_transport_inventory(socket)
             elif logical.payload.get("event") == "draining":

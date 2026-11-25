@@ -82,3 +82,32 @@ async def test_enable_reports_unavailable_tunnel_inventory_as_unverified(monkeyp
             "expected_category": "unknown",
         },
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requires_action", [False, True])
+async def test_enable_diagnostic_read_failure_preserves_the_verdict(monkeypatch, requires_action) -> None:
+    original = PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
+    result = {"outcome": "enabled"}
+
+    @asynccontextmanager
+    async def unavailable():
+        raise ConnectionError("secret in a database exception")
+        yield
+
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    monkeypatch.setattr(cloudflare_enable, "load_workers_release", object)
+    monkeypatch.setattr(cloudflare_enable, "get_db_context", unavailable)
+    monkeypatch.setattr(cloudflare_enable, "_settle_enable", AsyncMock(
+        return_value=result, side_effect=original if requires_action else None,
+    ))
+    run = PlatformJobContext(uuid4(), uuid4(), None, "system", "", "Bifrost")
+    payload = cloudflare_enable.CloudflareEnablePayload(installation_id=uuid4(), revision=5)
+    marker = {"container_qualification_evidence_error": "ConnectionError"}
+    if requires_action:
+        with pytest.raises(PlatformJobRequiresAction) as failure:
+            await cloudflare_enable._enable(run, payload)
+        assert failure.value is original
+        assert failure.value.result == {"code": "CF_CONTAINERS_UNVERIFIED", **marker}
+    else:
+        assert await cloudflare_enable._enable(run, payload) == {**result, **marker}

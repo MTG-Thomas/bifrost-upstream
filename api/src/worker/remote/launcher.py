@@ -295,6 +295,8 @@ class Launcher:
         self._container_lease_until: float | None = None
         self._guest_stage: GuestStage = "hello"
         self._guest_fatal_attempted = False
+        self._failed_guest_close: asyncio.Task[None] | None = None
+        self.qualification_pending = container_probe_nonce is not None
         self._idle_since = time.monotonic()
         self._idle_draining = False
         self.platform_stages = (
@@ -418,15 +420,20 @@ class Launcher:
     def task_finished(self, task: asyncio.Task[Any]) -> None:
         self._tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
+            if self.container_release is not None:
+                if task is not self._monitor_task and isinstance(error, (ConnectionError, ConnectionClosed)):
+                    return  # The control loop reconnects and replays pending terminal events.
+                if not self.failed:
+                    self.failed = True
+                    self.on_stop()
+                    logger.error("Managed Container supervision failed")
+                    self._failed_guest_close = asyncio.create_task(self._close_failed_guest(error))
+                return
             if task is self._monitor_task:
                 self.failed = True
                 self.on_stop()
-            if self.container_release is None:
-                logger.error("Launcher supervision failed", exc_info=error)
-                asyncio.create_task(self.socket.close(code=1011, reason="Launcher supervision failed"))
-            else:
-                logger.error("Managed Container supervision failed")
-                asyncio.create_task(self._close_failed_guest(error))
+            logger.error("Launcher supervision failed", exc_info=error)
+            asyncio.create_task(self.socket.close(code=1011, reason="Launcher supervision failed"))
 
     async def _close_failed_guest(self, error: BaseException) -> None:
         await self.report_guest_fatal(error)
@@ -464,15 +471,19 @@ class Launcher:
         try:
             async with self._send_lock:
                 await self._hello(requirements)
-        except Exception as exc:
-            await self.report_guest_fatal(exc)
+        except Exception:
+            await self._send_guest_diagnostic()
             raise
 
     async def reconnect(self, socket: Any, requirements: dict[str, Any]) -> None:
         """Fence a replacement transport before another event can use it."""
-        async with self._send_lock:
-            self.socket = socket
-            await self._hello(requirements)
+        try:
+            async with self._send_lock:
+                self.socket = socket
+                await self._hello(requirements)
+        except Exception:
+            await self._send_guest_diagnostic()
+            raise
 
     def grant_runtime_lease(self, ttl_ms: object) -> None:
         """Arm hard expiry from a fenced API grant without extending the pinned lifetime."""
@@ -791,13 +802,13 @@ class Launcher:
             if generation == self.session_generation:
                 await self.send({"reply": request["id"], "result": response})
                 if action == "capacity_canary":
+                    self.qualification_pending = False
                     await self.note_guest_stage("ready")
         except Exception as exc:
             if generation == self.session_generation:
                 if action == "capacity_canary" and self.container_release is not None:
-                    # A failed SDK probe can be a normal qualification refusal.
-                    # Keep its reply as redacted as a fatal supervision event.
-                    await self.report_guest_fatal(exc)
+                    # A failed SDK probe leaves the physical launcher alive.
+                    await self._send_guest_diagnostic()
                     await self.send({"reply": request["id"], "error_type": "RuntimeError",
                                      "error": "Container qualification command failed"})
                 else:
@@ -932,6 +943,7 @@ class Launcher:
                 # The supervisor exits the namespace. Only independently
                 # witnessed provider stop can resolve this terminal outcome.
                 self.failed = True
+                await self._close_failed_guest(RuntimeError("Container guest did not stop"))
                 self.retired.set()
                 return
         if child.terminal_reason is not None:
@@ -1115,6 +1127,8 @@ class Launcher:
 
     async def stop(self) -> None:
         self.on_stop()
+        if self._failed_guest_close is not None:
+            await self._failed_guest_close
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -1281,20 +1295,19 @@ async def _run_launcher(
                             "event": "inventory", "inventory": launcher.inventory(),
                             "requirements": launcher.requirements,
                         })
-                    except Exception as exc:
-                        if not isinstance(exc, ConnectionError):
-                            await launcher.report_guest_fatal(exc)
+                    except Exception:
+                        await launcher._send_guest_diagnostic()
                         raise
-                    await launcher.note_guest_stage("canary-command" if probe_nonce is not None else "ready")
+                    await launcher.note_guest_stage("canary-command" if launcher.qualification_pending else "ready")
                     for event in launcher.pending_terminal.values():
                         await launcher.send(event)
                     try:
                         drain_task = await _receive_control_commands(
                             launcher, socket, stopping, drain_task
                         )
-                    except Exception as exc:
-                        if not isinstance(exc, (ConnectionError, ConnectionClosed)):
-                            await launcher.report_guest_fatal(exc)
+                    except Exception:
+                        if not launcher.failed:
+                            await launcher._send_guest_diagnostic()
                         raise
                     if stopping.is_set() and drain_task is not None and drain_task.done():
                         break

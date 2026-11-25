@@ -1830,11 +1830,11 @@ def exercise_image_preparation_failure(fixture, trial):
     fixture.provider("/local/image-preparation-mode", "POST", {"mode": "slow"})
 
 
-def exercise_guest_fatal(fixture, trial):
+def exercise_guest_fatal(fixture, trial, *, reconnect=False):
     """Fail the real Docker guest after bootstrap and inspect the product evidence."""
     plan = trial.plan_activation()
     baseline = trial.opening_inventory(plan)
-    fixture.provider("/local/guest-fatal-mode", "POST", {"enabled": True})
+    fixture.provider("/local/guest-fatal-mode", "POST", {"mode": "reconnect" if reconnect else "fatal"})
     try:
         accepted = trial.send("/api/capacity/cloudflare/activate", trial.activation_request)
         job = str(UUID(accepted["job_id"]))
@@ -1846,7 +1846,7 @@ def exercise_guest_fatal(fixture, trial):
         state = wait("Injected post-hello guest failure", completed, trial.active_window(trial.enable_result_seconds))
         assert state["status"] == "requires_action" and state["result"]["code"] == "CF_CONTAINERS_UNVERIFIED"
         result = state["result"]["container_qualification"]
-        assert result["generation"] == result["fatal_generation"] == result["close_generation"] == 1
+        assert result["generation"] == result["fatal_generation"] == result["close_generation"] == (2 if reconnect else 1)
         assert result["stage"] == result["fatal_stage"] == "requirements"
         assert result["exception_class"] == "RuntimeError" and result["reason"] == "runtime"
         assert (result["close_code"], result["close_category"]) == (1011, "internal")
@@ -1862,7 +1862,7 @@ def exercise_guest_fatal(fixture, trial):
         try:
             trial.teardown(baseline, plan, None, original)
         finally:
-            fixture.provider("/local/guest-fatal-mode", "POST", {"enabled": False})
+            fixture.provider("/local/guest-fatal-mode", "POST", {"mode": "off"})
     assert trial.install() is None
 
 
@@ -1880,13 +1880,16 @@ def main():
                         help="Locally rehearse a failed preparation and Disconnect before the slow happy path")
     exercises.add_argument("--exercise-guest-fatal", action="store_true",
                         help="Locally rehearse one post-hello Docker guest failure and Disconnect")
+    exercises.add_argument("--exercise-guest-fatal-after-reconnect", action="store_true",
+                        help="Locally drop bootstrap once, then rehearse a fatal Docker guest exit and Disconnect")
     args = parser.parse_args()
     if args.hosted_containers_config and not args.containers_hosted_shape:
         parser.error("--hosted-containers-config requires --containers-hosted-shape")
     if args.exercise_image_preparation_failure and (not args.containers_hosted_shape or args.hosted_containers_config):
         parser.error("--exercise-image-preparation-failure requires the local hosted-shaped fixture")
-    if args.exercise_guest_fatal and (not args.containers_hosted_shape or args.hosted_containers_config):
-        parser.error("--exercise-guest-fatal requires the local hosted-shaped fixture")
+    guest_fatal = args.exercise_guest_fatal or args.exercise_guest_fatal_after_reconnect
+    if guest_fatal and (not args.containers_hosted_shape or args.hosted_containers_config):
+        parser.error("Guest failure exercises require the local hosted-shaped fixture")
     if args.hosted_upgrade_config:
         HostedUpgrade(args.hosted_upgrade_config).run()
         return
@@ -1898,7 +1901,7 @@ def main():
         assert "containers" in fixture.cfg and "managementToken" not in fixture.cfg
         assert fixture.cfg["holdSecondSdkRead"] is False
         with (
-            fixture.raw_tcp_boundary(preserve_failed_exit=args.exercise_guest_fatal),
+            fixture.raw_tcp_boundary(preserve_failed_exit=guest_fatal),
             TemporaryDirectory(prefix="containers-hosted-shape-") as directory,
         ):
             config = Path(directory) / "trial.json"
@@ -1910,8 +1913,8 @@ def main():
                 "live_target_usd": "0.03", "live_abort_usd": "0.05", "settled_cap_usd": "0.02",
             }))
             trial = HostedContainers(config)
-            if args.exercise_guest_fatal:
-                exercise_guest_fatal(fixture, trial)
+            if guest_fatal:
+                exercise_guest_fatal(fixture, trial, reconnect=args.exercise_guest_fatal_after_reconnect)
                 return
             if args.exercise_image_preparation_failure:
                 exercise_image_preparation_failure(fixture, trial)

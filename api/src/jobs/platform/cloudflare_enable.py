@@ -1202,10 +1202,15 @@ async def _enable(
     await context.report("Checking Cloudflare Release and Entitlement")
 
     async def qualification_evidence() -> dict[str, Any]:
-        async with get_db_context() as db:
-            evidence = await container_qualification_evidence(
-                db, payload.installation_id, job_id=context.job_id, lease_token=context.lease_token,
-            )
+        try:
+            async with timeout(0.5), get_db_context() as db:
+                evidence = await container_qualification_evidence(
+                    db, payload.installation_id, job_id=context.job_id, lease_token=context.lease_token,
+                )
+        except Exception as exc:  # noqa: BLE001 - evidence cannot replace the verdict
+            # The durable verdict has already been decided. Keep evidence
+            # failure separate from that verdict and omit exception details.
+            return {"container_qualification_evidence_error": type(exc).__name__}
         return {"container_qualification": evidence} if evidence is not None else {}
 
     try:

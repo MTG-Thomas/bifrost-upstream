@@ -1295,7 +1295,7 @@ async def test_container_application_effect_survives_provisioning_failures(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("canary_result", [
-    "missing", "failed", "ready", "retire-timeout", "refresh-failure",
+    "missing", "failed", "pre-start-failed", "ready", "retire-timeout", "refresh-failure",
     "pending-wrong-digest", "pending-expired", "pending-near-expiry", "pending-replaced",
     "hours-exhausted", "canaries-exhausted", "deferred-failed", "deferred-conflict", "deferred-release-unavailable",
     "image-superseded",
@@ -1309,9 +1309,11 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     from src.worker.remote.protocol import nonce_digest
 
     canary_started = canary_result != "missing"
-    canary_ready = canary_result not in ("missing", "failed", "deferred-failed")
-    failed_placement = canary_result in ("failed", "deferred-failed")
+    pre_start_failure = canary_result == "pre-start-failed"
+    failed_placement = canary_result in ("failed", "deferred-failed", "pre-start-failed")
+    canary_ready = canary_started and not failed_placement
     start_observed = False
+    absence_closed = False
     deferred = canary_result == "canaries-exhausted" or canary_result.startswith("deferred-")
     revision = 2 if deferred or canary_result == "hours-exhausted" else 1
     container, image, config = make_release()
@@ -1434,7 +1436,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 pytest.fail(f"Unexpected OCI tool call {executable.name}, {args}")
 
     async def provider(request):
-        nonlocal bindings, application, started, stopped, actor, start_observed
+        nonlocal bindings, application, started, stopped, actor, start_observed, absence_closed
         path = request.url.path
         if request.url.host == "github.com":
             return httpx.Response(200, content=assets[path.split("cloudflare-containers-")[1]])
@@ -1461,20 +1463,30 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 assert pin is not None and pin.container_envelope is not None
                 assert pin.canary_job_id == context.job_id
                 started = datetime.fromtimestamp(identity["reservedAt"] / 1000, UTC) + timedelta(milliseconds=1)
-                row.state = "ready"
-                row.remote_hello_sequence = 1
-                row.remote_auth_nonce_digest = nonce_digest(body["nonce"])
-                row.remote_session_generation = 1
-                row.remote_owner_lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
-                pin.canary_sdk_at = datetime.now(UTC)
-                pin.canary_sdk_generation = 1
+                if pre_start_failure:
+                    # Simulate a completed boot observation window while
+                    # leaving the reservation's total lifetime intact.
+                    offset = timedelta(seconds=82)
+                    assert pin.container_reserved_at is not None
+                    pin.container_reserved_at -= offset
+                    pin.container_envelope = {**pin.container_envelope, "start_deadline": (
+                        datetime.fromisoformat(pin.container_envelope["start_deadline"]) - offset
+                    ).isoformat()}
+                else:
+                    row.state = "ready"
+                    row.remote_hello_sequence = 1
+                    row.remote_auth_nonce_digest = nonce_digest(body["nonce"])
+                    row.remote_session_generation = 1
+                    row.remote_owner_lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+                    pin.canary_sdk_at = datetime.now(UTC)
+                    pin.canary_sdk_generation = 1
                 if canary_ready:
                     pin.canary_ack_at = pin.canary_sdk_at
                     pin.container_envelope = {
                         **pin.container_envelope, "denial_generation": 1,
                         "egress_denials": sorted(CONTAINER_EGRESS_DENIALS),
                     }
-                else:
+                elif not pre_start_failure:
                     job = await db_session.get(PlatformJob, context.job_id)
                     assert job is not None
                     job.result = {"canary_failure": {
@@ -1502,11 +1514,20 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 events.append("retire")
                 return httpx.Response(200, json={"status": "retired"})
             if path == "/v1/observe-start":
-                assert failed_placement and not start_observed
+                assert failed_placement and not pre_start_failure and not start_observed
                 assert body["started_at"] == int(started.timestamp() * 1000)
                 start_observed = True
                 return httpx.Response(200, json={"status": "observed"})
+            if path == "/v1/close-absent":
+                assert pre_start_failure and body["observed_absent_at"] >= identity["startDeadline"] + 60_000
+                absence_closed = True
+                return httpx.Response(200, json={"status": "absent"})
             assert path == "/v1/close"
+            if absence_closed:
+                return httpx.Response(200, json={
+                    "status": "absent", "instance": actor, "uid": identity["uid"],
+                    "startDeadline": identity["startDeadline"], "authorizedAt": identity["reservedAt"], "closedAt": closed_at,
+                })
             if failed_placement and not start_observed:
                 return httpx.Response(200, json={"status": "pending"})
             return httpx.Response(200, json={
@@ -1581,7 +1602,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             assert application is not None and started is not None and stopped is not None
             result = {
                 "id": actor, "application_id": application["id"], "image": full_image,
-                "started_at": started.isoformat(), "status": {
+                **({} if pre_start_failure else {"started_at": started.isoformat()}), "status": {
                     "state": "failed" if failed_placement else "stopped",
                     "updated_at": stopped.isoformat(), "exit_code": int(failed_placement),
                 },
@@ -1595,7 +1616,9 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     monkeypatch.setattr(cloudflare_containers_control, "get_db_context", transaction)
     if failed_placement:
         async def retire_pause(delay):
-            assert delay == 1 and start_observed
+            if pre_start_failure and delay == 0.5:
+                raise TimeoutError  # The unattested placement spent its qualification window.
+            assert delay == 1 and (start_observed or absence_closed)
 
         monkeypatch.setattr(enable_job, "sleep", retire_pause)
         monkeypatch.setattr(cloudflare_containers_rest, "_PLACEMENT_READ_INTERVAL", 0)
@@ -1764,7 +1787,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                     assert provisioner.create.await_count == 0
                     assert events == ["copy", "prepare", "launcher", "application", "canary", "stop", "retire"]
                     return
-        for _ in range(1 if canary_result == "failed" else 2):
+        for _ in range(1 if canary_result in ("failed", "pre-start-failed") else 2):
             if canary_ready:
                 assert (await enable_job._settle_enable(context, payload, http, workers))["outcome"] == "enabled"
             else:
@@ -1774,6 +1797,16 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 if canary_result == "failed":
                     assert held.value.result["canary_failure"] == {"stage": "ack", "error_class": "invalid_reply"}
                     assert start_observed
+                if pre_start_failure:
+                    assert absence_closed and not start_observed
+                    assert held.value.result["canary_failure"] == {"stage": "ack", "error_class": "timeout"}
+                    failed_pin = await db_session.scalar(select(CloudflareWorkerReservation).where(
+                        CloudflareWorkerReservation.canary_job_id == context.job_id,
+                    ))
+                    assert failed_pin is not None and failed_pin.container_envelope is not None
+                    assert failed_pin.container_stopped_at is not None and failed_pin.container_envelope["settled_absent"]
+                    assert failed_pin.container_envelope["provider_terminal_state"] == "failed"
+                    assert failed_pin.container_envelope["provider_exit_code"] == 1
     starts = 2 if canary_result == "pending-replaced" else int(canary_started)
     assert events == ["copy", "prepare", "launcher", "application"] + ["canary", "stop", "retire"] * starts
     assert provisioner.create.await_count == (3 if canary_ready else 0)
@@ -3566,7 +3599,7 @@ async def test_disconnect_after_unconfirmed_image_create(
 @pytest.mark.parametrize("stage", [
     "hello", "bootstrap", "runtime-grant", "requirements", "guest-init", "inventory",
     "canary-command", "sdk-tls", "sdk-witness", "egress-probes", "ack", "ready",
-    "unsigned", "forged", "replayed",
+    "unsigned", "forged", "replayed", "same-sequence", "expired-owner", "heartbeat",
 ])
 async def test_container_guest_diagnostics_are_fenced_and_redacted(
     db_session, installation, monkeypatch, stage,
@@ -3574,7 +3607,7 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
     from fastapi import WebSocketDisconnect
     from starlette.websockets import WebSocketState
     from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
-    from src.worker.remote import host
+    from src.worker.remote import host, ownership
     from src.worker.remote.guest_diagnostics import guest_diagnostic_payload, guest_diagnostic_signature
     from src.worker.remote.protocol import ControlEnvelope, FragmentAssembler
 
@@ -3591,32 +3624,42 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
         id=lease.worker_id, form="external", state="ready", capacity_scope="containers",
         capacity_resource_uid=uid, remote_hello_sequence=1, remote_session_generation=1,
         remote_owner_id=lease.owner_id, remote_launcher_id=lease.launcher_id,
-        remote_owner_lease_expires_at=now + timedelta(seconds=20),
+        remote_owner_lease_expires_at=now + timedelta(seconds=-1 if stage == "expired-owner" else 20),
     ))
     await db_session.flush()
     pin = CloudflareWorkerReservation(
         worker_id=lease.worker_id, installation_id=installation.id, scope="containers", deployment_revision=1,
         control_root_version=installation.control_root_version, container_release=lease.container_release,
-        container_tenant="qualification-canary", container_reserved_at=now, container_envelope={"seconds": 196},
+        container_tenant="qualification-canary", container_reserved_at=now, container_envelope={
+            "seconds": 196,
+            "guest_diagnostic": {"generation": 0, "fatal_stage": "inventory", "close_code": 1008},
+        },
         canary_job_id=context.job_id, canary_lease_token=context.lease_token,
     )
     db_session.add(pin)
     await db_session.flush()
     key = await load_managed_control_key(db_session, pin, uid)
-    valid = stage not in ("unsigned", "forged", "replayed")
+    valid = stage not in ("unsigned", "forged", "replayed", "same-sequence", "expired-owner", "heartbeat")
     payload = guest_diagnostic_payload(stage if valid else "ack", RuntimeError(secret))
     if stage != "unsigned":
         payload["signature"] = guest_diagnostic_signature(
             "forger" if stage == "forged" else key, 2 if stage == "replayed" else 1, 1, payload,
         )
+    raw = ControlEnvelope(1, 1, "event", payload).to_json()
+    frames = [raw]
+    if stage == "same-sequence":
+        frames.append(raw)
+    ordinary = {"event": "heartbeat"}
+    if stage == "ack":
+        frames.append(ControlEnvelope(1, 2, "event", ordinary).to_json())
     socket = SimpleNamespace(
-        receive_text=AsyncMock(side_effect=[
-            ControlEnvelope(1, 1, "event", payload).to_json(), WebSocketDisconnect(code=1011, reason=secret),
-        ]),
+        receive_text=AsyncMock(side_effect=[*frames, WebSocketDisconnect(code=1011, reason=secret)]),
         application_state=WebSocketState.CONNECTED, close=AsyncMock(),
     )
-    bridge = SimpleNamespace(socket=socket, receive=AsyncMock(), disconnect=Mock())
-    session = SimpleNamespace(bridge=bridge, lease=lease, last_sequence=0, may_accept=AsyncMock(return_value=True))
+    bridge = SimpleNamespace(socket=socket, receive=AsyncMock(), disconnect=Mock(), runtime_profile=None)
+    session = object.__new__(host.RemoteSession)
+    session.bridge, session.lease, session.last_sequence = bridge, lease, 0
+    session.owned_until = asyncio.get_running_loop().time() + 20
     fake_host = SimpleNamespace(stopping=False, connect=AsyncMock(return_value=(session, FragmentAssembler())))
     connection = await db_session.connection()
 
@@ -3627,9 +3670,39 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
             await db.commit()
 
     monkeypatch.setattr(host, "_host", fake_host)
-    monkeypatch.setattr(host, "get_liveness_db_context", transaction)
+    monkeypatch.setattr(host, "get_db_context", transaction)
+    monkeypatch.setattr(ownership, "get_liveness_db_context", transaction)
+    if stage == "heartbeat":
+        saturated, release = asyncio.Event(), asyncio.Event()
+        waiting = 0
+
+        @asynccontextmanager
+        async def diagnostic_pool():
+            nonlocal waiting
+            waiting += 1
+            if waiting == 8:
+                saturated.set()
+            await release.wait()
+            # A canceled or unavailable regular pool is a best-effort miss.
+            raise TimeoutError
+            yield
+
+        monkeypatch.setattr(host, "get_db_context", diagnostic_pool)
+        pending = [asyncio.create_task(host._record_guest_socket_evidence(lease)) for _ in range(8)]
+        try:
+            async with asyncio.timeout(0.25):
+                await saturated.wait()
+                assert await ownership.renew_remote_owner(lease)
+            assert not any(task.done() for task in pending)
+        finally:
+            release.set()
+            await asyncio.gather(*pending)
+        return
     await host.remote_control(socket)
-    bridge.receive.assert_not_awaited()
+    if stage == "ack":
+        bridge.receive.assert_awaited_once_with(ordinary)
+    else:
+        bridge.receive.assert_not_awaited()
     await db_session.refresh(pin)
     evidence = pin.container_envelope["guest_diagnostic"]
     if valid:
@@ -3641,9 +3714,11 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
         }
     else:
         socket.close.assert_awaited_once_with(code=1008)
+        fatal = ({"fatal_stage": "ack", "fatal_generation": 1, "exception_class": "RuntimeError", "reason": "runtime"}
+                 if stage == "same-sequence" else {})
         assert evidence == {
-            "generation": 1, "stage": "hello", "close_code": 1008,
-            "close_category": "policy", "close_generation": 1,
+            "generation": 1, "stage": "ack" if fatal else "hello", "close_code": 1008,
+            "close_category": "policy", "close_generation": 1, **fatal,
         }
     assert secret not in json.dumps(pin.container_envelope)
     assert key not in json.dumps(pin.container_envelope)
@@ -3666,8 +3741,9 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("observed_start", [True, False], ids=["started", "failed-before-start"])
 async def test_disconnect_retry_recovers_failed_container_canary(
-    db_session, installation, monkeypatch, lifecycle_audit_actor,
+    db_session, installation, monkeypatch, lifecycle_audit_actor, observed_start,
 ) -> None:
     from src.services.worker_pool import cloudflare_containers_control, cloudflare_containers_rest
     from src.services.worker_pool.cloudflare_containers_policy import container_account_usage
@@ -3678,7 +3754,8 @@ async def test_disconnect_retry_recovers_failed_container_canary(
     started = reserved_at + timedelta(seconds=4, milliseconds=7)
     stopped = started + timedelta(seconds=39, milliseconds=362)
     started_ms = int(started.timestamp() * 1000)
-    closed_ms = int(stopped.timestamp() * 1000) + 1000
+    closed_ms = int(stopped.timestamp() * 1000) + (1000 if observed_start else 60_000)
+    expected_stop = stopped if observed_start else datetime.fromtimestamp(closed_ms / 1000, UTC)
 
     installation.desired_state = "enabled"
     installation.deployed_revision = 1
@@ -3706,7 +3783,7 @@ async def test_disconnect_retry_recovers_failed_container_canary(
     worker_id, uid, actor = uuid4(), uuid4().hex, "e" * 64
     worker = ExecutionWorker(
         id=worker_id, form="external", state="draining", capacity_scope="containers",
-        capacity_resource_uid=uid, remote_hello_sequence=1, remote_session_generation=1,
+        capacity_resource_uid=uid, remote_hello_sequence=int(observed_start), remote_session_generation=int(observed_start),
         remote_owner_lease_expires_at=stopped + timedelta(seconds=8),
     )
     ref = CredentialRef(installation.id, installation.account_id, "scope_bearer", "containers", 1)
@@ -3762,6 +3839,7 @@ async def test_disconnect_retry_recovers_failed_container_canary(
 
     alive = {"application", "script", "registry", *namespace_ids.values()}
     fence = "pending"
+    retirement_pending = not observed_start
     events = []
     app_row = {
         "id": app.provider_id, "name": app.target_name, "account_id": app.account_id,
@@ -3771,7 +3849,7 @@ async def test_disconnect_retry_recovers_failed_container_canary(
     owner = worker_owner_value(lifecycle_job._resource_intent(script))
 
     def provider(request):
-        nonlocal fence
+        nonlocal fence, retirement_pending
         path = request.url.path
         if request.url.host == "container-scope.example.test":
             body = json.loads(request.content)
@@ -3782,23 +3860,37 @@ async def test_disconnect_retry_recovers_failed_container_canary(
                 case "/v1/void":
                     result = {"status": "conflict"}
                 case "/v1/observe-start":
-                    assert fence == "pending" and body["started_at"] == started_ms
+                    assert observed_start and fence == "pending" and body["started_at"] == started_ms
                     fence = "observed"
                     events.append("start-observed")
                     result = {"status": "observed"}
+                case "/v1/close-absent":
+                    assert not observed_start and fence == "pending"
+                    assert body["observed_absent_at"] >= body["pin"]["startDeadline"] + 60_000
+                    fence = "closed"
+                    events.append("closed-absent")
+                    result = {"status": "absent"}
                 case "/v1/close":
                     result = {"status": "pending"}
                     if fence != "pending":
                         fence = "closed"
                         result = {
-                            "status": "closed", "instance": actor,
+                            "status": "closed" if observed_start else "absent", "instance": actor,
                             "authorizedAt": int(reserved_at.timestamp() * 1000) + 1000,
-                            "startedAt": started_ms, "closedAt": closed_ms,
+                            "closedAt": closed_ms,
+                            **({"startedAt": started_ms} if observed_start else {
+                                "uid": uid, "startDeadline": body["pin"]["startDeadline"],
+                            }),
                         }
                 case "/v1/retire":
                     assert fence == "closed" and body["closed_at"] == closed_ms
-                    events.append("registry-retired")
-                    result = {"status": "retired"}
+                    if retirement_pending:
+                        retirement_pending = False
+                        events.append("registry-retirement-pending")
+                        result = {"status": "pending"}
+                    else:
+                        events.append("registry-retired")
+                        result = {"status": "retired"}
                 case _:
                     pytest.fail(f"Unexpected control path: {path}")
             return httpx.Response(200, json=result)
@@ -3807,7 +3899,7 @@ async def test_disconnect_retry_recovers_failed_container_canary(
             assert "application" in alive
             result = {
                 "id": actor, "application_id": app.provider_id, "image": image, "name": uid,
-                "started_at": started.isoformat(),
+                **({"started_at": started.isoformat()} if observed_start else {}),
                 "status": {"state": "failed", "updated_at": stopped.isoformat(), "exit_code": 1},
             }
         elif path.endswith("/applications"):
@@ -3886,7 +3978,7 @@ async def test_disconnect_retry_recovers_failed_container_canary(
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         async def advance_scheduler(_delay):
             nonlocal passes
-            if passes < 2:
+            if passes < (2 if observed_start else 3):
                 await cloudflare_supervisor._reconcile_containers(
                     binding, Settings(), http, uuid4(), {}, kubernetes=False,
                 )
@@ -3894,7 +3986,9 @@ async def test_disconnect_retry_recovers_failed_container_canary(
                 if passes == 0:
                     assert pin.container_stopped_at is None and fence == "closed"
                 else:
-                    assert pin.container_stopped_at == stopped
+                    assert pin.container_stopped_at == expected_stop
+                    await db_session.refresh(worker)
+                    assert (worker.capacity_resource_deleted_at is None) == (not observed_start and passes == 1)
             else:
                 assert "tag-deleted" in events
             passes += 1
@@ -3907,7 +4001,9 @@ async def test_disconnect_retry_recovers_failed_container_canary(
 
     assert not alive
     assert events == [
-        "start-observed", "registry-retired", "application-deleted", "script-deleted",
+        "start-observed" if observed_start else "closed-absent",
+        *([] if observed_start else ["registry-retirement-pending"]),
+        "registry-retired", "application-deleted", "script-deleted",
         "namespaces-absent", "digest-verified", "tag-deleted",
     ]
     for receipt in (app, script, registry):
@@ -3916,7 +4012,7 @@ async def test_disconnect_retry_recovers_failed_container_canary(
     await db_session.refresh(worker)
     await db_session.refresh(installation)
     assert worker.state == "retired" and worker.capacity_resource_deleted_at is not None
-    assert worker.ended_at == stopped
+    assert worker.ended_at == expected_stop
     assert installation.retired_at is not None and installation.api_token_version is None
     assert pin.container_envelope is not None
     assert pin.container_envelope["provider_instance_id"] == actor
@@ -3927,7 +4023,12 @@ async def test_disconnect_retry_recovers_failed_container_canary(
         billed = await db_session.scalar(select(container_account_usage(
             literal(stopped), instance_seconds=seconds, account_id=installation.account_id,
         )))
-        assert billed == Decimal("39.362" if seconds else "0.00082278272")
+        if observed_start:
+            assert billed == Decimal("39.362" if seconds else "0.00082278272")
+        else:
+            assert pin.container_envelope["settled_absent"] is True
+            assert "observed_started_at" not in pin.container_envelope
+            assert billed == Decimal("196" if seconds else "0.00404326")
 
 
 @pytest.mark.asyncio
@@ -5787,8 +5888,12 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
     fenced = closure_kind == "fenced-absent"
     refused = closure_kind == "allocation-refused"
     when = int(deadline.timestamp() * 1000)
+    prepared_image = f"registry.cloudflare.com/{target.account_id}/{target.name}@{release.manifest.image_digest}"
     receipt = (
-        AbsentContainerStart(app, worker, uid, actor, when, when - 1000, int((now - timedelta(seconds=1)).timestamp() * 1000))
+        AbsentContainerStart(
+            app, worker, uid, actor, when, when - 1000, int((now - timedelta(seconds=1)).timestamp() * 1000),
+            prepared_image,
+        )
         if fenced else VoidContainerStart(
             app, worker, uid, actor, when, when - 1000 if refused else when + 1000,
             allocation_refused=refused,
@@ -5802,7 +5907,10 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         if request.url.path.endswith(f"/instances/{actor}"):
             if not present:
                 return httpx.Response(404)
-            result = {"id": actor, "application_id": app.provider_id, "name": "named-placement"}
+            result = {
+                "id": actor, "application_id": app.provider_id, "image": prepared_image,
+                "started_at": deadline.isoformat(), "status": {"state": "stopped", "updated_at": now.isoformat()},
+            }
         else:
             assert request.url.path.endswith(f"/applications/{app.provider_id}")
             result = {
@@ -5815,10 +5923,10 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         rest = ContainersRest(http)
         token = SecretStr("synthetic-management-token")
         if fenced:
-            early = AbsentContainerStart(app, worker, uid, actor, when, when - 1000, when + 59_999)
+            early = AbsentContainerStart(app, worker, uid, actor, when, when - 1000, when + 59_999, prepared_image)
             with pytest.raises(ObservationPending, match="expired start deadline"):
                 await settle_container_stop(db_session, rest, token=token, closure=early)
-        with pytest.raises(ObservationPending, match="still has a provider placement"):
+        with pytest.raises(ObservationPending, match="witnessed start" if fenced else "still has a provider placement"):
             await settle_container_stop(db_session, rest, token=token, closure=receipt)
         present = False
         await settle_container_stop(db_session, rest, token=token, closure=receipt)
@@ -5832,7 +5940,11 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         cooldown = await _container_scope_cooldown(db_session, fresh)
         assert cooldown is not None and cooldown.code == "CF_CONTAINERS_COOLDOWN"
         assert cooldown.retry_at is not None and cooldown.retry_at > fresh.now
-    assert not await cloudflare_workers_remain(db_session, installation.id)
+    assert await cloudflare_workers_remain(db_session, installation.id) is fenced
+    if fenced:
+        executor = await db_session.get(ExecutionWorker, worker)
+        assert executor is not None
+        executor.capacity_resource_deleted_at = pin.container_stopped_at
     assert await db_session.scalar(select(container_account_usage(literal(deadline))).where(
         CloudflareInstallation.id == installation.id,
     )) == Decimal("0.31" if fenced else "0.01")

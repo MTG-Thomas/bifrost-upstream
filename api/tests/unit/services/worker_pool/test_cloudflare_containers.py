@@ -1153,6 +1153,40 @@ async def test_exact_container_stop_evidence(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("state", "reported_start", "expected"), [
+    ("failed", {}, True),
+    ("failed", {"started_at": None}, True),
+    ("failed", {"started_at": ""}, False),
+    ("stopped", {}, False),
+    ("unknown", {}, False),
+])
+async def test_exact_actor_failure_before_start(observed_container, state, reported_start, expected) -> None:
+    application, app_row = observed_container
+    actor = "e" * 64
+    image = "registry.cloudflare.com/account/image@sha256:" + "a" * 64
+    stopped = datetime.now(UTC)
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        result = app_row
+        if request.url.path.endswith(f"/instances/{actor}"):
+            result = {
+                "id": actor, "application_id": application.provider_id, "image": image,
+                "status": {"state": state, "updated_at": stopped.isoformat(), "exit_code": 1}, **reported_start,
+            }
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        adapter = ContainersRest(http)
+        args = {"instance_id": actor, "image": image, "not_before": stopped - timedelta(seconds=1)}
+        if expected:
+            outcome = await adapter.observe_instance_outcome(TOKEN, application, **args)
+            assert outcome is not None and outcome.started_at is None and outcome.stopped_at == stopped
+        else:
+            with pytest.raises(ObservationPending, match="has not witnessed a bounded stop"):
+                await adapter.observe_instance_outcome(TOKEN, application, **args)
+
+
+@pytest.mark.asyncio
 async def test_concurrent_placement_reads_share_one_request_pacing_budget(observed_container, monkeypatch) -> None:
     application, row = observed_container
     now = 100.0

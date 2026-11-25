@@ -52,7 +52,7 @@ class VoidContainerStart:
 
 @dataclass(frozen=True, slots=True)
 class AbsentContainerStart:
-    """Closed fence whose attempted placement is absent after the boot bound."""
+    """Closed fence whose attempted placement never reported a start."""
 
     application: ResourceObservation
     worker_id: UUID
@@ -61,6 +61,7 @@ class AbsentContainerStart:
     start_deadline_ms: int
     authorized_at_ms: int
     closed_at_ms: int
+    image: str
 
 
 # Matches the scope registry's boot observation bound.
@@ -154,7 +155,19 @@ async def settle_container_stop(
         when = max(pin.container_reserved_at, min(when, now))
         if await db.scalar(select(exists().where(ExecutionWorkerClaim.worker_id == worker.id))):
             raise ObservationPending("An unstarted Container cannot own a claim")
-        await rest.observe_no_placement(token, closure.application, closure.instance_id)
+        if isinstance(closure, AbsentContainerStart):
+            observation = await rest.observe_instance_outcome(
+                token, closure.application, instance_id=closure.instance_id, image=closure.image,
+                not_before=datetime.fromtimestamp(closure.authorized_at_ms / 1000, UTC),
+            )
+            if observation is not None:
+                if observation.started_at is not None:
+                    raise ObservationPending("An absent Container has a witnessed start")
+                envelope["provider_terminal_state"] = observation.terminal_state
+                if observation.exit_code is not None:
+                    envelope["provider_exit_code"] = observation.exit_code
+        else:
+            await rest.observe_no_placement(token, closure.application, closure.instance_id)
         pin.container_envelope = {
             **envelope, "provider_instance_id": closure.instance_id,
             ("voided_unstarted" if void else "settled_absent"): True,
@@ -165,7 +178,11 @@ async def settle_container_stop(
         # Without a start or a claim the original dispatch still belongs to the
         # canonical pending queue. Dropping the placement pointer is sufficient.
         worker.reserved_for_dispatch_id = None
-        worker.ended_at = worker.capacity_resource_deleted_at = when
+        worker.ended_at = when
+        # A void receipt already releases the registry seat. An absent
+        # start fence retains the seat until the separate retire receipt.
+        if void:
+            worker.capacity_resource_deleted_at = when
         await db.flush()
         return
     if (
@@ -182,6 +199,7 @@ async def settle_container_stop(
         token, closure.application, instance_id=closure.instance_id,
         image=closure.image, not_before=closure.last_start_effect_at,
     )
+    assert stop.started_at is not None
     if (
         stop.started_at < pin.container_reserved_at - CONTAINER_CLOCK_SKEW
         or int(stop.started_at.timestamp() * 1000) != int(closure.placement_started_at.timestamp() * 1000)

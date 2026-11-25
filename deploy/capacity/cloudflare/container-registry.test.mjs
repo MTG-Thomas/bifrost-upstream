@@ -608,6 +608,22 @@ test("the control relay preserves close codes without copying peer reasons", () 
     }
 });
 
+test("the control relay closes both legs when an upstream close code is rejected", () => {
+    const registry = { relayDeadline: () => Date.now() + 1000, chargeRelay: () => true };
+    const guest = new Socket();
+    const ingress = new Socket();
+    const close = ingress.close.bind(ingress);
+    ingress.close = (code, reason) => {
+        if (code === 1014) throw new TypeError("Unsupported close code");
+        close(code, reason);
+    };
+    relayControlSockets(registry, "uid", "instance", guest, ingress);
+    guest.dispatchEvent(Object.assign(new Event("close"), { code: 1014, reason: "fixture-secret" }));
+    assert.deepEqual(guest.closed, [1014]);
+    assert.deepEqual(ingress.closed, [1011]);
+    assert.deepEqual(ingress.closeReasons, ["Container relay close fallback 1014"]);
+});
+
 test("HTTP interception forwards only the exact ingress and shares the bidirectional meter", async (t) => {
     const { db, registry, pin } = fixture(1, 4096);
     t.after(() => db.close());

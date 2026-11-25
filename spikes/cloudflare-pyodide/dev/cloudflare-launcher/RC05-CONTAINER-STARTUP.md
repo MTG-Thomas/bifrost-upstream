@@ -22,8 +22,12 @@ The missing failed-placement settlement was a separate defect.
 
 The existing managed control stream carries optional `guest_stage` and
 `guest_fatal` events. Each uses the incarnation control key and binds the
-generation, sequence and allowlisted payload. The launcher attempts one fatal
-report with a half-second send bound. Older receivers can ignore the events.
+generation, sequence and allowlisted payload. The launcher reserves its one
+fatal report for an exit, with a half-second send bound. Reconnects and
+qualification refusals send stage events. The API records diagnostics on its
+regular database pool and coalesces unchanged stage records. An unavailable
+job evidence read leaves the original result and code intact, with only its
+exception class recorded. Older receivers can ignore the events.
 Capacity protocol 2 and SDK protocol 1 stay unchanged. The API keeps the last
 stage, fatal class/category, and close code/category in the reservation
 envelope. Capacity and the qualification job expose the same sanitized
@@ -42,9 +46,19 @@ for the exact guest before it forwards hello, preserving the exit receipt.
 Use
 `--containers-hosted-shape --exercise-guest-fatal` on the isolated local stack.
 The runner checks the failure in Capacity and the job, settlement, and
-Disconnect. The hook is excluded from all release image recipes.
+Disconnect. Use `--exercise-guest-fatal-after-reconnect` on the same fixture
+to close the first control socket after welcome but before bootstrap. The
+fault hook then requires generation 2 before it injects the fatal error.
+The hook is excluded from all release image recipes.
 
-The terminal-state repair keeps the original two witnesses. The retained rc04
+The terminal-state repair keeps the original two witnesses. A failed actor
+with no start timestamp can close as absent after the boot observation
+window. Settlement rechecks the exact actor and prepared image, verifies
+that no guest enrolled or claimed work, and retains the full reservation
+duration and fixed control charge. The registry retirement receipt still
+controls when that seat is released.
+
+The retained rc04
 installation can retry product Disconnect against the existing provider actor
 and registry fence, once a separately authorized upgraded stack is available.
 The new evidence is optional JSON in the reservation envelope and requires no

@@ -79,6 +79,46 @@ async def test_managed_guest_fatal_delivery_is_bounded() -> None:
 
 
 @pytest.mark.asyncio
+async def test_managed_guest_reconnect_and_canary_refusal_preserve_the_fatal_report(monkeypatch) -> None:
+    from src.worker.remote import launcher as launcher_module
+
+    dropped = SimpleNamespace(
+        send=AsyncMock(), recv=AsyncMock(side_effect=[
+            '{"event":"welcome","session_generation":1}', ConnectionError("drop"),
+        ]),
+    )
+    launcher = Launcher(
+        dropped, identity=LauncherIdentity.from_environment({"HOSTNAME": "fixture"}),
+        secret="fixture-control-key", containers=True, container_release="a" * 64,
+        container_probe_nonce="probe", container_deadline=launcher_module.time.monotonic() + 60,
+    )
+    with pytest.raises(ConnectionError, match="drop"):
+        await launcher.hello({})
+    reconnect = SimpleNamespace(
+        send=AsyncMock(), close=AsyncMock(), recv=AsyncMock(side_effect=[
+            '{"event":"welcome","session_generation":2}',
+            ControlEnvelope(2, 1, "bootstrap", {"requirements_content": None, "ttl_ms": 1000}).to_json(),
+        ]),
+    )
+    monkeypatch.setattr(signal, "setitimer", Mock())
+    await launcher.reconnect(reconnect, {})
+    await launcher.command({"id": "probe", "action": "capacity_canary", "payload": {}}, generation=2)
+    launcher.failed = True
+    await launcher._close_failed_guest(RuntimeError("real fatal after reconnect"))
+
+    dropped_stage = ControlEnvelope.from_json(dropped.send.await_args_list[-1].args[0])
+    assert dropped_stage.payload["event"] == "guest_stage" and dropped_stage.payload["stage"] == "bootstrap"
+    envelopes = [ControlEnvelope.from_json(call.args[0]) for call in reconnect.send.await_args_list[1:]]
+    faults = [frame for frame in envelopes if frame.payload.get("event") == "guest_fatal"]
+    fatal, = faults
+    assert verify_guest_diagnostic(launcher.secret, 2, fatal.sequence, fatal.payload) == {
+        "event": "guest_fatal", "stage": "canary-command", "exception_class": "RuntimeError", "reason": "runtime",
+    }
+    assert any(frame.payload.get("error") == "Container qualification command failed" for frame in envelopes)
+    reconnect.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("shutdown", [False, True], ids=["recover", "shutdown-during-cleanup"])
 async def test_static_launcher_reconnects_until_the_host_confirms_loss(monkeypatch, shutdown) -> None:
     from src.worker.remote import launcher as launcher_module

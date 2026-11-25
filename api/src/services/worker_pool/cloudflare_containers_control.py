@@ -171,12 +171,12 @@ async def reconcile_container_stop(
                 placement = await adapter.observe_instance_outcome(
                     management, binding.application, instance_id=instance, image=binding.prepared_image, not_before=start,
                 )
-                if placement is None:
+                if placement is None or placement.started_at is None:
                     now_ms = int(datetime.now(UTC).timestamp() * 1000)
                     if now_ms < deadline + BOOT_OBSERVATION_MS:
                         return False
                     # The active start ticket and the post-boot inventory read
-                    # both have to agree before this fence can close as absent.
+                    # must agree on no start before this fence can close as absent.
                     await binding.request(http, "close-absent", observed_absent_at=now_ms)
                 else:
                     observed = await binding.request(
@@ -197,6 +197,7 @@ async def reconcile_container_stop(
                     raise ObservationPending("Absent Container receipt differs from its start fence")
                 closure = AbsentContainerStart(
                     binding.application, worker_id, uid, instance, deadline, fence.authorizedAt, closed_at,
+                    binding.prepared_image,
                 )
             else:
                 if fence.startedAt is None:
