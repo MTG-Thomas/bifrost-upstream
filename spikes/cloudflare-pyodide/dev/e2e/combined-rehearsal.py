@@ -29,6 +29,19 @@ MANAGEMENT = "local-rehearsal-management-token"
 ACTIVE_JOB = {"queued", "running", "waiting"}
 WORKERS_OVERFLOW_AGE_SECONDS = 2
 ENABLE_RESULT_SECONDS = 180
+CONTAINERS_ACTIVE_SECONDS = 20 * 60
+# Match cloudflare_containers_rest.py (copy and settlement) and catalog.py
+# (capacity.cloudflare_enable). A retry may still need to copy if no tag is visible.
+CONTAINERS_IMAGE_COPY_SECONDS = 90
+CONTAINERS_IMAGE_SETTLEMENT_SECONDS = 180
+CONTAINERS_ENABLE_RETRY_DELAYS = (15, 45)
+CONTAINERS_ENABLE_MARGIN_SECONDS = 30
+CONTAINERS_ENABLE_RESULT_SECONDS = (
+    (1 + len(CONTAINERS_ENABLE_RETRY_DELAYS))
+    * (CONTAINERS_IMAGE_COPY_SECONDS + CONTAINERS_IMAGE_SETTLEMENT_SECONDS)
+    + sum(CONTAINERS_ENABLE_RETRY_DELAYS)
+    + CONTAINERS_ENABLE_MARGIN_SECONDS
+)
 # Allow one 15-minute Disconnect attempt and time for it to be claimed.
 DISCONNECT_RESULT_SECONDS = 16 * 60
 
@@ -72,6 +85,7 @@ def request_json(url, method, payload=None, token=None, *, content_type="applica
 
 class Rehearsal:
     activation_request = None
+    enable_result_seconds = ENABLE_RESULT_SECONDS
 
     def __init__(self):
         self.cfg = json.loads(Path(".rehearsal/config.json").read_text())
@@ -315,7 +329,7 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
             self.activation_request = None
         else:
             job = self.job("enable")
-        result = self.completed(job, "enabled", window=ENABLE_RESULT_SECONDS)
+        result = self.completed(job, "enabled", window=self.enable_result_seconds)
         assert result["execution_class"] == "remote_launcher" and result["http_connections"]
         installation = self.install()
         assert installation["admission_open"]
@@ -1174,6 +1188,8 @@ async def qualification_container(case: str, hold: int):
 class HostedContainers(ContainerRehearsal):
     """Drive Containers through the public surfaces with a fenced account inventory."""
 
+    enable_result_seconds = CONTAINERS_ENABLE_RESULT_SECONDS
+
     def __init__(self, config):
         if config.stat().st_mode & 0o077:
             raise ValueError("The hosted configuration must be private")
@@ -1203,7 +1219,7 @@ class HostedContainers(ContainerRehearsal):
         assert code == 200
         self.admin = data["access_token"]
         self.workflows, self.holds, self.runs, self.tenants = {}, [], {}, {}
-        self.deadline = time.monotonic() + 20 * 60
+        self.deadline = time.monotonic() + CONTAINERS_ACTIVE_SECONDS
         self.live_target = Decimal(self.cfg["live_target_usd"])
         self.live_cap = Decimal(self.cfg["live_abort_usd"])
         self.settled_cap = Decimal(self.cfg["settled_cap_usd"])
@@ -1454,36 +1470,50 @@ class HostedContainers(ContainerRehearsal):
 
     def completed(self, job, outcome, *, window=90):
         if outcome != "enabled":
+            if outcome != "disconnected":
+                window = self.active_window(window)
             return super().completed(job, outcome, window=window)
 
+        canary_deadline = None
+
         def terminal():
+            nonlocal canary_deadline
             state = self.send(f"/api/platform-jobs/{job}", method="GET")
             result = state.get("result") or {}
             code = result.get("code") or (state.get("error") or {}).get("code")
+            if code in {"CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_QUALIFICATION_BACKOFF"}:
+                raise RuntimeError(f"Qualification stopped ({code})")
+            if state["status"] not in ACTIVE_JOB and (
+                state["status"] != "succeeded" or result.get("outcome") != outcome
+            ):
+                evidence("hosted-shaped-enable-failed", {"code": code, "canary_failure": result.get("canary_failure")})
+                raise RuntimeError(f"Enable did not succeed ({code})")
             count = self.canaries()
             job_canaries = self.canaries(job=job)
-            if (
-                code in {"CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_QUALIFICATION_BACKOFF"}
-                or count > 2 or job_canaries > 1
-            ):
+            if count > 2 or job_canaries > 1:
                 raise RuntimeError(f"Qualification stopped ({code or 'canary fence'})")
             self.observe_scheduler("qualification")
-            if state["status"] not in ACTIVE_JOB:
-                if state["status"] != "succeeded" or result.get("outcome") != outcome:
-                    evidence("hosted-shaped-enable-failed", {"code": code, "canary_failure": result.get("canary_failure")})
-                    raise RuntimeError(f"Enable did not succeed ({code})")
+            if state["status"] == "succeeded":
                 assert job_canaries == self.canaries(job=job, settled=True) == 1
                 evidence("hosted-shaped-enable", {"attempt": state["attempt"], "settled_canaries": job_canaries})
                 self.enable_attempts.append(state["attempt"])
                 return result
+            # Keep the wait after the first paid reservation below the five-minute
+            # qualification retry window, even when image preparation took longer.
+            if job_canaries and canary_deadline is None:
+                canary_deadline = time.monotonic() + ENABLE_RESULT_SECONDS
+            if canary_deadline is not None and time.monotonic() >= canary_deadline:
+                raise RuntimeError("Container canary did not settle within the Enable wait")
             return None
 
         try:
-            # Each Enable ends before the five-minute paid-start retry window.
-            return wait(outcome, terminal, min(window, ENABLE_RESULT_SECONDS))
+            return wait(outcome, terminal, self.active_window(min(window, self.enable_result_seconds)))
         except (AssertionError, RuntimeError):
             self.send(f"/api/platform-jobs/{job}/cancel")
             raise
+
+    def active_window(self, seconds):
+        return max(0, min(seconds, self.deadline - time.monotonic()))
 
     def observe_scheduler(self, stage, *, settled=False, starting=False):
         status = self.send("/api/capacity/cloudflare", method="GET")
@@ -1557,14 +1587,14 @@ class HostedContainers(ContainerRehearsal):
                 current = self.send(f"/api/executions/{execution}", method="GET")
                 return current if current["status"] not in {"Pending", "Queued", "Running", "Cancelling"} else None
 
-            terminal = wait("Container workflow", completed_work, 90)
+            terminal = wait("Container workflow", completed_work, self.active_window(90))
             assert terminal["status"] == "Success" and terminal["result"]["child"] == "linux-child"
             assert terminal["result"]["native"].startswith("OpenSSL")
             self.release_primary()
             placement = wait("Container placement retirement", lambda: self.sql(f"""SELECT COALESCE((
                 SELECT container_envelope->'provider_instance_id' FROM cloudflare_worker_reservations
                 WHERE container_envelope->>'execution_id'='{execution}' AND container_stopped_at IS NOT NULL
-                ), 'null')"""), 150)
+                ), 'null')"""), self.active_window(150))
             assert self.sql(f"SELECT count(*) FROM execution_worker_claims WHERE subject_id='{execution}'") == 1
             stopped = self.provider(f"{app_path}/instances/{placement}")
             self.verify_stopped_placement(stopped, placement, app["id"])
@@ -1762,7 +1792,7 @@ def exercise_image_preparation_failure(fixture, trial):
             state = trial.send(f"/api/platform-jobs/{job}", method="GET")
             return state if state["status"] not in ACTIVE_JOB else None
 
-        state = wait("Injected image preparation failure", completed, ENABLE_RESULT_SECONDS)
+        state = wait("Injected image preparation failure", completed, trial.active_window(trial.enable_result_seconds))
         assert state["status"] == "requires_action" and state["result"]["code"] == "CF_DEPLOYMENT_UNVERIFIED"
         details = state["result"]["details"]
         assert details["preparation_status"] == "error" and details["preparation_http_status"] == "200"

@@ -274,5 +274,66 @@ class InventoryTests(unittest.TestCase):
         self.assertIs(failure.exception, original)
         self.assertEqual([call.args[1]["step"] for call in emit.call_args_list], ["disconnect", "closing-inventory"])
 
+
+class EnableDeadlineTests(unittest.TestCase):
+    def setUp(self):
+        self.trial = runner.HostedContainers.__new__(runner.HostedContainers)
+        self.trial.deadline = 20 * 60
+        self.trial.enable_attempts = []
+        self.trial.canaries = Mock()
+        self.trial.observe_scheduler = Mock()
+        self.now = 0
+        clock = patch.multiple(runner.time, monotonic=lambda: self.now, sleep=self.advance)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def advance(self, _seconds):
+        self.now += 200
+
+    def test_enable_budget_covers_three_attempts_and_both_retry_delays(self):
+        budget = self.trial.enable_result_seconds
+        self.assertEqual(budget, 3 * (90 + 180) + 15 + 45 + 30)
+        self.assertEqual(self.trial.active_window(budget), 900)
+        self.now = 400
+        self.assertEqual(self.trial.active_window(budget), 800)
+
+    def test_enable_polls_past_old_deadline_while_the_job_is_retrying(self):
+        result = {"outcome": "enabled"}
+        self.trial.send = Mock(side_effect=[
+            {"status": "running"},
+            {"status": "queued", "error": {"code": "CF_DEPLOYMENT_UNVERIFIED"}},
+            {"status": "succeeded", "result": result, "attempt": 2},
+        ])
+        self.trial.canaries.side_effect = [0, 0, 0, 0, 1, 1, 1]
+        self.assertEqual(self.trial.completed("job", "enabled", window=self.trial.enable_result_seconds), result)
+        self.assertEqual(self.trial.enable_attempts, [2])
+        self.assertEqual(self.trial.send.call_count, 3)
+        self.assertEqual(self.trial.observe_scheduler.call_count, 3)
+
+    def test_enable_stops_on_the_first_terminal_failure(self):
+        for status in ("requires_action", "failed"):
+            with self.subTest(status=status):
+                self.trial.send = Mock(side_effect=[
+                    {"status": status, "result": {"code": "CF_DEPLOYMENT_UNVERIFIED"}},
+                    None,
+                ])
+                with self.assertRaisesRegex(RuntimeError, "Enable did not succeed.*CF_DEPLOYMENT_UNVERIFIED"):
+                    self.trial.completed("job", "enabled", window=self.trial.enable_result_seconds)
+                self.assertEqual(self.now, 0)
+                self.assertEqual(self.trial.send.call_args_list, [
+                    unittest.mock.call("/api/platform-jobs/job", method="GET"),
+                    unittest.mock.call("/api/platform-jobs/job/cancel"),
+                ])
+                self.trial.observe_scheduler.assert_not_called()
+
+    def test_enable_stops_if_the_paid_canary_does_not_settle(self):
+        self.trial.send = Mock(return_value={"status": "running"})
+        self.trial.canaries.return_value = 1
+        with self.assertRaisesRegex(RuntimeError, "Container canary did not settle"):
+            self.trial.completed("job", "enabled", window=self.trial.enable_result_seconds)
+        self.assertEqual(self.now, 200)
+        self.trial.send.assert_called_with("/api/platform-jobs/job/cancel")
+
+
 if __name__ == "__main__":
     unittest.main()
