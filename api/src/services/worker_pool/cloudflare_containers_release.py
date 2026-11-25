@@ -6,6 +6,7 @@ import os
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -41,6 +42,43 @@ _GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 
 class ContainersReleaseUnavailable(Exception):
     """The image, signed declaration or matched release cannot be verified."""
+
+
+class OCIToolFailure(StrEnum):
+    NOT_FOUND = "tool_not_found"
+    START_FAILED = "tool_start_failed"
+    REJECTED = "tool_rejected"
+    TIMEOUT = "tool_timeout"
+    REGISTRY_AUTH = "registry_auth"
+    TAG_NOT_VISIBLE = "tag_not_visible"
+    REGISTRY_UNAVAILABLE = "registry_unavailable"
+
+
+class OCIToolError(ContainersReleaseUnavailable):
+    def __init__(self, failure: OCIToolFailure) -> None:
+        super().__init__("Container release tool failed")
+        self.failure = failure
+
+    @property
+    def retryable_readback(self) -> bool:
+        return self.failure in (OCIToolFailure.TIMEOUT, OCIToolFailure.TAG_NOT_VISIBLE, OCIToolFailure.REGISTRY_UNAVAILABLE)
+
+
+def _digest_failure(stderr: bytes) -> OCIToolFailure:
+    # crane v0.20.6 prints an OCI diagnostic code or a numeric HTTP status.
+    # https://github.com/google/go-containerregistry/blob/v0.20.6/pkg/v1/remote/transport/error.go
+    diagnostic = stderr[:4096]
+    if re.search(rb"\b(?:UNAUTHORIZED|DENIED):|unexpected status code (?:401|403)\b", diagnostic):
+        return OCIToolFailure.REGISTRY_AUTH
+    if re.search(rb"\b(?:MANIFEST_UNKNOWN|NAME_UNKNOWN):|unexpected status code 404\b", diagnostic):
+        return OCIToolFailure.TAG_NOT_VISIBLE
+    if re.search(
+        rb"\b(?:TOOMANYREQUESTS|UNAVAILABLE):|unexpected status code (?:408|429|5[0-9]{2})\b"
+        rb"|i/o timeout|connection (?:reset|refused)",
+        diagnostic,
+    ):
+        return OCIToolFailure.REGISTRY_UNAVAILABLE
+    return OCIToolFailure.REJECTED
 
 
 class ContainersReleaseFetchError(Exception):
@@ -90,23 +128,31 @@ async def run_oci_tool(
     }
     if env:
         environment.update(env)
+    diagnose_digest = executable.name == "crane" and args[:1] == ("digest",)
     try:
         process = await asyncio.create_subprocess_exec(
             str(executable.resolve(strict=True)), *args, cwd=cwd, env=environment,
-            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE if diagnose_digest else asyncio.subprocess.DEVNULL,
         )
         try:
             async with asyncio.timeout(timeout):
-                output, _ = await process.communicate()
+                output, diagnostic = await process.communicate()
         except (TimeoutError, asyncio.CancelledError):
             if process.returncode is None:
                 process.kill()
             await process.wait()
             raise
-    except (OSError, TimeoutError):
-        raise ContainersReleaseUnavailable("Container release tool did not complete") from None
-    if process.returncode or len(output) > 4 * 1024 * 1024:
-        raise ContainersReleaseUnavailable("Container release tool rejected the operation")
+    except FileNotFoundError:
+        raise OCIToolError(OCIToolFailure.NOT_FOUND) from None
+    except OSError:
+        raise OCIToolError(OCIToolFailure.START_FAILED) from None
+    except TimeoutError:
+        raise OCIToolError(OCIToolFailure.TIMEOUT) from None
+    if process.returncode:
+        raise OCIToolError(_digest_failure(diagnostic) if diagnose_digest else OCIToolFailure.REJECTED)
+    if len(output) > 4 * 1024 * 1024:
+        raise OCIToolError(OCIToolFailure.REJECTED)
     return output
 
 

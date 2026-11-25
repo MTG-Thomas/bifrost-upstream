@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from src.services.worker_pool.cloudflare_containers_auth import container_scope_
 from src.services.worker_pool.cloudflare_containers_policy import CONTAINER_CLOCK_SKEW, ContainersPolicy
 from src.services.worker_pool.cloudflare_containers_release import (
     ContainersReleaseUnavailable,
+    OCIToolError,
     VerifiedContainerRelease,
     run_oci_tool,
 )
@@ -56,6 +58,7 @@ _MAX_INVENTORY_PAGES = 100
 _PLACEMENT_READ_INTERVAL = 0.5
 _IMAGE_SETTLEMENT_SECONDS = 180
 _IMAGE_SETTLEMENT_INTERVAL = 5
+_IMAGE_COPY_LEASE_INTERVAL = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,6 +539,7 @@ class ContainerRegistry:
 
     async def copy(
         self, token: SecretStr, intent: ResourceIntent, release: VerifiedContainerRelease, *, previously_sent: bool,
+        hold_lease: Callable[[], Awaitable[None]],
     ) -> ResourceObservation:
         """Replay only the journaled digest into an empty owned repository."""
         name = _name(intent, "container_image")
@@ -545,6 +549,7 @@ class ContainerRegistry:
         destination = f"{REGISTRY}/{account}/{name}:release"
         with TemporaryDirectory(prefix="bifrost-oci-") as temp:
             cwd = Path(temp)
+            await hold_lease()
             if (await run_oci_tool(self.crane, "version", cwd=cwd)).strip() != b"0.20.6":
                 raise ContainersReleaseUnavailable("Expected the pinned OCI copy tool")
             await self._verify_image(release.manifest.image, release, cwd)
@@ -555,18 +560,42 @@ class ContainerRegistry:
                                         OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED)
             await self._authenticate(token, account, cwd, push=not visible)
             if not visible:
-                await run_oci_tool(self.crane, "copy", release.manifest.image, destination, cwd=cwd, timeout=90)
+                await self._copy_while_current(release.manifest.image, destination, cwd, hold_lease)
             digest = release.manifest.image_digest
-            await self._wait_for_prepared_image(token, account, name, destination, digest, cwd)
+            await self._wait_for_prepared_image(token, account, name, destination, digest, cwd, hold_lease)
         return ResourceObservation(intent, destination, digest)
+
+    async def _copy_while_current(
+        self, source: str, destination: str, cwd: Path, hold_lease: Callable[[], Awaitable[None]],
+    ) -> None:
+        async def watch_lease() -> None:
+            while True:
+                await asyncio.sleep(_IMAGE_COPY_LEASE_INTERVAL)
+                await hold_lease()
+
+        await hold_lease()
+        watcher = asyncio.create_task(watch_lease())
+        copy = asyncio.create_task(run_oci_tool(self.crane, "copy", source, destination, cwd=cwd, timeout=90))
+        try:
+            done, _ = await asyncio.wait({copy, watcher}, return_when=asyncio.FIRST_COMPLETED)
+            if watcher in done:
+                watcher.result()
+            await copy
+        finally:
+            watcher.cancel()
+            copy.cancel()
+            await asyncio.gather(watcher, copy, return_exceptions=True)
 
     async def _wait_for_prepared_image(
         self, token: SecretStr, account: str, name: str, tag: str, digest: str, cwd: Path,
+        hold_lease: Callable[[], Awaitable[None]],
     ) -> None:
         evidence = {"registry_tag": "unobserved"}
+        digest_failures = 0
         try:
             async with asyncio.timeout(_IMAGE_SETTLEMENT_SECONDS):
                 while True:
+                    await hold_lease()
                     tags = await self._tags(token, account, name, cwd)
                     if tags - {"release"}:
                         raise OwnershipConflict(
@@ -579,14 +608,22 @@ class ContainerRegistry:
                         evidence["registry_tag"] = "unconfirmed_digest"
                         try:
                             await self._require_tag_digest(tag, digest, cwd)
-                        except ContainersReleaseUnavailable:
-                            # A listed tag may precede its OCI readback.
-                            pass
+                        except OCIToolError as exc:
+                            digest_failures += 1
+                            evidence.update(
+                                digest_failure_class=exc.failure.value,
+                                digest_failure_count=str(digest_failures),
+                            )
+                            if not exc.retryable_readback:
+                                raise ObservationPending(
+                                    "Exact registry tag digest could not be read",
+                                    OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
+                                    evidence=evidence,
+                                ) from None
                         else:
                             evidence["registry_tag"] = "exact_digest"
-                            ready, preparation_evidence = await self._prepare_image(token, account, name, digest)
-                            evidence.update(preparation_evidence)
-                            if ready:
+                            await hold_lease()
+                            if await self._prepare_image(token, account, name, digest, evidence):
                                 return
                     await asyncio.sleep(_IMAGE_SETTLEMENT_INTERVAL)
         except TimeoutError:
@@ -597,8 +634,8 @@ class ContainerRegistry:
             ) from None
 
     async def _prepare_image(
-        self, token: SecretStr, account: str, name: str, digest: str,
-    ) -> tuple[bool, dict[str, str]]:
+        self, token: SecretStr, account: str, name: str, digest: str, evidence: dict[str, str],
+    ) -> bool:
         # The digest-pinned POST idempotently starts or observes preparation.
         # https://developers.cloudflare.com/api/resources/containers/subresources/images/methods/prepare/
         image = f"{REGISTRY}/{account}/{name}@{digest}"
@@ -609,15 +646,14 @@ class ContainerRegistry:
         preparation = response["result"]
         row = preparation if isinstance(preparation, dict) else {}
         status = row.get("status")
-        evidence = {
-            "registry_tag": "exact_digest",
+        evidence.update({
             "preparation_http_status": str(response["_http_status"]),
             "preparation_shape": {"dict": "object", "list": "array", "NoneType": "null"}.get(
                 type(preparation).__name__, "scalar",
             ),
             "preparation_fields": ",".join(key for key in ("image", "status", "artifact_digest", "reason") if key in row),
             "preparation_status": status if status in ("pending", "ready", "error") else "unknown",
-        }
+        })
         if "image" in row and row["image"] != image:
             raise OwnershipConflict(
                 "Container preparation refers to a different image",
@@ -629,7 +665,7 @@ class ContainerRegistry:
                 OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
                 evidence=evidence,
             )
-        return status == "ready", evidence
+        return status == "ready"
 
     async def _require_tag_digest(self, tag: str, digest: str, cwd: Path) -> None:
         observed_digest = await run_oci_tool(self.crane, "digest", tag, cwd=cwd)

@@ -21,7 +21,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from pydantic import SecretStr, ValidationError
 from src.jobs.platform import cloudflare_enable
-from src.jobs.platform.base import PlatformJobContext, PlatformJobRequiresAction
+from src.jobs.platform.base import PlatformJobCancelled, PlatformJobContext, PlatformJobRequiresAction
 from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool import cloudflare_containers_admission, cloudflare_containers_rest
@@ -45,7 +45,10 @@ from src.services.worker_pool.cloudflare_containers_release import (
     ContainersManifest,
     ContainersReleaseFetchError,
     ContainersReleaseUnavailable,
+    OCIToolError,
+    OCIToolFailure,
     load_containers_release,
+    run_oci_tool,
     verify_containers_release,
 )
 from src.services.worker_pool.cloudflare_containers_rest import (
@@ -245,6 +248,11 @@ async def test_release_fetch_distinguishes_settling_from_terminal_errors(tmp_pat
     ([], True, False, "tag_lag"),
     ([], True, False, "timeout"),
     ([], True, False, "wrong_digest"),
+    ([], True, False, "digest_lag"),
+    ([], True, False, "digest_timeout"),
+    ([], True, False, "digest_auth"),
+    ([], True, False, "digest_tool_missing"),
+    ([], True, False, "digest_cumulative"),
 ])
 async def test_registry_replays_only_into_an_empty_repository(
     tmp_path, monkeypatch, initial_tags, previously_sent, conflict, preparation,
@@ -258,9 +266,17 @@ async def test_registry_replays_only_into_an_empty_repository(
     copies = []
     preparations = []
     tag_reads = 0
+    digest_reads = 0
+    digest_failure = {
+        "digest_lag": OCIToolFailure.TAG_NOT_VISIBLE,
+        "digest_timeout": OCIToolFailure.TIMEOUT,
+        "digest_auth": OCIToolFailure.REGISTRY_AUTH,
+        "digest_tool_missing": OCIToolFailure.NOT_FOUND,
+        "digest_cumulative": OCIToolFailure.REGISTRY_AUTH,
+    }.get(preparation)
 
     async def tool(executable, *args, **kwargs):
-        nonlocal tag_reads
+        nonlocal tag_reads, digest_reads
         if args == ("version",):
             return b"0.20.6"
         if args == ("--version",):
@@ -273,6 +289,11 @@ async def test_registry_replays_only_into_an_empty_repository(
                 return json_bytes([])
             return json_bytes([{"name": name, "tags": tags}] if tags or initial_tags is not None else [])
         if args[0] == "digest":
+            digest_reads += 1
+            if preparation == "digest_cumulative" and digest_reads <= 2:
+                raise OCIToolError(OCIToolFailure.TAG_NOT_VISIBLE)
+            if digest_failure is not None and (preparation != "digest_lag" or digest_reads <= 2):
+                raise OCIToolError(digest_failure)
             return (("sha256:" + "b" * 64) if preparation == "wrong_digest" else release.manifest.image_digest).encode()
         if args[0] == "manifest":
             return image + b"\n"
@@ -293,7 +314,7 @@ async def test_registry_replays_only_into_an_empty_repository(
             digest = release.manifest.image_digest
             assert body == {"image": f"registry.cloudflare.com/{ACCOUNT}/{name}@{digest}"}
             status = preparation if not preparations else "ready"
-            if preparation == "tag_lag":
+            if preparation in {"tag_lag", "digest_lag"}:
                 status = "ready"
             if preparation == "timeout":
                 status = "pending"
@@ -313,29 +334,35 @@ async def test_registry_replays_only_into_an_empty_repository(
 
     monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_rest.run_oci_tool", tool)
     monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_SETTLEMENT_INTERVAL", 0)
-    if preparation == "timeout":
+    if preparation in {"timeout", "digest_timeout"}:
         monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_SETTLEMENT_SECONDS", 0)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         registry = ContainerRegistry(ContainersRest(http), crane=tmp_path / "crane", cf=tmp_path / "cf")
+
+        async def copy():
+            return await registry.copy(
+                TOKEN, intent, release, previously_sent=previously_sent, hold_lease=AsyncMock(),
+            )
+
         if conflict:
             with pytest.raises(OwnershipConflict):
-                await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
+                await copy()
             assert not permissions and not copies and not preparations
             return
         if preparation in {"foreign_after_copy", "wrong_digest"}:
             with pytest.raises(OwnershipConflict):
-                await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
+                await copy()
             assert not preparations
             return
         if preparation in {"error", "wrong_image"}:
             error = ObservationPending if preparation == "error" else OwnershipConflict
             with pytest.raises(error):
-                await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
+                await copy()
             assert preparations == [preparation]
             return
         if preparation == "timeout":
             with pytest.raises(ObservationSettling) as failure:
-                await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
+                await copy()
             details = failure.value.as_result()
             assert details["preparation_http_status"] == "202"
             assert details["preparation_status"] == "pending"
@@ -344,14 +371,71 @@ async def test_registry_replays_only_into_an_empty_repository(
             assert "private-provider" not in json.dumps(details)
             assert preparations == ["pending"] and len(copies) == 1
             return
-        result = await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
+        if digest_failure is not None and preparation != "digest_lag":
+            error = ObservationSettling if preparation == "digest_timeout" else ObservationPending
+            with pytest.raises(error) as failure:
+                await copy()
+            assert type(failure.value) is error
+            details = failure.value.as_result()
+            assert details["digest_failure_class"] == digest_failure.value
+            expected_failed_reads = 3 if preparation == "digest_cumulative" else 1
+            assert details["digest_failure_count"] == str(expected_failed_reads)
+            assert details["registry_tag"] == "unconfirmed_digest"
+            assert digest_reads == expected_failed_reads and not preparations
+            return
+        result = await copy()
         assert preparations == (["pending", "ready"] if preparation == "pending" else ["ready"])
+        if preparation == "digest_lag":
+            assert digest_reads == 3
         assert result.provider_version == release.manifest.image_digest
         if initial_tags:
             assert permissions == [["pull"]] and not copies
         else:
             assert permissions == [["pull", "push"]]
             assert copies == [("copy", release.manifest.image, result.provider_id)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("stderr", "failure"), [
+    ("HEAD registry.invalid: unexpected status code 403 Forbidden", OCIToolFailure.REGISTRY_AUTH),
+    ("GET registry.invalid: UNAUTHORIZED: fixture credential", OCIToolFailure.REGISTRY_AUTH),
+    ("HEAD registry.invalid: unexpected status code 404 Not Found", OCIToolFailure.TAG_NOT_VISIBLE),
+    ("GET registry.invalid: unexpected status code 503 Service Unavailable", OCIToolFailure.REGISTRY_UNAVAILABLE),
+    (None, OCIToolFailure.NOT_FOUND),
+])
+async def test_crane_digest_classifies_tool_failure_without_exposing_stderr(tmp_path, stderr, failure):
+    crane = tmp_path / "crane"
+    if stderr is not None:
+        crane.write_text(f"#!/bin/sh\nprintf '%s\\n' '{stderr}' >&2\nexit 1\n")
+        crane.chmod(0o700)
+    with pytest.raises(OCIToolError) as error:
+        await run_oci_tool(crane, "digest", "fixture-tag", cwd=tmp_path)
+    assert error.value.failure is failure
+    assert str(error.value) == "Container release tool failed"
+
+
+@pytest.mark.asyncio
+async def test_lost_lease_cancels_in_flight_registry_copy(tmp_path, monkeypatch):
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def hold_lease():
+        if started.is_set():
+            raise PlatformJobCancelled
+
+    async def copy_tool(*_args, **_kwargs):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_COPY_LEASE_INTERVAL", 0)
+    monkeypatch.setattr(cloudflare_containers_rest, "run_oci_tool", copy_tool)
+    registry = ContainerRegistry(Mock())
+    with pytest.raises(PlatformJobCancelled):
+        await registry._copy_while_current("source", "destination", tmp_path, hold_lease)
+    assert started.is_set() and cancelled.is_set()
 
 
 @pytest.mark.asyncio

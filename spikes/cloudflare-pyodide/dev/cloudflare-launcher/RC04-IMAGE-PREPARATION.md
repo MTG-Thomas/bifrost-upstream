@@ -27,8 +27,14 @@ retains the OCI image digest separately. [Preparation API](https://developers.cl
    before the copy. Copy only to the intended repository and release tag.
 2. For up to 180 seconds after the copy, poll exact repository inventory and
    the tag's digest at five-second intervals. An absent tag or an OCI read
-   that cannot confirm a listed tag is still settling. Unexpected tags or a
-   different digest violate the ownership fence.
+   reporting a missing manifest, timeout, or transient registry failure is
+   still settling. Authentication failures, missing tools, and unclassified
+   tool rejections stop immediately. Failure evidence records the last
+   sanitized digest failure class and the total number of failed reads.
+   Unexpected tags or a different digest violate the ownership fence.
+   The source manifest and config are verified before copy. Destination
+   readback uses the registry-reported digest because that digest pins the
+   verified OCI manifest and its config and layer descriptors.
 3. Once the exact digest is visible, send the idempotent preparation POST.
    Continue on pending and accept ready for that exact digest-pinned image.
    Terminal error or unexpected shape holds admission closed. Evidence records
@@ -36,10 +42,13 @@ retains the OCI image digest separately. [Preparation API](https://developers.cl
    presence of known fields. It excludes provider messages, unknown keys,
    image URLs, and credentials.
 4. The PlatformJob resource key excludes concurrent lifecycle jobs for the
-   same installation while the attempt owns its lease. The registry calls and
-   sleeps run outside database transactions. Task cancellation interrupts the
-   wait and the OCI wrapper terminates an in-flight subprocess. Recheck the
-   lease and journal before storing a receipt or proceeding to deployment.
+   same installation while the attempt owns its lease. Check the lease and
+   installation revision before touching the registry, immediately before the
+   copy, during the copy, and on every poll. Each check uses a short
+   transaction. The registry calls and sleeps run independently of those
+   transactions. Lease loss cancels an in-flight copy and stops further
+   provider work. Recheck the lease and journal before storing a receipt or
+   proceeding to deployment.
 5. An exhausted wait produces a retryable `CF_DEPLOYMENT_UNVERIFIED` with
    the last sanitized observation. Enable already has three attempts and
    delays of 15 and 45 seconds. Requeue clears the old lease and preserves
@@ -94,3 +103,5 @@ under fresh incarnation and launcher IDs with empty inventory. A routine
 reconnect still retains its identity and children. Managed workers keep
 their existing provider-bound retirement paths. Disconnect still runs
 through the ordinary fenced PlatformJob claim path on a ready executor.
+An explicitly retired static row still receives a generic 1008 refusal.
+Automatic re-enrollment applies to static rows the liveness sweep marked lost.

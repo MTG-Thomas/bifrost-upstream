@@ -3325,6 +3325,83 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
 
 
 @pytest.mark.asyncio
+async def test_container_image_preparation_stops_when_copy_loses_its_lease(db_session, installation, monkeypatch):
+    from src.services.worker_pool import cloudflare_containers_rest
+    from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+
+    release, image, config = make_release()
+    installation.desired_state = "enabled"
+    job = PlatformJob(
+        id=uuid4(), job_type="capacity.cloudflare_enable", payload={}, title="Fixture Enable",
+        status="running", lease_token=uuid4(), lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        requested_by_user_id=str(OPERATOR_ID), requested_by_email="operator@example.test", requested_by_name="Operator",
+    )
+    db_session.add(job)
+    await db_session.flush()
+    context = PlatformJobContext(job.id, job.lease_token, None, str(OPERATOR_ID), "", "")
+    connection = await db_session.connection()
+    transaction_open = False
+    copied = False
+
+    @asynccontextmanager
+    async def transaction():
+        nonlocal transaction_open
+        transaction_open = True
+        try:
+            async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as db:
+                yield db
+                await db.commit()
+        finally:
+            transaction_open = False
+
+    async def tool(_executable, *args, **_kwargs):
+        nonlocal copied
+        assert not copied, "A fenced job must stop before the next registry poll"
+        if args == ("--version",):
+            return b"1.0.0-beta.31"
+        if args == ("version",):
+            return b"0.20.6"
+        if args == ("accounts", "get", "-q"):
+            return json.dumps({"id": installation.account_id}).encode()
+        if args[:3] == ("containers", "images", "list"):
+            return b"[]"
+        if args == ("manifest", release.manifest.image):
+            return image
+        if args == ("config", release.manifest.image):
+            return config
+        if args[0] == "copy":
+            assert not transaction_open
+            await db_session.execute(update(PlatformJob).where(PlatformJob.id == job.id).values(
+                status="queued", lease_token=None, lease_expires_at=None,
+            ))
+            copied = True
+            return b""
+        pytest.fail(f"Unexpected fixture registry command {args[0]}")
+
+    def provider(request):
+        assert not copied and not transaction_open
+        assert request.url.path.endswith("/containers/registries/registry.cloudflare.com/credentials")
+        return httpx.Response(200, json={"success": True, "result": {
+            "account_id": installation.account_id, "registry_host": "registry.cloudflare.com",
+            "username": "fixture", "password": "fixture",
+        }})
+
+    monkeypatch.setattr(enable_job, "get_db_context", transaction)
+    monkeypatch.setattr(cloudflare_containers_rest, "run_oci_tool", tool)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=installation.desired_revision)
+        with pytest.raises(PlatformJobCancelled):
+            await enable_job._deploy_container_launcher(context, payload, http, ContainersRest(http), release)
+    assert copied
+    resources = (await db_session.scalars(select(CloudflareOwnedResource).where(
+        CloudflareOwnedResource.installation_id == installation.id,
+    ))).all()
+    receipt, = resources
+    assert receipt.kind == "container_image" and receipt.state == "creating"
+    assert receipt.provider_id is None and receipt.provider_details["creation_sent"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("registry_tag", ["matching", "absent", "foreign_digest"])
 async def test_disconnect_after_unconfirmed_image_create(
     db_session, installation, monkeypatch, lifecycle_audit_actor, registry_tag,
