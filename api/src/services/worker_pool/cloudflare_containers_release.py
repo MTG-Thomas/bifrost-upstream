@@ -145,10 +145,10 @@ async def run_oci_tool(
             raise
     except FileNotFoundError:
         raise OCIToolError(OCIToolFailure.NOT_FOUND) from None
-    except OSError:
-        raise OCIToolError(OCIToolFailure.START_FAILED) from None
     except TimeoutError:
         raise OCIToolError(OCIToolFailure.TIMEOUT) from None
+    except OSError:
+        raise OCIToolError(OCIToolFailure.START_FAILED) from None
     if process.returncode:
         raise OCIToolError(_digest_failure(diagnostic) if diagnose_digest else OCIToolFailure.REJECTED)
     if len(output) > 4 * 1024 * 1024:

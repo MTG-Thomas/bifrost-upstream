@@ -415,6 +415,17 @@ async def test_crane_digest_classifies_tool_failure_without_exposing_stderr(tmp_
 
 
 @pytest.mark.asyncio
+async def test_crane_digest_timeout_is_a_retryable_readback_failure(tmp_path):
+    crane = tmp_path / "crane"
+    crane.write_text("#!/bin/sh\nexec sleep 60\n")
+    crane.chmod(0o700)
+    with pytest.raises(OCIToolError) as error:
+        await run_oci_tool(crane, "digest", "fixture-tag", cwd=tmp_path, timeout=0)
+    assert error.value.failure is OCIToolFailure.TIMEOUT
+    assert error.value.retryable_readback
+
+
+@pytest.mark.asyncio
 async def test_lost_lease_cancels_in_flight_registry_copy(tmp_path, monkeypatch):
     started = asyncio.Event()
     cancelled = asyncio.Event()
