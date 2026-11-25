@@ -101,7 +101,7 @@ async def test_managed_guest_reconnect_and_canary_refusal_preserve_the_fatal_rep
     launcher = Launcher(
         dropped, identity=LauncherIdentity.from_environment({"HOSTNAME": "fixture"}),
         secret="fixture-control-key", containers=True, container_release="a" * 64,
-        container_probe_nonce="probe", container_deadline=launcher_module.time.monotonic() + 60,
+        container_probe_nonce="p" * 43, container_deadline=launcher_module.time.monotonic() + 60,
     )
     with pytest.raises(ConnectionError, match="drop"):
         await launcher.hello({})
@@ -449,7 +449,8 @@ async def test_failed_guest_stop_disarms_reader_and_leaves_terminal_unresolved(m
         await launcher.terminate(child.route_id, "CancelledError", "Cancelled")
     assert launcher.failed and launcher.retired.is_set()
     assert not launcher.pending_terminal
-    launcher.socket.send.assert_not_awaited()
+    sent = [ControlEnvelope.from_json(call.args[0]).payload for call in launcher.socket.send.await_args_list]
+    assert [payload.get("event") for payload in sent] == ["guest_fatal"]
 
 
 @pytest.mark.asyncio
