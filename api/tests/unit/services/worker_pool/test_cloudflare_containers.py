@@ -442,10 +442,11 @@ async def test_registry_replays_only_into_an_empty_repository(
 @pytest.mark.parametrize(("stderr", "failure"), [
     ("HEAD registry.invalid: unexpected status code 403 Forbidden", OCIToolFailure.REGISTRY_AUTH),
     ("GET registry.invalid: UNAUTHORIZED: fixture credential", OCIToolFailure.REGISTRY_AUTH),
-    (
+    pytest.param(
         "Warning: HEAD request failed, falling back on GET: " + "x" * 5000
         + "\nError: GET registry.invalid: unexpected status code 401 Unauthorized",
         OCIToolFailure.REGISTRY_AUTH,
+        id="long-head-warning-final-auth",
     ),
     ("HEAD registry.invalid: unexpected status code 404 Not Found", OCIToolFailure.IMAGE_NOT_FOUND),
     (
