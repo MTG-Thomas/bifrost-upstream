@@ -33,7 +33,10 @@ leave only the last stage and provider terminal metadata.
 
 The local failure rehearsal layers
 `spikes/cloudflare-pyodide/dev/e2e/combined-guest-site/sitecustomize.py` at
-`/app/sitecustomize.py` in its local guest image. It runs the real guest through
+`/app/sitecustomize.py` in its local guest image. Use a fresh `combined-local-*`
+archive with mode `0700` and stage the hook under `api/` in that archive
+before building. The root Docker build context excludes `spikes/`.
+The hook runs the real guest through
 signed hello and bootstrap, then injects a requirements failure. Use
 `--containers-hosted-shape --exercise-guest-fatal` on the isolated local stack.
 The runner checks the failure in Capacity and the job, settlement, and

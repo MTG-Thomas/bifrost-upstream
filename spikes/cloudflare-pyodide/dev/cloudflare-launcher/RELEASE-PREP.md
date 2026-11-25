@@ -2,12 +2,12 @@
 
 **Prepared locally. Publication is held for the frozen-target release review,
 owner approval, and fork settings checks.**
-The exact rc04 release candidate is `38c3ff0e6f836a656db903ac16eed4323ae4c392`
-on local branch `t3/cloudflare-release-rc04`. It includes the image preparation
-wait, lease-fenced registry copy, exact registry cleanup, runner evidence fixes,
-and automatic recovery when a static worker loses its incarnation.
-See [rc04 image preparation and cleanup](RC04-IMAGE-PREPARATION.md).
-The approved release body remains byte-identical to rc02 and rc03. Push the pinned candidate to
+The exact rc05 release candidate is `e518d0d9ef181372b25834f355ab4d88b03d0b89`
+on local branch `t3/cloudflare-release-rc05`. It settles failed placements,
+recovers the retained rc04 Disconnect journal, and records signed guest
+startup and close evidence without changing the capacity or SDK protocol.
+No database migration is required. See [rc05 startup and recovery](RC05-CONTAINER-STARTUP.md).
+The approved release body remains byte-identical to rc02, rc03 and rc04. Push the pinned candidate to
 `trial/cloudflare-containers-20261124` on `personal`
 (`MTG-Thomas/bifrost-upstream`). Keep the fork's `main` unchanged. The tag
 pins the commit before this documentation receipt.
@@ -36,21 +36,21 @@ pins the commit before this documentation receipt.
   variables on fork tags. The ten-digit date-based RC namespace is reserved
   for fork trials and rejected on upstream. Ordinary upstream tags retain
   optional packaging. The workflow uses the fork's `GITHUB_TOKEN`.
-- The fork published rc03 from `01393ec44c77ba509d05c7d0b258dc35e7a15571`.
-  Hosted attempt four reached Activate, then exposed preparation and image
-  cleanup failures. The new tag is **`v2.0.0-rc.2026112404`**.
+- The fork published rc04 from `38c3ff0e6f836a656db903ac16eed4323ae4c392`.
+  Hosted attempt five exposed failed-placement settlement and a separate,
+  undetermined post-hello guest failure. The new tag is **`v2.0.0-rc.2026112501`**.
   The exact tag was absent on both remotes during preparation. The fork trial
-  branch pointed to rc03, an ancestor of this candidate. Recheck both refs
+  branch pointed to rc04, an ancestor of this candidate. Recheck both refs
   at the approval gate. The ten-digit
   suffix reserves it for fork trials and keeps the prerelease off `:latest`.
 - CI strips the leading `v` and sets both the API version and
-  `workers.release_version` to `2.0.0-rc.2026112404`. The version exceeds
+  `workers.release_version` to `2.0.0-rc.2026112501`. The version exceeds
   the CLI floor of `1.4.3`, and the API reconstructs the exact tag from the
   packaged Workers version. The CLI tarball uses PEP 440 metadata
-  `2.0.0rc2026112404`. The signer identity would be
-  `https://github.com/MTG-Thomas/bifrost-upstream/.github/workflows/ci.yml@refs/tags/v2.0.0-rc.2026112404`.
+  `2.0.0rc2026112501`. The signer identity would be
+  `https://github.com/MTG-Thomas/bifrost-upstream/.github/workflows/ci.yml@refs/tags/v2.0.0-rc.2026112501`.
 - The three plugin manifests match the prerelease version. The tag workflow
-  selects `product-updates/release-bodies/v2.0.0-rc.2026112404.md` by exact
+  selects `product-updates/release-bodies/v2.0.0-rc.2026112501.md` by exact
   filename. The approved rc02, rc03 and rc04 bodies are retained.
   The general `scripts/release-check.sh` preflight requires a separately
   rendered Product Updates body with reviewed inventory metadata. The fork
@@ -66,10 +66,10 @@ destination branch. Use only the explicit `personal` refspecs below.
 Never use `git push --tags` or `git push --follow-tags`. The commands remain unrun.
 
 ```sh
-git tag -a v2.0.0-rc.2026112404 38c3ff0e6f836a656db903ac16eed4323ae4c392 -m "Cloudflare Containers Trial"
-test "$(git rev-parse 'v2.0.0-rc.2026112404^{commit}')" = 38c3ff0e6f836a656db903ac16eed4323ae4c392 || exit 1
-git -c push.followTags=false push personal 38c3ff0e6f836a656db903ac16eed4323ae4c392:refs/heads/trial/cloudflare-containers-20261124
-git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112404:refs/tags/v2.0.0-rc.2026112404
+git tag -a v2.0.0-rc.2026112501 e518d0d9ef181372b25834f355ab4d88b03d0b89 -m "Cloudflare Containers Trial"
+test "$(git rev-parse 'v2.0.0-rc.2026112501^{commit}')" = e518d0d9ef181372b25834f355ab4d88b03d0b89 || exit 1
+git -c push.followTags=false push personal e518d0d9ef181372b25834f355ab4d88b03d0b89:refs/heads/trial/cloudflare-containers-20261124
+git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112501:refs/tags/v2.0.0-rc.2026112501
 ```
 
 The tag runs the full CI test suite on the fork's GitHub Actions before
@@ -81,7 +81,7 @@ publication. Release outputs and signing are described below.
 | --- | --- | --- |
 | `QUALIFIED_WORKERS_RUNTIME_URL` | CI downloads the exact qualified runtime over HTTPS without credentials. The builder pins SHA-256 `11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254`. | Confirm the fork repository variable and anonymously readable URL. Bringing up a new public runtime artifact would need to be included in the approval. |
 | `QUALIFIED_WORKERS_METER_BOUNDS` | Use exact JSON from `api/src/services/worker_pool/cloudflare_meter_bounds.json` on the release commit. The builder checks the bounds and bundle fingerprints. | Confirm the value in Actions variables and match it to the release commit. |
-| `CONTAINERS_RELEASE_RATES` | Required for Linux packaging when the qualified Workers build is enabled. Exact proposed JSON below. | Confirm the configured value or approve setting it. Absent optional packaging variables can allow a release without the Containers artifacts, so verify all three before pushing. |
+| `CONTAINERS_RELEASE_RATES` | Required for a fork tag. The workflow verifies all three packaging variables before registry writes and checks the Containers artifacts before staging the release. Exact proposed JSON below. | Confirm the configured value or approve setting it. |
 | Workflow token | Uses GitHub's built-in `GITHUB_TOKEN`. No custom secret, Cloudflare token, PAT, or static signing key is referenced by the release workflow. | Confirm access to push the approved branch and tag, tag rules, and policies permitting the job-scoped token permissions. |
 | Actions and GHCR | Image jobs request `packages: write`, `id-token: write` and `attestations: write`. Release staging requests `contents: write`, `id-token: write` and `attestations: write`. Promotion requests `packages: write` and `contents: write`. | Confirm Actions enabled on the fork, pinned actions and GitHub-hosted runners allowed, GitHub OIDC and attestations available, and package creation and writes permitted. Give the fork repository Actions access to any existing destination packages. |
 | Public reads | The API fetches the three GitHub Release assets anonymously and checks the public Linux OCI digest. | Confirm the release assets can be made public. After the package exists, make only the Linux package public under the approved scope and verify an anonymous digest read. Arrange authorized pulls for API and client images if private. Retain the release, assets and Linux image after the trial. |
