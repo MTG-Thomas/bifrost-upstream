@@ -36,8 +36,10 @@ The local failure rehearsal layers
 `/app/sitecustomize.py` in its local guest image. Use a fresh `combined-local-*`
 archive with mode `0700` and stage the hook under `api/` in that archive
 before building. The root Docker build context excludes `spikes/`.
-The hook runs the real guest through
-signed hello and bootstrap, then injects a requirements failure. Use
+The hook runs the real guest through signed hello and bootstrap, then
+injects a requirements failure. The fault fixture disables Docker restart
+for the exact guest before it forwards hello, preserving the exit receipt.
+Use
 `--containers-hosted-shape --exercise-guest-fatal` on the isolated local stack.
 The runner checks the failure in Capacity and the job, settlement, and
 Disconnect. The hook is excluded from all release image recipes.
