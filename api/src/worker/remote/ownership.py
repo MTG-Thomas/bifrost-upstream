@@ -51,14 +51,16 @@ def _remaining_lease_ms() -> ColumnElement[int]:
 
 
 def remote_enrollment_is_live(container_release: str | None = None) -> ColumnElement[bool]:
-    """A terminal Cloudflare row revokes the lease even before clock expiry."""
+    """Lost static and terminal Cloudflare rows revoke their owner leases."""
     container_binding = container_identity_matches(ExecutionWorker.id, container_release)
     if container_release is not None:
         return container_binding & ExecutionWorker.state.in_(("ready", "draining"))
     return or_(
         ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
         ExecutionWorker.state.in_(("ready", "draining")),
-    ) & container_binding
+    ) & container_binding & ~(
+        (ExecutionWorker.form == "static") & (ExecutionWorker.state == "lost")
+    )
 
 
 async def acquire_remote_owner(

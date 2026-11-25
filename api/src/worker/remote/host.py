@@ -110,6 +110,7 @@ from src.worker.remote.protocol import (
     CLOUDFLARE_WORKFLOW_HANDLER,
     LEGACY_EXECUTION_HANDLERS,
     LINUX_RUNTIME_PROFILE,
+    STATIC_INCARNATION_LOST,
     SUMMARY_CLAIM_PROTOCOL,
     AuthenticationError,
     CloudflareRevisionRejected,
@@ -2229,6 +2230,7 @@ class RemoteControlHost:
                     hostname=hello.hostname,
                     version=version if isinstance(version, str) else None,
                     incarnation_id=hello.incarnation_id,
+                    launcher_id=hello.launcher_id,
                     supported_handlers=[handler for handler, _version in bootstrap["handlers"]],
                     execution_lane=hello.execution_lane,
                 )
@@ -2261,6 +2263,18 @@ class RemoteControlHost:
                 if ended is not None:
                     await socket.close(code=CLOUDFLARE_INCARNATION_ENDED, reason="incarnation ended")
                     raise AuthenticationError("launcher incarnation ended")
+            elif hello.form == "static":
+                async with get_liveness_db_context() as db:
+                    lost = await db.scalar(select(ExecutionWorker.id).where(
+                        ExecutionWorker.id == hello.incarnation_id,
+                        ExecutionWorker.form == "static",
+                        ExecutionWorker.execution_lane == hello.execution_lane,
+                        ExecutionWorker.remote_launcher_id == hello.launcher_id,
+                        ExecutionWorker.state == "lost",
+                    ))
+                if lost is not None:
+                    await socket.close(code=STATIC_INCARNATION_LOST, reason="static incarnation lost")
+                    raise AuthenticationError("static launcher incarnation lost")
             await socket.close(code=1008)
             raise AuthenticationError("launcher ownership was refused")
         existing = self.sessions.get(lease.worker_id)

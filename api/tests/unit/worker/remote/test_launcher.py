@@ -6,12 +6,15 @@ import asyncio
 import json
 import os
 import signal
+from contextlib import asynccontextmanager
 from queue import Empty
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+from websockets.exceptions import ConnectionClosedError
+from websockets.frames import Close
 from src.services.execution.container_result import InvalidContainerResult
 from src.worker.network import worker_network
 from src.worker.remote.identity import LauncherIdentity
@@ -22,7 +25,65 @@ from src.worker.remote.launcher import (
     _load_container_lifetime,
     _load_containers_control_secret,
 )
-from src.worker.remote.protocol import ControlEnvelope
+from src.worker.remote.protocol import STATIC_INCARNATION_LOST, ControlEnvelope
+
+
+@pytest.mark.asyncio
+async def test_static_launcher_reconnects_until_the_host_confirms_loss(monkeypatch) -> None:
+    from src.worker.remote import launcher as launcher_module
+
+    identity = LauncherIdentity.from_environment({"HOSTNAME": "static"})
+    hellos = []
+    received = []
+    stopped = []
+    statuses = iter([None, 1008, STATIC_INCARNATION_LOST, None])
+
+    @asynccontextmanager
+    async def connect(*_args):
+        code = next(statuses)
+
+        async def send(raw):
+            frame = json.loads(raw)
+            if frame.get("event") == "hello":
+                hellos.append(frame["hello"])
+
+        async def recv():
+            if code is not None:
+                raise ConnectionClosedError(Close(code, ""), None)
+            return json.dumps({"event": "welcome", "session_generation": 1})
+
+        yield SimpleNamespace(send=send, recv=recv)
+
+    async def receive(launcher, _socket, _stopping, _drain):
+        received.append(launcher)
+        if len(received) == 1:
+            launcher.pending_terminal["old"] = {"event": "result"}
+            raise ConnectionClosedError(Close(1008, ""), None)
+        assert stopped == [received[0]]
+        assert not launcher.pending_terminal
+        launcher.retired.set()
+
+    async def stop(launcher):
+        stopped.append(launcher)
+
+    monkeypatch.setenv("BIFROST_SECRET_KEY", "synthetic")
+    monkeypatch.setattr(launcher_module, "load_launcher_identity", lambda: identity)
+    monkeypatch.setattr(launcher_module, "connect_control", connect)
+    monkeypatch.setattr(launcher_module, "_receive_control_commands", receive)
+    monkeypatch.setattr(launcher_module, "effective_memory_sample", lambda: (1, 100))
+    monkeypatch.setattr(launcher_module, "memory_pressure_ratio", lambda: 0.01)
+    monkeypatch.setattr(launcher_module.Launcher, "start", AsyncMock())
+    monkeypatch.setattr(launcher_module.Launcher, "stop", stop)
+    monkeypatch.setattr(asyncio.get_running_loop(), "add_signal_handler", Mock())
+
+    assert await launcher_module._run_launcher() == 0
+
+    assert len(hellos) == 4
+    assert [hello["incarnation_id"] for hello in hellos[:3]] == [str(identity.incarnation_id)] * 3
+    assert [hello["hello_sequence"] for hello in hellos] == [1, 2, 3, 1]
+    assert hellos[-1]["incarnation_id"] != str(identity.incarnation_id)
+    assert hellos[-1]["launcher_id"] != str(identity.launcher_id)
+    assert stopped == received
 
 
 @pytest.mark.parametrize("name", [

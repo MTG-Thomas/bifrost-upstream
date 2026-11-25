@@ -16,11 +16,13 @@ import signal
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty
 from typing import Any, NamedTuple
 from uuid import UUID, uuid4
+
+from websockets.exceptions import ConnectionClosed
 
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from shared.version import get_version
@@ -44,6 +46,7 @@ from src.worker.remote.protocol import (
     CREDENTIAL_PROTOCOL,
     EXECUTION_HANDLERS,
     LINUX_RUNTIME_PROFILE,
+    STATIC_INCARNATION_LOST,
     SUMMARY_CLAIM_PROTOCOL,
     ControlEnvelope,
     FragmentAssembler,
@@ -1215,6 +1218,18 @@ async def _run_launcher(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if (
+                    candidate is not None and identity.form == "static" and not stopping.is_set()
+                    and isinstance(exc, ConnectionClosed) and exc.rcvd is not None
+                    and exc.rcvd.code == STATIC_INCARNATION_LOST
+                ):
+                    logger.warning("Static worker was declared lost; stopping local children and enrolling again")
+                    # The old database row and its claims stay terminal. A new
+                    # launcher starts with empty inventory and replay buffers.
+                    await candidate.stop()
+                    launcher = candidate = None
+                    identity = replace(identity, launcher_id=uuid4(), incarnation_id=uuid4())
+                    continue
                 if launcher is not None and launcher.failed:
                     message = "Remote launcher initialization or supervision failed"
                     level = logging.ERROR

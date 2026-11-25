@@ -154,6 +154,7 @@ async def register_static_worker(
     hostname: str,
     supported_handlers: list[str] | None = None,
     incarnation_id: UUID | None = None,
+    launcher_id: UUID | None = None,
     version: str | None = None,
     execution_lane: str = "normal",
 ) -> UUID:
@@ -162,7 +163,7 @@ async def register_static_worker(
     Its pool can take a minute or more to start, so it offers no capacity
     (and claims nothing) until ``mark_static_ready`` reports its measured
     budget. A remote physical launcher may supply its immutable incarnation
-    UUID; this always creates a new row and never adopts or overwrites one.
+    UUID and launcher binding; this creates a new row and never adopts one.
     ``version`` is the executor's reported build; missing reports stay unknown.
     """
     worker = ExecutionWorker(
@@ -175,6 +176,7 @@ async def register_static_worker(
             supported_handlers if supported_handlers is not None else REMOTE_WORKER_HANDLER_NAMES
         )),
         version=version,
+        remote_launcher_id=launcher_id,
         execution_lane=execution_lane,
         heartbeat_at=func.now(),
     )
