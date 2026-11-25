@@ -325,7 +325,9 @@ class ContainersRest(WorkersRestCleanup):
         observed = await self.observe_instance_outcome(
             token, application, instance_id=instance_id, image=image, not_before=not_before,
         )
-        if observed is None or observed.started_at is None:
+        if observed is None:
+            raise ObservationPending("Missing instance readback does not witness a stopped placement")
+        if observed.started_at is None:
             raise ObservationPending("Missing start readback does not witness a stopped placement")
         return observed
 

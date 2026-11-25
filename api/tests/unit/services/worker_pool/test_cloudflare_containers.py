@@ -1181,6 +1181,8 @@ async def test_exact_actor_failure_before_start(observed_container, state, repor
         if expected:
             outcome = await adapter.observe_instance_outcome(TOKEN, application, **args)
             assert outcome is not None and outcome.started_at is None and outcome.stopped_at == stopped
+            with pytest.raises(ObservationPending, match="Missing start readback"):
+                await ContainersRest(http).observe_instance_stop(TOKEN, application, **args)
         else:
             with pytest.raises(ObservationPending, match="has not witnessed a bounded stop"):
                 await adapter.observe_instance_outcome(TOKEN, application, **args)
