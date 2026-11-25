@@ -389,7 +389,7 @@ class Launcher:
             await self._send_guest_diagnostic()
 
     async def report_guest_fatal(self, error: BaseException) -> None:
-        if self.container_release is None or self._guest_fatal_attempted or self.session_generation < 1:
+        if not self.failed or self.container_release is None or self._guest_fatal_attempted or self.session_generation < 1:
             return
         self._guest_fatal_attempted = True
         await self._send_guest_diagnostic(error)
@@ -420,23 +420,27 @@ class Launcher:
     def task_finished(self, task: asyncio.Task[Any]) -> None:
         self._tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
-            if self.container_release is not None:
-                if task is not self._monitor_task and isinstance(error, (ConnectionError, ConnectionClosed)):
-                    return  # The control loop reconnects and replays pending terminal events.
-                if not self.failed:
-                    self.failed = True
-                    self.on_stop()
-                    logger.error("Managed Container supervision failed")
-                    self._failed_guest_close = asyncio.create_task(self._close_failed_guest(error))
-                return
             if task is self._monitor_task:
                 self.failed = True
                 self.on_stop()
-            logger.error("Launcher supervision failed", exc_info=error)
-            asyncio.create_task(self.socket.close(code=1011, reason="Launcher supervision failed"))
+            if self.container_release is None:
+                logger.error("Launcher supervision failed", exc_info=error)
+                asyncio.create_task(self.socket.close(code=1011, reason="Launcher supervision failed"))
+            elif task is self._monitor_task:
+                logger.error("Managed Container supervision failed")
+                self._failed_guest_close = asyncio.create_task(self._close_failed_guest(error))
+            elif not isinstance(error, (ConnectionError, ConnectionClosed)):
+                # Recover the control connection after a command task fails.
+                # The monitor still owns the lifetime of the physical guest.
+                reconnect = asyncio.create_task(self._close_guest_socket())
+                self._tasks.add(reconnect)
+                reconnect.add_done_callback(self._tasks.discard)
 
     async def _close_failed_guest(self, error: BaseException) -> None:
         await self.report_guest_fatal(error)
+        await self._close_guest_socket()
+
+    async def _close_guest_socket(self) -> None:
         with contextlib.suppress(ConnectionClosed, ConnectionError, OSError, TimeoutError):
             async with asyncio.timeout(0.5):
                 await self.socket.close(code=1011, reason="Launcher supervision failed")

@@ -18,7 +18,7 @@ from websockets.exceptions import ConnectionClosedError
 from websockets.frames import Close
 from src.services.execution.container_result import InvalidContainerResult
 from src.worker.network import worker_network
-from src.worker.remote.guest_diagnostics import guest_diagnostic_payload, verify_guest_diagnostic
+from src.worker.remote.guest_diagnostics import close_evidence, guest_diagnostic_payload, verify_guest_diagnostic
 from src.worker.remote.identity import LauncherIdentity
 from src.worker.remote.launcher import (
     Launcher,
@@ -43,6 +43,7 @@ async def test_managed_guest_reports_one_signed_fatal_per_incarnation(stage) -> 
     )
     launcher.session_generation = 1
     await launcher.note_guest_stage(stage)
+    launcher.failed = True
     await launcher.report_guest_fatal(RuntimeError("secret-only-in-the-exception"))
     await launcher.report_guest_fatal(ValueError("second-failure"))
 
@@ -64,6 +65,15 @@ def test_guest_diagnostic_keeps_only_the_allowlisted_tls_class() -> None:
     }
 
 
+def test_relay_fallback_keeps_only_the_close_category() -> None:
+    assert close_evidence(1011, "Container relay close fallback 1014") == {
+        "close_code": 1011, "close_category": "gateway",
+    }
+    assert close_evidence(1011, "Container relay close fallback 1014 secret") == {
+        "close_code": 1011, "close_category": "internal",
+    }
+
+
 @pytest.mark.asyncio
 async def test_managed_guest_fatal_delivery_is_bounded() -> None:
     async def stalled_send(_raw):
@@ -74,6 +84,7 @@ async def test_managed_guest_fatal_delivery_is_bounded() -> None:
         secret="fixture-control-key", containers=True, container_release="a" * 64,
     )
     launcher.session_generation = 1
+    launcher.failed = True
     async with asyncio.timeout(1):
         await launcher.report_guest_fatal(RuntimeError("guest could not start"))
 
@@ -103,8 +114,16 @@ async def test_managed_guest_reconnect_and_canary_refusal_preserve_the_fatal_rep
     monkeypatch.setattr(signal, "setitimer", Mock())
     await launcher.reconnect(reconnect, {})
     await launcher.command({"id": "probe", "action": "capacity_canary", "payload": {}}, generation=2)
-    launcher.failed = True
-    await launcher._close_failed_guest(RuntimeError("real fatal after reconnect"))
+
+    async def failed_monitor():
+        raise RuntimeError("real fatal after reconnect")
+
+    task = launcher.task(failed_monitor())
+    launcher._monitor_task = task
+    with pytest.raises(RuntimeError, match="real fatal"):
+        await task
+    assert launcher.failed and launcher._failed_guest_close is not None
+    await launcher._failed_guest_close
 
     dropped_stage = ControlEnvelope.from_json(dropped.send.await_args_list[-1].args[0])
     assert dropped_stage.payload["event"] == "guest_stage" and dropped_stage.payload["stage"] == "bootstrap"
