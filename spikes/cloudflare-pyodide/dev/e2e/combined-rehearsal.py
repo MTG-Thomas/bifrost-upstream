@@ -1225,25 +1225,35 @@ class HostedContainers(ContainerRehearsal):
         query = "?" + urlencode(params) if params else ""
         code, body = request_json(self.provider_origin + path + query, "GET",
                                   token=self.cfg["managementToken"])
-        assert code == 200 and body["success"]
-        return body["result"], body.get("result_info", {})
+        assert code == 200, f"Provider inventory returned HTTP {code}"
+        if isinstance(body, list) and path.endswith("/containers/applications") and not params:
+            return body, None
+        assert isinstance(body, dict) and body.get("success") is True, "Malformed inventory envelope"
+        assert "result_info" not in body or isinstance(body["result_info"], dict), "Malformed inventory metadata"
+        return body["result"], body.get("result_info")
 
     def inventory(self, path, *, cursor=False, single_page=False):
         rows, tokens = {}, set()
-        params = {} if single_page else {"per_page": 100}
+        # Applications default to an unbounded list without per_page or
+        # page_token. Only request a bounded page when following a cursor.
+        params = {}
         if not single_page and not cursor:
-            params["page"] = 1
+            params = {"page": 1, "per_page": 100}
         total = pages = None
-        page_size = None if single_page else 100
+        page_size = None
         for page in range(1, 101):
             batch, info = self.inventory_page(path, params)
+            if info is None:
+                assert single_page or (cursor and page == 1), "Missing paginated inventory metadata"
+                info = {}
             assert isinstance(batch, list) and isinstance(info, dict), "Malformed inventory envelope"
             count = info.get("count", len(batch))
             assert type(count) is int and count == len(batch), "Inventory page count mismatch"
             if "per_page" in info:
                 size = info["per_page"]
-                assert type(size) is int and size > 0 and (single_page or size <= 100), "Invalid inventory page size"
-                assert page == 1 or size == page_size, "Inventory page size changed"
+                assert type(size) is int and size > 0 and (single_page or size <= (500 if cursor else 1000)), \
+                    "Invalid inventory page size"
+                assert page_size is None or page == 1 or size == page_size, "Inventory page size changed"
                 page_size = size
             assert page_size is None or len(batch) <= page_size, "Oversized inventory page"
             assert all(isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]
@@ -1261,29 +1271,40 @@ class HostedContainers(ContainerRehearsal):
             token = info.get("next_page_token")
             echoed = info.get("page_token")
             assert echoed is None or echoed == params.get("page_token", ""), "Inventory cursor echo mismatch"
-            if pages is not None or "page" in info or "total_pages" in info:
-                assert not tokens and token in (None, "") and echoed is None, "Mixed inventory pagination modes"
-                reported_page, reported_pages = info.get("page"), info.get("total_pages")
+            if not cursor and not single_page:
+                assert token in (None, "") and echoed is None, "Mixed inventory pagination modes"
+                reported_page = info.get("page", page)
                 assert type(reported_page) is int and reported_page == page, "Inventory page number mismatch"
-                assert type(reported_pages) is int and 0 <= reported_pages <= 100, "Invalid inventory total_pages"
-                assert pages in (None, reported_pages), "Inventory total_pages changed"
-                pages = reported_pages
-                if page < pages:
-                    assert not single_page and len(batch) == page_size and total != len(rows), \
-                        "Inventory numbered continuation is inconsistent"
+                if "total_pages" in info:
+                    reported_pages = info["total_pages"]
+                    assert type(reported_pages) is int and 0 <= reported_pages <= 100, "Invalid inventory total_pages"
+                    assert pages in (None, reported_pages), "Inventory total_pages changed"
+                    pages = reported_pages
+                assert pages is None or page <= pages or (page == 1 and pages == 0 and not batch), \
+                    "Inventory page exceeds total_pages"
+                # Match the product namespace reader: a stable total_count
+                # can drive continuation even when total_pages is absent.
+                assert total is not None or pages is not None or page_size is not None, \
+                    "Numbered inventory has no total or page size"
+                more = total > len(rows) if total is not None else page_size == len(batch)
+                if pages is not None:
+                    assert total is None or (page < pages) == more, "Inventory numbered continuation is inconsistent"
+                    more = page < pages
+                if more:
+                    assert batch, "Inventory numbered continuation is inconsistent"
                     params["page"] = page + 1
                     continue
-                assert page <= pages or (page == 1 and pages == 0 and not batch), "Inventory page exceeds total_pages"
-                assert page == 1 or batch, "Empty terminal numbered inventory page"
-            elif token not in (None, ""):
+            else:
+                assert "page" not in info and "total_pages" not in info, "Mixed inventory pagination modes"
+            if token not in (None, ""):
                 assert not single_page and isinstance(token, str) and token not in tokens and batch \
                     and total != len(rows), "Invalid inventory cursor continuation"
                 tokens.add(token)
-                params.pop("page", None)
-                params["page_token"] = token
+                page_size = page_size or 100
+                params = {"page_token": token, "per_page": page_size}
                 continue
             else:
-                assert total is not None or page_size is None or len(batch) < page_size, \
+                assert pages is not None or total is not None or page_size is None or len(batch) < page_size, \
                     "Full inventory page has no continuation or total"
             assert total is None or total == len(rows), "Inventory ended before total_count"
             return list(rows.values())
@@ -1307,7 +1328,9 @@ class HostedContainers(ContainerRehearsal):
         namespaces = self.inventory(self.account_root + "/workers/durable_objects/namespaces")
         applications = self.inventory(self.account_root + "/containers/applications", cursor=True)
         registry = self.image_probe({"account": self.account, "token": self.cfg["managementToken"]})
-        assert all(isinstance(row["name"], str) and row["name"] and isinstance(row["tags"], list)
+        assert isinstance(registry, list) and all(
+                   isinstance(row, dict) and isinstance(row.get("name"), str) and row["name"]
+                   and isinstance(row.get("tags"), list)
                    and all(isinstance(tag, str) and tag for tag in row["tags"]) for row in registry)
         snapshot = {
             "scripts": {row["id"]: row.get("etag") for row in scripts},
@@ -1351,8 +1374,6 @@ class HostedContainers(ContainerRehearsal):
 
     def opening_inventory(self, plan):
         baseline = self.provider_snapshot()
-        assert all(isinstance(script, str) for script, _, _ in baseline["namespaces"].values()), \
-            "Pinned release requires script attribution on every namespace"
         occupied = sorted(kind for kind, matches in self.plan_matches(baseline, plan).items() if matches)
         if occupied:
             raise RuntimeError("Trial ownership collision: " + ", ".join(occupied))
@@ -1524,14 +1545,16 @@ class HostedContainers(ContainerRehearsal):
                 ), 'null')"""), 150)
             assert self.sql(f"SELECT count(*) FROM execution_worker_claims WHERE subject_id='{execution}'") == 1
             stopped = self.provider(f"{app_path}/instances/{placement}")
-            assert stopped["application_id"] == app["id"] and stopped["status"]["state"] == "stopped"
+            assert stopped["id"] == placement and stopped["application_id"] == app["id"]
+            assert stopped["status"]["state"] in ("stopped", "inactive")
             revoked = self.send(approval, method="DELETE")
             assert revoked["current_revision"] is None
             self.observe_scheduler("idle-stop", settled=True)
             self.completed(self.job("scale-in"), "scaled_in")
             assert not self.install()["admission_open"] and scripts <= self.scripts()
             assert owned_namespaces() == namespaces
-            assert self.provider(app_path)["health"]["instances"] == {"active": 0, "starting": 0}
+            counts = self.provider(app_path)["health"]["instances"]
+            assert all(type(counts.get(key)) is int and counts[key] == 0 for key in ("active", "starting"))
             self.observe_scheduler("scale-in", settled=True)
             self.enable()
             assert self.install()["desired_revision"] == revision and scripts <= self.scripts()

@@ -4,7 +4,7 @@ import importlib.util
 import unittest
 from copy import deepcopy
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location("combined_rehearsal", Path(__file__).with_name("combined-rehearsal.py"))
 runner = importlib.util.module_from_spec(spec)
@@ -43,10 +43,42 @@ class InventoryTests(unittest.TestCase):
     def test_foreign_near_misses_are_allowed(self):
         self.assertEqual(self.trial.opening_inventory(self.plan), self.baseline)
 
-    def test_unattributed_namespace_refuses_the_pinned_release(self):
+    def test_unattributed_foreign_namespace_is_supported_by_rc03(self):
         self.baseline["namespaces"]["detached"] = (None, "other", "Launcher")
-        with self.assertRaisesRegex(AssertionError, "requires script attribution"):
-            self.trial.opening_inventory(self.plan)
+        self.assertEqual(self.trial.opening_inventory(self.plan), self.baseline)
+
+    def test_snapshot_accepts_captured_provider_shapes(self):
+        namespace_rows = [
+            {"id": f"ns-{index}", "class": "Launcher", "name": "foreign", "script": "foreign-worker"}
+            for index in range(23)
+        ]
+        applications = [{"id": f"app-{index}", "name": f"foreign-app-{index}"} for index in range(5)]
+        registry = [{"name": "foreign-image", "tags": ["release"]}]
+        envelopes = [
+            {"success": True, "result": [{"id": "foreign-worker"}]},
+            {"success": True, "result": namespace_rows[:20],
+             "result_info": {"page": 1, "per_page": 20, "count": 20, "total_count": 23}},
+            {"success": True, "result": namespace_rows[20:],
+             "result_info": {"page": 2, "per_page": 20, "count": 3, "total_count": 23}},
+            {"success": True, "result": applications},
+        ]
+        self.trial.provider_origin = "https://provider.example.test"
+        self.trial.cfg = {"managementToken": "fixture"}
+        self.trial.image_probe = Mock(return_value=registry)
+        with patch.object(runner, "request_json", side_effect=[(200, body) for body in envelopes]) as http:
+            snapshot = runner.HostedContainers.provider_snapshot(self.trial)
+        self.assertEqual(list(snapshot["namespaces"]), [row["id"] for row in namespace_rows])
+        self.assertEqual(snapshot["applications"], {row["id"]: row["name"] for row in applications})
+        self.assertEqual(snapshot["registry"], {"foreign-image": frozenset({"release"})})
+        self.assertTrue(http.call_args_list[2].args[0].endswith("/namespaces?page=2&per_page=100"))
+        self.assertTrue(http.call_args_list[3].args[0].endswith("/containers/applications"))
+
+    def test_unbounded_applications_read_accepts_raw_array(self):
+        self.trial.provider_origin = "https://provider.example.test"
+        self.trial.cfg = {"managementToken": "fixture"}
+        apps = [{"id": "application", "name": "foreign-app"}]
+        with patch.object(runner, "request_json", return_value=(200, apps)):
+            self.assertEqual(self.trial.inventory(self.trial.account_root + "/containers/applications", cursor=True), apps)
 
     def test_exact_identity_collisions_are_refused(self):
         for kind, key, value in (
@@ -83,20 +115,30 @@ class InventoryTests(unittest.TestCase):
     def test_incomplete_metadata_is_rejected(self):
         row = [{"id": "1"}]
         cases = (
-            (row, {"per_page": 1}, "no continuation"),
-            (row, {"total_count": 0}, "total_count mismatch"),
-            (row, {"total_count": 2}, "ended before total_count"),
-            (row, {"page_token": "unexpected"}, "cursor echo mismatch"),
-            (row, {"page": 1}, "Invalid inventory total_pages"),
-            (row, {"page": 2, "total_pages": 2}, "page number mismatch"),
-            (row, {"page": 1, "total_pages": 1, "next_page_token": "cursor"}, "Mixed inventory"),
-            (row, {"page": 1, "total_pages": 2, "total_count": 1, "per_page": 1}, "continuation is inconsistent"),
+            (True, {"per_page": 1}, "no continuation"),
+            (True, {"count": 0}, "count mismatch"),
+            (True, {"total_count": 0}, "total_count mismatch"),
+            (True, {"total_count": 2}, "ended before total_count"),
+            (True, {"page_token": "unexpected"}, "cursor echo mismatch"),
+            (False, None, "Missing paginated inventory metadata"),
+            (False, {"page": 1, "total_pages": "1"}, "Invalid inventory total_pages"),
+            (False, {"page": 2, "total_pages": 2}, "page number mismatch"),
+            (False, {"page": 1, "total_pages": 1, "next_page_token": "cursor"}, "Mixed inventory"),
+            (False, {"page": 1, "total_pages": 2, "total_count": 1, "per_page": 1}, "continuation is inconsistent"),
         )
-        for batch, metadata, message in cases:
+        for cursor, metadata, message in cases:
             with self.subTest(metadata=metadata):
-                self.trial.inventory_page = Mock(return_value=(batch, metadata))
+                self.trial.inventory_page = Mock(return_value=(row, metadata))
                 with self.assertRaisesRegex(AssertionError, message):
-                    self.trial.inventory("/inventory", cursor=True)
+                    self.trial.inventory("/inventory", cursor=cursor)
+
+    def test_numbered_inventory_cannot_end_before_its_total(self):
+        self.trial.inventory_page = Mock(side_effect=[
+            ([{"id": "first"}], {"page": 1, "per_page": 1, "count": 1, "total_count": 2}),
+            ([], {"page": 2, "per_page": 1, "count": 0, "total_count": 2}),
+        ])
+        with self.assertRaisesRegex(AssertionError, "continuation is inconsistent"):
+            self.trial.inventory("/inventory")
 
     def test_script_list_requires_single_page_completeness(self):
         rows = [{"id": "worker"}]

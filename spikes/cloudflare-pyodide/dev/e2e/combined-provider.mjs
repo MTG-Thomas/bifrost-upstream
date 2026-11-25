@@ -460,14 +460,15 @@ async function provider(req, res) {
       const {scripts, application, mixed} = await json();
       assert.ok(scripts.length === 4 && workers.size === 0 && applications.size === 0 && images.size === 0);
       const script = scripts[0] + '-other';
-      workers.set(script, {foreign: true, meta: {bindings: []}, namespaces: [
-        {id: randomBytes(16).toString('hex'), name: script, script, class: 'ScopeRegistry'},
-      ]});
+      workers.set(script, {foreign: true, meta: {bindings: []}, namespaces: Array.from({length: 23}, (_, index) =>
+        ({id: randomBytes(16).toString('hex'), name: script, script, class: `Foreign${index}`}))});
       if (mixed) unattachedNamespaces.push({
         id: randomBytes(16).toString('hex'), name: script + '-detached', class: 'ScopeRegistry',
       });
-      const id = randomBytes(16).toString('hex');
-      applications.set(id, {id, account_id: account, name: application + '0', script, foreign: true});
+      for (let index = 0; index < 5; index++) {
+        const id = randomBytes(16).toString('hex');
+        applications.set(id, {id, account_id: account, name: application + index, script, foreign: true});
+      }
       images.set(application + '0', config.containers.digest);
       foreignImages.add(application + '0');
       return ok(null);
@@ -528,11 +529,7 @@ async function provider(req, res) {
       if (method === 'GET') {
         const filter = url.searchParams.get('name');
         const rows = [...applications.values()].filter((entry) => filter === null || entry.name.startsWith(filter));
-        if (!config.foreignInventory) return ok(rows.map(inventory));
-        const offset = Number(url.searchParams.get('page_token') ?? 0);
-        const next = offset + 1 < rows.length ? String(offset + 1) : undefined;
-        return send(200, {success: true, result: rows.slice(offset, offset + 1).map(inventory),
-          result_info: {per_page: Number(url.searchParams.get('per_page') ?? 100), next_page_token: next}});
+        return ok(rows.map(inventory));
       }
       if (method === 'POST') {
         const body = await json();
@@ -575,20 +572,27 @@ async function provider(req, res) {
   }
   const namespaces = [...workers.values()].flatMap((item) => item.namespaces).concat(unattachedNamespaces);
   if (relative === '/workers/durable_objects/namespaces') {
+    const reply = (rows) => {
+      event('namespace-inventory', {ids: rows.map(({id}) => id)});
+      if (!config.containers) return ok(rows);
+      const page = Number(url.searchParams.get('page') ?? 1);
+      const per_page = Math.min(20, Number(url.searchParams.get('per_page') ?? 20));
+      const result = rows.slice((page - 1) * per_page, page * per_page);
+      return send(200, {success: true, result,
+        result_info: {page, per_page, count: result.length, total_count: rows.length}});
+    };
     if (lagNamespace) {
       const elapsedMs = Math.floor(performance.now() - lagNamespace.uploadedAt);
       const revision = lagNamespace.revision;
       if (elapsedMs < config.workerNamespaceLagMs) {
         const stale = namespaces.filter(({id}) => id !== lagNamespace.id);
         event('namespace-lag', {revision});
-        event('namespace-inventory', {ids: stale.map(({id}) => id)});
-        return ok(stale);
+        return reply(stale);
       }
       lagNamespace = undefined;
       event('namespace-lag-cleared', {revision, elapsedMs});
     }
-    event('namespace-inventory', {ids: namespaces.map(({id}) => id)});
-    return ok(namespaces);
+    return reply(namespaces);
   }
   const objects = relative.match(/^\/workers\/durable_objects\/namespaces\/([^/]+)\/objects$/);
   if (objects) return namespaces.some(({id}) => id === objects[1]) ? ok([]) : missing();
