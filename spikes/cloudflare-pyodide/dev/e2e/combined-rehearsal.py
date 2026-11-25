@@ -952,7 +952,7 @@ async def {name}(case: str, hold: int):
 
 
 class ContainerRehearsal(Rehearsal):
-    def prepare_local_guest(self, incarnation):
+    def prepare_local_guest(self, incarnation, *, preserve_failed_exit=False):
         image = self.cfg["containers"]["imageId"]
         identities = subprocess.check_output(["docker", "ps", "-q", "--filter", f"ancestor={image}"], text=True).split()
         guests = json.loads(subprocess.check_output(["docker", "inspect", *identities]))
@@ -963,13 +963,22 @@ class ContainerRehearsal(Rehearsal):
         # limit. Give the guest the same cgroup boundary before relaying hello.
         # Otherwise launcher pressure is sampled from the whole test host.
         memory = str(4 * 1024**3)
+        # Workerd's local Docker restart policy can relaunch the failed guest
+        # and replace its exit receipt. Apply this only to the selected fault
+        # fixture before forwarding its first signed hello.
+        restart = ["--restart=no"] if preserve_failed_exit else []
         subprocess.run([
-            "docker", "update", "--memory", memory, "--memory-swap", memory, guest["Id"],
+            "docker", "update", "--memory", memory, "--memory-swap", memory, *restart, guest["Id"],
         ], stdout=subprocess.DEVNULL, check=True)
         actual = subprocess.check_output([
             "docker", "inspect", "--format", "{{.HostConfig.Memory}}", guest["Id"],
         ], text=True).strip()
         assert actual == memory
+        if preserve_failed_exit:
+            restart_policy = subprocess.check_output([
+                "docker", "inspect", "--format", "{{.HostConfig.RestartPolicy.Name}}", guest["Id"],
+            ], text=True).strip()
+            assert restart_policy == "no"
         with open(f"/proc/{guest['State']['Pid']}/ns/net", "rb") as namespace:
             fd = namespace.fileno()
             assert os.fstat(fd).st_ino != os.stat("/proc/self/ns/net").st_ino
@@ -980,7 +989,7 @@ class ContainerRehearsal(Rehearsal):
         evidence("container-raw-tcp-boundary", {"worker": str(incarnation), "memory_bytes": int(actual)})
 
     @contextmanager
-    def raw_tcp_boundary(self):
+    def raw_tcp_boundary(self, *, preserve_failed_exit=False):
         assert self.cfg["project"].startswith("bifrost-test-containers-")
         path = Path(".rehearsal/raw-tcp.sock")
         assert not path.exists()
@@ -988,7 +997,7 @@ class ContainerRehearsal(Rehearsal):
         class Handler(socketserver.StreamRequestHandler):
             def handle(handler):
                 incarnation = UUID(handler.rfile.readline(38).decode("ascii").strip())
-                self.prepare_local_guest(incarnation)
+                self.prepare_local_guest(incarnation, preserve_failed_exit=preserve_failed_exit)
                 handler.wfile.write(b"ready\n")
 
         try:
@@ -1888,7 +1897,10 @@ def main():
         fixture = ContainerRehearsal()
         assert "containers" in fixture.cfg and "managementToken" not in fixture.cfg
         assert fixture.cfg["holdSecondSdkRead"] is False
-        with fixture.raw_tcp_boundary(), TemporaryDirectory(prefix="containers-hosted-shape-") as directory:
+        with (
+            fixture.raw_tcp_boundary(preserve_failed_exit=args.exercise_guest_fatal),
+            TemporaryDirectory(prefix="containers-hosted-shape-") as directory,
+        ):
             config = Path(directory) / "trial.json"
             config.touch(mode=0o600)
             config.write_text(json.dumps({
