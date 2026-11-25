@@ -349,11 +349,13 @@ function upgrade(req, socket, head) {
       }
       if (worker.readyState === WebSocket.OPEN) worker.send(message.toString());
     });
-    const close = (code) => {
+    const close = (code, reason) => {
       if (identity && sockets.get(identity) === worker) sockets.delete(identity);
       const valid = [1005, 1006, 1015].includes(code) ? 1012 : code;
-      if (upstream.readyState === WebSocket.OPEN) upstream.close(valid);
-      if (worker.readyState === WebSocket.OPEN) worker.close(valid);
+      const safeReason = code === 1011 && Buffer.isBuffer(reason)
+        && reason.equals(Buffer.from('Container relay transport lost')) ? 'Container relay transport lost' : '';
+      if (upstream.readyState === WebSocket.OPEN) upstream.close(valid, safeReason);
+      if (worker.readyState === WebSocket.OPEN) worker.close(valid, safeReason);
     };
     worker.on('close', close);
     worker.on('error', () => close(1012));

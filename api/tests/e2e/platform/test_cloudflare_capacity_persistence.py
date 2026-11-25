@@ -3564,7 +3564,8 @@ async def test_disconnect_after_unconfirmed_image_create(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage", [
-    "hello", "bootstrap", "inventory", "canary-command", "sdk-witness", "ack",
+    "hello", "bootstrap", "runtime-grant", "requirements", "guest-init", "inventory",
+    "canary-command", "sdk-tls", "sdk-witness", "egress-probes", "ack", "ready",
     "unsigned", "forged", "replayed",
 ])
 async def test_container_guest_diagnostics_are_fenced_and_redacted(
@@ -3579,7 +3580,7 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
 
     secret = "secret-only-in-the-exception-and-close-reason"
     now = datetime.now(UTC)
-    installation.containers_policy = {"enabled": True}
+    installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
     context = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
     lease = RemoteOwnerLease(
         worker_id=uuid4(), launcher_id=uuid4(), owner_id=uuid4(), session_generation=1,
@@ -3649,6 +3650,8 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
     status = await cloudflare_status.deployment_evidence(db_session, installation)
     assert status.container_qualification == evidence
     if stage == "ack":
+        capacity = await get_cloudflare_capacity_status(db_session, _platform_operator())
+        assert capacity.deployment is not None and capacity.deployment.container_qualification == evidence
         monkeypatch.setattr(enable_job, "get_db_context", transaction)
         monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
         monkeypatch.setattr(enable_job, "load_workers_release", lambda: object())

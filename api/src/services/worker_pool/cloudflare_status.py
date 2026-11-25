@@ -360,7 +360,7 @@ async def _container_controller_reason(installation: CloudflareInstallation) -> 
 async def deployment_evidence(db: AsyncSession, installation: CloudflareInstallation) -> CloudflareDeploymentEvidence:
     stored = installation.deployment_evidence or {}
     evidence = CloudflareDeploymentEvidence.model_validate(stored)
-    if ContainersPolicy.model_validate(installation.containers_policy).enabled:
+    if installation.containers_policy.get("enabled") is True:
         evidence.container_qualification = await container_qualification_evidence(db, installation.id)
     if installation.reachability_mode == "managed_tunnel":
         evidence.dns_verified_at = await db.scalar(select(func.max(CloudflareOwnedResource.observed_at)).where(
