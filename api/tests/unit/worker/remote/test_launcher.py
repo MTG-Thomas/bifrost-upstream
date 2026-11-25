@@ -29,13 +29,15 @@ from src.worker.remote.protocol import STATIC_INCARNATION_LOST, ControlEnvelope
 
 
 @pytest.mark.asyncio
-async def test_static_launcher_reconnects_until_the_host_confirms_loss(monkeypatch) -> None:
+@pytest.mark.parametrize("shutdown", [False, True], ids=["recover", "shutdown-during-cleanup"])
+async def test_static_launcher_reconnects_until_the_host_confirms_loss(monkeypatch, shutdown) -> None:
     from src.worker.remote import launcher as launcher_module
 
     identity = LauncherIdentity.from_environment({"HOSTNAME": "static"})
     hellos = []
     received = []
     stopped = []
+    stop_during_cleanup = Mock()
     statuses = iter([None, 1008, STATIC_INCARNATION_LOST, None])
 
     @asynccontextmanager
@@ -54,9 +56,11 @@ async def test_static_launcher_reconnects_until_the_host_confirms_loss(monkeypat
 
         yield SimpleNamespace(send=send, recv=recv)
 
-    async def receive(launcher, _socket, _stopping, _drain):
+    async def receive(launcher, _socket, stopping, _drain):
         received.append(launcher)
         if len(received) == 1:
+            if shutdown:
+                stop_during_cleanup.side_effect = stopping.set
             launcher.pending_terminal["old"] = {"event": "result"}
             raise ConnectionClosedError(Close(1008, ""), None)
         assert stopped == [received[0]]
@@ -65,6 +69,7 @@ async def test_static_launcher_reconnects_until_the_host_confirms_loss(monkeypat
 
     async def stop(launcher):
         stopped.append(launcher)
+        stop_during_cleanup()
 
     monkeypatch.setenv("BIFROST_SECRET_KEY", "synthetic")
     monkeypatch.setattr(launcher_module, "load_launcher_identity", lambda: identity)
@@ -78,11 +83,13 @@ async def test_static_launcher_reconnects_until_the_host_confirms_loss(monkeypat
 
     assert await launcher_module._run_launcher() == 0
 
-    assert len(hellos) == 4
+    assert len(hellos) == (3 if shutdown else 4)
     assert [hello["incarnation_id"] for hello in hellos[:3]] == [str(identity.incarnation_id)] * 3
-    assert [hello["hello_sequence"] for hello in hellos] == [1, 2, 3, 1]
-    assert hellos[-1]["incarnation_id"] != str(identity.incarnation_id)
-    assert hellos[-1]["launcher_id"] != str(identity.launcher_id)
+    assert [hello["hello_sequence"] for hello in hellos[:3]] == [1, 2, 3]
+    if not shutdown:
+        assert hellos[-1]["incarnation_id"] != str(identity.incarnation_id)
+        assert hellos[-1]["launcher_id"] != str(identity.launcher_id)
+        assert hellos[-1]["hello_sequence"] == 1
     assert stopped == received
 
 

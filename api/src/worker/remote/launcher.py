@@ -1228,6 +1228,8 @@ async def _run_launcher(
                     # launcher starts with empty inventory and replay buffers.
                     await candidate.stop()
                     launcher = candidate = None
+                    if stopping.is_set():
+                        break
                     identity = replace(identity, launcher_id=uuid4(), incarnation_id=uuid4())
                     continue
                 if launcher is not None and launcher.failed:
