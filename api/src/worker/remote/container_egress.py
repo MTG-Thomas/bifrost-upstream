@@ -2,11 +2,14 @@
 
 import asyncio
 import errno
+from collections.abc import Awaitable, Callable
 from ipaddress import ip_address
 from ssl import create_default_context
 from uuid import UUID
 
 import httpx
+
+from src.worker.remote.guest_diagnostics import GuestStage
 
 CONTAINER_RELAY_REJECTION = "x-bifrost-container-relay-rejection"
 _RELAY_FORWARDED = "x-bifrost-container-relay-forwarded"
@@ -25,6 +28,7 @@ _CONNECT_DENIALS = frozenset({
 
 async def run_container_egress_checks(
     origin: str, alternate: str, address: str, worker_id: UUID, generation: int, proof: str,
+    *, note_stage: Callable[[GuestStage], Awaitable[None]] | None = None,
 ) -> list[str]:
     """Return only denials observed at the boundary. Send no credentials to probes on other origins."""
     ingress, alternate_url = httpx.URL(origin), httpx.URL(alternate)
@@ -37,6 +41,8 @@ async def run_container_egress_checks(
     ip_address(address)
     route = f"{origin}/api/sdk/capacity-canary/{worker_id}"
     auth = {"Authorization": f"Bearer {proof}", "X-Bifrost-Canary-Generation": str(generation)}
+    if note_stage is not None:
+        await note_stage("sdk-tls")
     tls = create_default_context(cafile="/etc/cloudflare/certs/cloudflare-containers-ca.crt")
     async with httpx.AsyncClient(verify=tls, trust_env=False, follow_redirects=False) as client:
         def require_probe_response(response: httpx.Response) -> None:
@@ -81,9 +87,13 @@ async def run_container_egress_checks(
             await writer.wait_closed()
             return False
 
+        if note_stage is not None:
+            await note_stage("sdk-witness")
         async with client.stream("GET", route, headers=auth) as response:
             if response.status_code != 204 or response.headers.get("x-bifrost-worker-ingress") != "v1; allowed":
                 raise RuntimeError("The Container SDK canary did not reach verified worker ingress")
+        if note_stage is not None:
+            await note_stage("egress-probes")
         results = await asyncio.gather(
             # The API has already resolved the alternate name and reached
             # both sockets. Guest DNS is intentionally restricted by policy.

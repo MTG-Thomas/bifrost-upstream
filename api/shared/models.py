@@ -132,6 +132,7 @@ class CloudflareDeploymentEvidence(BaseModel):
     dns_verified_at: datetime | None = None
     ingress_verified_at: datetime | None = None
     signed_canary_at: datetime | None = None
+    container_qualification: dict[str, str | int] | None = None
 
 
 CloudflareReachabilityMode = Literal["existing_https_endpoint", "managed_tunnel"]

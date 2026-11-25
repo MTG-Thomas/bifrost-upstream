@@ -3563,6 +3563,106 @@ async def test_disconnect_after_unconfirmed_image_create(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stage", [
+    "hello", "bootstrap", "inventory", "canary-command", "sdk-witness", "ack",
+    "unsigned", "forged", "replayed",
+])
+async def test_container_guest_diagnostics_are_fenced_and_redacted(
+    db_session, installation, monkeypatch, stage,
+) -> None:
+    from fastapi import WebSocketDisconnect
+    from starlette.websockets import WebSocketState
+    from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
+    from src.worker.remote import host
+    from src.worker.remote.guest_diagnostics import guest_diagnostic_payload, guest_diagnostic_signature
+    from src.worker.remote.protocol import ControlEnvelope, FragmentAssembler
+
+    secret = "secret-only-in-the-exception-and-close-reason"
+    now = datetime.now(UTC)
+    installation.containers_policy = {"enabled": True}
+    context = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
+    lease = RemoteOwnerLease(
+        worker_id=uuid4(), launcher_id=uuid4(), owner_id=uuid4(), session_generation=1,
+        container_release="a" * 64,
+    )
+    uid = uuid4().hex
+    db_session.add(ExecutionWorker(
+        id=lease.worker_id, form="external", state="ready", capacity_scope="containers",
+        capacity_resource_uid=uid, remote_hello_sequence=1, remote_session_generation=1,
+        remote_owner_id=lease.owner_id, remote_launcher_id=lease.launcher_id,
+        remote_owner_lease_expires_at=now + timedelta(seconds=20),
+    ))
+    await db_session.flush()
+    pin = CloudflareWorkerReservation(
+        worker_id=lease.worker_id, installation_id=installation.id, scope="containers", deployment_revision=1,
+        control_root_version=installation.control_root_version, container_release=lease.container_release,
+        container_tenant="qualification-canary", container_reserved_at=now, container_envelope={"seconds": 196},
+        canary_job_id=context.job_id, canary_lease_token=context.lease_token,
+    )
+    db_session.add(pin)
+    await db_session.flush()
+    key = await load_managed_control_key(db_session, pin, uid)
+    valid = stage not in ("unsigned", "forged", "replayed")
+    payload = guest_diagnostic_payload(stage if valid else "ack", RuntimeError(secret))
+    if stage != "unsigned":
+        payload["signature"] = guest_diagnostic_signature(
+            "forger" if stage == "forged" else key, 2 if stage == "replayed" else 1, 1, payload,
+        )
+    socket = SimpleNamespace(
+        receive_text=AsyncMock(side_effect=[
+            ControlEnvelope(1, 1, "event", payload).to_json(), WebSocketDisconnect(code=1011, reason=secret),
+        ]),
+        application_state=WebSocketState.CONNECTED, close=AsyncMock(),
+    )
+    bridge = SimpleNamespace(socket=socket, receive=AsyncMock(), disconnect=Mock())
+    session = SimpleNamespace(bridge=bridge, lease=lease, last_sequence=0, may_accept=AsyncMock(return_value=True))
+    fake_host = SimpleNamespace(stopping=False, connect=AsyncMock(return_value=(session, FragmentAssembler())))
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def transaction():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as db:
+            yield db
+            await db.commit()
+
+    monkeypatch.setattr(host, "_host", fake_host)
+    monkeypatch.setattr(host, "get_liveness_db_context", transaction)
+    await host.remote_control(socket)
+    bridge.receive.assert_not_awaited()
+    await db_session.refresh(pin)
+    evidence = pin.container_envelope["guest_diagnostic"]
+    if valid:
+        socket.close.assert_not_awaited()
+        assert evidence == {
+            "generation": 1, "stage": stage, "fatal_stage": stage, "fatal_generation": 1,
+            "exception_class": "RuntimeError", "reason": "runtime",
+            "close_code": 1011, "close_category": "internal", "close_generation": 1,
+        }
+    else:
+        socket.close.assert_awaited_once_with(code=1008)
+        assert evidence == {
+            "generation": 1, "stage": "hello", "close_code": 1008,
+            "close_category": "policy", "close_generation": 1,
+        }
+    assert secret not in json.dumps(pin.container_envelope)
+    assert key not in json.dumps(pin.container_envelope)
+    status = await cloudflare_status.deployment_evidence(db_session, installation)
+    assert status.container_qualification == evidence
+    if stage == "ack":
+        monkeypatch.setattr(enable_job, "get_db_context", transaction)
+        monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+        monkeypatch.setattr(enable_job, "load_workers_release", lambda: object())
+        monkeypatch.setattr(enable_job, "_settle_enable", AsyncMock(side_effect=PlatformJobRequiresAction(
+            "Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"},
+        )))
+        with pytest.raises(PlatformJobRequiresAction) as failure:
+            await enable_job._enable(
+                context, enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1),
+            )
+        assert failure.value.result == {"code": "CF_CONTAINERS_UNVERIFIED", "container_qualification": evidence}
+
+
+@pytest.mark.asyncio
 async def test_disconnect_retry_recovers_failed_container_canary(
     db_session, installation, monkeypatch, lifecycle_audit_actor,
 ) -> None:
@@ -3609,7 +3709,10 @@ async def test_disconnect_retry_recovers_failed_container_canary(
     ref = CredentialRef(installation.id, installation.account_id, "scope_bearer", "containers", 1)
     db_session.add_all([
         app, script, registry, worker,
-        seal_credential(ref, SecretStr("synthetic-container-scope-key"), actor=str(OPERATOR_ID), now=reserved_at),
+        seal_credential(
+            ref, SecretStr("synthetic-container-scope-key-for-disconnect"),
+            actor=str(OPERATOR_ID), now=reserved_at,
+        ),
     ])
     await db_session.flush()
     db_session.add(CloudflareCapacityScope(

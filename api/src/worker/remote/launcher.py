@@ -38,6 +38,7 @@ from src.services.execution.template_process import TemplateProcess
 from src.worker.remote.container_egress import run_container_egress_checks
 from src.worker.remote.container_guest import ContainerGuest
 from src.worker.remote.control_connection import connect_control, load_control_headers
+from src.worker.remote.guest_diagnostics import GuestStage, guest_diagnostic_payload, guest_diagnostic_signature
 from src.worker.remote.identity import LauncherIdentity, load_launcher_identity
 from src.worker.remote.platform_stage_protocol import StageBinding
 from src.worker.remote.platform_stages import PlatformStages, StageProgram
@@ -292,6 +293,8 @@ class Launcher:
         self.container_guest = container_guest
         self._guest_finished = False
         self._container_lease_until: float | None = None
+        self._guest_stage: GuestStage = "hello"
+        self._guest_fatal_attempted = False
         self._idle_since = time.monotonic()
         self._idle_draining = False
         self.platform_stages = (
@@ -333,16 +336,27 @@ class Launcher:
         self.baseline_bytes: int | None = None
         self.retired = asyncio.Event()
 
-    async def send(self, payload: dict[str, Any]) -> None:
+    async def send(self, payload: dict[str, Any], *, guest_diagnostic: bool = False) -> None:
         async with self._send_lock:
             if self.session_generation < 1:
                 raise ConnectionError("launcher has no fenced API session")
+            sequence = self._sequence + 1
+            if guest_diagnostic:
+                payload = {
+                    **payload, "signature": guest_diagnostic_signature(
+                        self.secret, self.session_generation, sequence, payload,
+                    ),
+                }
             envelope = ControlEnvelope(
                 session_generation=self.session_generation,
-                sequence=self._sequence + 1,
+                sequence=sequence,
                 kind="event",
                 payload=payload,
             )
+            if guest_diagnostic:
+                # A bounded diagnostic send may time out after the socket
+                # accepted the frame. A later send cannot reuse its sequence.
+                self._sequence = sequence
             sent = 0
             for frame in fragment(envelope):
                 raw = frame.to_json()
@@ -357,7 +371,26 @@ class Launcher:
                         None if self._authenticated_control else exc
                     )
                 sent += 1
-            self._sequence += sent
+            if not guest_diagnostic:
+                self._sequence += sent
+
+    async def _send_guest_diagnostic(self, error: BaseException | None = None) -> None:
+        if self.container_release is None or self.session_generation < 1:
+            return
+        with contextlib.suppress(ConnectionError, TimeoutError):
+            async with asyncio.timeout(0.5):
+                await self.send(guest_diagnostic_payload(self._guest_stage, error), guest_diagnostic=True)
+
+    async def note_guest_stage(self, stage: GuestStage) -> None:
+        if self.container_release is not None and self._guest_stage != stage:
+            self._guest_stage = stage
+            await self._send_guest_diagnostic()
+
+    async def report_guest_fatal(self, error: BaseException) -> None:
+        if self.container_release is None or self._guest_fatal_attempted or self.session_generation < 1:
+            return
+        self._guest_fatal_attempted = True
+        await self._send_guest_diagnostic(error)
 
     async def send_terminal(
         self, payload: dict[str, Any], *, inventory: dict[str, Any]
@@ -384,15 +417,26 @@ class Launcher:
 
     def task_finished(self, task: asyncio.Task[Any]) -> None:
         self._tasks.discard(task)
-        if not task.cancelled() and task.exception() is not None:
+        if not task.cancelled() and (error := task.exception()) is not None:
             if task is self._monitor_task:
                 self.failed = True
                 self.on_stop()
-            logger.error("Launcher supervision failed", exc_info=task.exception())
-            asyncio.create_task(self.socket.close(code=1011, reason="Launcher supervision failed"))
+            if self.container_release is None:
+                logger.error("Launcher supervision failed", exc_info=error)
+                asyncio.create_task(self.socket.close(code=1011, reason="Launcher supervision failed"))
+            else:
+                logger.error("Managed Container supervision failed")
+                asyncio.create_task(self._close_failed_guest(error))
+
+    async def _close_failed_guest(self, error: BaseException) -> None:
+        await self.report_guest_fatal(error)
+        with contextlib.suppress(ConnectionClosed, ConnectionError, OSError, TimeoutError):
+            async with asyncio.timeout(0.5):
+                await self.socket.close(code=1011, reason="Launcher supervision failed")
 
     async def start(self) -> None:
         # This existing helper owns requirements IO and exits before ready.
+        await self.note_guest_stage("requirements")
         module = "src.services.execution.requirements_setup_helper"
         if self.containers:
             if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1" and self.requirements_content:
@@ -402,6 +446,7 @@ class Launcher:
             result = await self.helper(module)
         self.requirements = result
         if self.container_guest is not None:
+            await self.note_guest_stage("guest-init")
             await asyncio.to_thread(self.container_guest.wait_ready)
         elif self.agent_template is None:
             await asyncio.to_thread(self.template.start)
@@ -416,8 +461,12 @@ class Launcher:
 
     async def hello(self, requirements: dict[str, Any]) -> None:
         """Authenticate each new WebSocket; the physical process stays alive."""
-        async with self._send_lock:
-            await self._hello(requirements)
+        try:
+            async with self._send_lock:
+                await self._hello(requirements)
+        except Exception as exc:
+            await self.report_guest_fatal(exc)
+            raise
 
     async def reconnect(self, socket: Any, requirements: dict[str, Any]) -> None:
         """Fence a replacement transport before another event can use it."""
@@ -442,6 +491,10 @@ class Launcher:
         self._container_lease_until = deadline
 
     async def _hello(self, requirements: dict[str, Any]) -> None:
+        if self.container_release is not None:
+            self._guest_stage = "hello"
+            # A reconnect has no diagnostic authority until its own welcome.
+            self.session_generation = 0
         current, limit = effective_memory_sample()
         self._hello_sequence += 1
         nonce = self.container_probe_nonce or new_nonce()
@@ -485,6 +538,8 @@ class Launcher:
         self._sequence = 0
         self._last_command_sequence = 0
         if self.containers:
+            if self.container_release is not None:
+                self._guest_stage = "bootstrap"
             assembler = FragmentAssembler()
             while True:
                 frame = ControlEnvelope.from_json(await self.socket.recv())
@@ -500,6 +555,7 @@ class Launcher:
                 if content is not None and not isinstance(content, str):
                     raise RuntimeError("Invalid worker requirements content")
                 if self.container_release is not None:
+                    self._guest_stage = "runtime-grant"
                     self.grant_runtime_lease(startup.payload.get("ttl_ms"))
                 self.requirements_content = content
                 break
@@ -714,6 +770,7 @@ class Launcher:
                     raise ValueError("Invalid launcher memory policy")
                 self.pressure_threshold, self.dangerous_memory_ratio = pressure, dangerous
             elif action == "capacity_canary" and self.container_release is not None:
+                await self.note_guest_stage("canary-command")
                 proof, alternate, address = (payload.get(key) for key in ("proof", "alternate", "address"))
                 if (
                     not isinstance(proof, str) or re.fullmatch(r"[a-f0-9]{64}", proof) is None
@@ -722,7 +779,9 @@ class Launcher:
                     raise ValueError("Invalid Container SDK canary proof")
                 response = {"denied": await run_container_egress_checks(
                     os.environ["BIFROST_API_URL"], alternate, address, self.identity.incarnation_id, generation, proof,
+                    note_stage=self.note_guest_stage,
                 )}
+                await self.note_guest_stage("ack")
             elif action == "ready":
                 self.on_ready()
             elif action == "retired":
@@ -731,10 +790,19 @@ class Launcher:
                 raise ValueError("Unknown launcher command")
             if generation == self.session_generation:
                 await self.send({"reply": request["id"], "result": response})
+                if action == "capacity_canary":
+                    await self.note_guest_stage("ready")
         except Exception as exc:
             if generation == self.session_generation:
-                await self.send({"reply": request["id"], "error_type": type(exc).__name__,
-                                 "error": str(exc)})
+                if action == "capacity_canary" and self.container_release is not None:
+                    # A failed SDK probe can be a normal qualification refusal.
+                    # Keep its reply as redacted as a fatal supervision event.
+                    await self.report_guest_fatal(exc)
+                    await self.send({"reply": request["id"], "error_type": "RuntimeError",
+                                     "error": "Container qualification command failed"})
+                else:
+                    await self.send({"reply": request["id"], "error_type": type(exc).__name__,
+                                     "error": str(exc)})
 
     def check_fork_pressure(self) -> None:
         """Refuse a fork while the launcher's memory is under pressure."""
@@ -1176,6 +1244,7 @@ async def _run_launcher(
                         await candidate.hello({})
                         launcher = candidate
                         try:
+                            await candidate._send_guest_diagnostic()
                             setup = asyncio.create_task(candidate.start())
                             if container_guest is not None:
                                 try:
@@ -1197,22 +1266,36 @@ async def _run_launcher(
                                                 "pressure_ratio": memory_pressure_ratio(), "runs": {},
                                             })
                                 await asyncio.gather(setup)
-                        except Exception:
+                        except Exception as exc:
                             # Initialization is not a transport failure. Exit so
                             # the provider can replace this failed physical worker.
                             launcher.failed = True
+                            if container_release is not None:
+                                await launcher._close_failed_guest(exc)
                             raise
                     else:
                         await launcher.reconnect(socket, launcher.requirements)
-                    await launcher.send({
-                        "event": "inventory", "inventory": launcher.inventory(),
-                        "requirements": launcher.requirements,
-                    })
+                    await launcher.note_guest_stage("inventory")
+                    try:
+                        await launcher.send({
+                            "event": "inventory", "inventory": launcher.inventory(),
+                            "requirements": launcher.requirements,
+                        })
+                    except Exception as exc:
+                        if not isinstance(exc, ConnectionError):
+                            await launcher.report_guest_fatal(exc)
+                        raise
+                    await launcher.note_guest_stage("canary-command" if probe_nonce is not None else "ready")
                     for event in launcher.pending_terminal.values():
                         await launcher.send(event)
-                    drain_task = await _receive_control_commands(
-                        launcher, socket, stopping, drain_task
-                    )
+                    try:
+                        drain_task = await _receive_control_commands(
+                            launcher, socket, stopping, drain_task
+                        )
+                    except Exception as exc:
+                        if not isinstance(exc, (ConnectionError, ConnectionClosed)):
+                            await launcher.report_guest_fatal(exc)
+                        raise
                     if stopping.is_set() and drain_task is not None and drain_task.done():
                         break
             except asyncio.CancelledError:
@@ -1238,7 +1321,7 @@ async def _run_launcher(
                 else:
                     message = "Remote control connection lost; preserving local children"
                     level = logging.WARNING
-                if control_headers:
+                if control_headers or container_release is not None:
                     # Transport exceptions can retain request headers or echoed secrets.
                     logger.log(level, "%s (%s)", message, type(exc).__name__)
                 else:

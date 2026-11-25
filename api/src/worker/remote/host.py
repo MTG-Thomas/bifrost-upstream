@@ -87,6 +87,7 @@ from src.worker.remote.fencing import (
     fence_remote_owner,
     remote_owner_context,
 )
+from src.worker.remote.guest_diagnostics import GUEST_DIAGNOSTIC_EVENTS, close_evidence, verify_guest_diagnostic
 from src.worker.remote.ownership import (
     DEFAULT_OWNER_LEASE_SECONDS,
     CloudflareEnrollment,
@@ -2338,6 +2339,53 @@ class RemoteControlHost:
 _host: RemoteControlHost | None = None
 
 
+async def _record_guest_socket_evidence(
+    lease: RemoteOwnerLease, *, event: dict[str, Any] | None = None, sequence: int = 0,
+    close_code: int | None = None, close_reason: str | None = None,
+) -> None:
+    """Store diagnostic evidence without borrowing a replacement socket's lease."""
+    if lease.container_release is None:
+        if event is not None:
+            raise AuthenticationError("Guest diagnostic requires a managed Container session")
+        return
+    try:
+        async with asyncio.timeout(0.5), get_liveness_db_context() as db:
+            worker = await db.get(ExecutionWorker, lease.worker_id, with_for_update={"read": True})
+            if (
+                worker is None or worker.remote_launcher_id != lease.launcher_id
+                or worker.remote_session_generation != lease.session_generation
+                or (worker.remote_owner_id != lease.owner_id and (close_code is None or worker.remote_owner_id is not None))
+                or worker.capacity_resource_uid is None
+            ):
+                if event is not None:
+                    raise AuthenticationError("Guest diagnostic session was replaced")
+                return
+            pin = await db.get(CloudflareWorkerReservation, lease.worker_id, with_for_update=True)
+            if pin is None or pin.container_release != lease.container_release or pin.container_envelope is None:
+                if event is not None:
+                    raise AuthenticationError("Guest diagnostic lacks a managed reservation")
+                return
+            evidence = dict(pin.container_envelope.get("guest_diagnostic") or {})
+            if close_code is not None:
+                evidence.update(close_evidence(close_code, close_reason), close_generation=lease.session_generation)
+            elif event is None:
+                evidence.update(stage="hello", generation=lease.session_generation)
+            else:
+                key = await load_managed_control_key(db, pin, worker.capacity_resource_uid)
+                diagnostic = verify_guest_diagnostic(key, lease.session_generation, sequence, event)
+                evidence.update(stage=diagnostic["stage"], generation=lease.session_generation)
+                if diagnostic["event"] == "guest_fatal":
+                    evidence.update(
+                        fatal_stage=diagnostic["stage"], fatal_generation=lease.session_generation,
+                        exception_class=diagnostic["exception_class"], reason=diagnostic["reason"],
+                    )
+            pin.container_envelope = {**pin.container_envelope, "guest_diagnostic": evidence}
+    except (DBAPIError, SQLAlchemyTimeoutError, TimeoutError):
+        # Diagnostic writes are best effort. The ordinary session and
+        # qualification fences continue to enforce readiness independently.
+        return
+
+
 async def start_remote_control_host(_application: Any) -> None:
     """Lifespan hook; the caller mounts :data:`router` before ``/`` first."""
     global _host
@@ -2358,8 +2406,11 @@ async def remote_control(socket: WebSocket) -> None:
         await socket.close(code=1013)
         return
     session: RemoteSession | None = None
+    close_code: int | None = None
+    close_reason: str | None = None
     try:
         session, assembler = await _host.connect(socket)
+        await _record_guest_socket_evidence(session.lease)
         while True:
             frame = ControlEnvelope.from_json(await socket.receive_text())
             if session.bridge.socket is not socket:
@@ -2383,18 +2434,30 @@ async def remote_control(socket: WebSocket) -> None:
                 raise ProtocolError("remote API owner fence was replaced")
             if logical.kind != "event":
                 raise ProtocolError("launcher may only send events")
-            with remote_owner_context(LeaseRef(session.lease)):
-                await session.bridge.receive(logical.payload)
+            if logical.payload.get("event") in GUEST_DIAGNOSTIC_EVENTS:
+                await _record_guest_socket_evidence(session.lease, event=logical.payload, sequence=logical.sequence)
+            else:
+                with remote_owner_context(LeaseRef(session.lease)):
+                    await session.bridge.receive(logical.payload)
             if logical.payload.get("event") == "inventory":
                 session.reconcile_transport_inventory(socket)
             elif logical.payload.get("event") == "draining":
                 session.begin_physical_drain()
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as exc:
         # A transport disconnect does not kill children or release claims.
-        pass
+        close_code = exc.code
+        close_reason = exc.reason
     except (AuthenticationError, ProtocolError):
+        close_code = 1008
         if socket.application_state is not WebSocketState.DISCONNECTED:
             await socket.close(code=1008)
+    except Exception:
+        close_code = 1011
+        raise
     finally:
         if session is not None:
+            lease = session.lease
+            current = session.bridge.socket is socket
             session.bridge.disconnect(socket)
+            if current:
+                await _record_guest_socket_evidence(lease, close_code=close_code or 1001, close_reason=close_reason)

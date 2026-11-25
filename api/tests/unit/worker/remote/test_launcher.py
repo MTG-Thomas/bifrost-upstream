@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import signal
+from ssl import SSLCertVerificationError
 from contextlib import asynccontextmanager
 from queue import Empty
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from websockets.exceptions import ConnectionClosedError
 from websockets.frames import Close
 from src.services.execution.container_result import InvalidContainerResult
 from src.worker.network import worker_network
+from src.worker.remote.guest_diagnostics import guest_diagnostic_payload, verify_guest_diagnostic
 from src.worker.remote.identity import LauncherIdentity
 from src.worker.remote.launcher import (
     Launcher,
@@ -26,6 +28,54 @@ from src.worker.remote.launcher import (
     _load_containers_control_secret,
 )
 from src.worker.remote.protocol import STATIC_INCARNATION_LOST, ControlEnvelope
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", [
+    "hello", "bootstrap", "runtime-grant", "requirements", "guest-init", "inventory",
+    "canary-command", "sdk-tls", "sdk-witness", "egress-probes", "ack", "ready",
+])
+async def test_managed_guest_reports_one_signed_fatal_per_incarnation(stage) -> None:
+    socket = SimpleNamespace(send=AsyncMock())
+    launcher = Launcher(
+        socket, identity=LauncherIdentity.from_environment({"HOSTNAME": "fixture"}),
+        secret="fixture-control-key", containers=True, container_release="a" * 64,
+    )
+    launcher.session_generation = 1
+    await launcher.note_guest_stage(stage)
+    await launcher.report_guest_fatal(RuntimeError("secret-only-in-the-exception"))
+    await launcher.report_guest_fatal(ValueError("second-failure"))
+
+    frames = [ControlEnvelope.from_json(call.args[0]) for call in socket.send.await_args_list]
+    assert len(frames) == (1 if stage == "hello" else 2)
+    assert all("secret-only-in-the-exception" not in frame.to_json() for frame in frames)
+    fatal = frames[-1]
+    assert verify_guest_diagnostic(launcher.secret, 1, fatal.sequence, fatal.payload) == {
+        "event": "guest_fatal", "stage": stage, "exception_class": "RuntimeError", "reason": "runtime",
+    }
+
+
+def test_guest_diagnostic_keeps_only_the_allowlisted_tls_class() -> None:
+    wrapped = ConnectionError("secret in outer error")
+    wrapped.__cause__ = SSLCertVerificationError("secret in verification error")
+    assert guest_diagnostic_payload("sdk-witness", wrapped) == {
+        "event": "guest_fatal", "stage": "sdk-witness",
+        "exception_class": "SSLCertVerificationError", "reason": "tls",
+    }
+
+
+@pytest.mark.asyncio
+async def test_managed_guest_fatal_delivery_is_bounded() -> None:
+    async def stalled_send(_raw):
+        await asyncio.Event().wait()
+
+    launcher = Launcher(
+        SimpleNamespace(send=stalled_send), identity=LauncherIdentity.from_environment({"HOSTNAME": "fixture"}),
+        secret="fixture-control-key", containers=True, container_release="a" * 64,
+    )
+    launcher.session_generation = 1
+    async with asyncio.timeout(1):
+        await launcher.report_guest_fatal(RuntimeError("guest could not start"))
 
 
 @pytest.mark.asyncio

@@ -586,7 +586,18 @@ export function relayControlSockets(registry, uid, instance, guest, ingress) {
                 close(1011, "Container relay failed");
             }
         });
-        source.addEventListener("close", () => close(1000, "Container relay closed"));
+        source.addEventListener("close", ({code}) => {
+            // Reserved codes cannot be sent in a close frame. Preserve
+            // transferable codes and never copy peer-supplied reason text.
+            if (
+                [1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014].includes(code)
+                || (Number.isInteger(code) && code >= 3000 && code < 5000)
+            ) {
+                close(code, "Container relay peer closed");
+            } else {
+                close(1011, "Container relay transport lost");
+            }
+        });
         source.addEventListener("error", () => close(1011, "Container relay failed"));
     }
 }

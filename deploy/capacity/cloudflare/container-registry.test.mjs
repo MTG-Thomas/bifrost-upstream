@@ -236,8 +236,9 @@ test("only acknowledgement of the exact settled fence releases the one-seat regi
 class Socket extends EventTarget {
     sent = [];
     closed = [];
+    closeReasons = [];
     send(data) { this.sent.push(data); }
-    close(code) { this.closed.push(code); }
+    close(code, reason) { this.closed.push(code); this.closeReasons.push(reason); }
     frame(data) { this.dispatchEvent(new MessageEvent("message", { data })); }
 }
 
@@ -587,6 +588,24 @@ test("a silent relay closes at the pinned deadline", (t) => {
     assert.deepEqual(guest.closed, [1008]);
     assert.deepEqual(ingress.closed, [1008]);
     assert.deepEqual(ingress.sent, []);
+});
+
+test("the control relay preserves close codes without copying peer reasons", () => {
+    const registry = { relayDeadline: () => Date.now() + 1000, chargeRelay: () => true };
+    for (const [sourceCode, wireCode, category] of [
+        [1000, 1000, "peer closed"],
+        [1008, 1008, "peer closed"],
+        [1011, 1011, "peer closed"],
+        [1006, 1011, "transport lost"],
+    ]) {
+        const guest = new Socket();
+        const ingress = new Socket();
+        relayControlSockets(registry, "uid", "instance", guest, ingress);
+        const event = Object.assign(new Event("close"), { code: sourceCode, reason: "fixture-secret" });
+        guest.dispatchEvent(event);
+        assert.deepEqual(ingress.closed, [wireCode]);
+        assert.deepEqual(ingress.closeReasons, [`Container relay ${category}`]);
+    }
 });
 
 test("HTTP interception forwards only the exact ingress and shares the bidirectional meter", async (t) => {

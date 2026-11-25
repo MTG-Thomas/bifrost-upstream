@@ -37,6 +37,7 @@ const applications = new Map();
 const images = new Map();
 const preparationReads = new Map();
 let preparationMode = 'ready';
+let failGuestAfterHello = false;
 const foreignImages = new Set();
 const unattachedNamespaces = [];
 const placements = new Map();
@@ -159,7 +160,9 @@ function containerRuntime(item) {
                     if (image !== this.env.CONTAINERS_PREPARED_IMAGE || options.enableInternet !== false) {
                         throw new Error("Unpinned local Docker start");
                     }
-                    native.start({...options, image: native.images["bifrost-linux"]});
+                    native.start({...options, image: native.images["bifrost-linux"],
+                        env: {...options.env, ...(${item.failGuestAfterHello === true}
+                            ? {PYTHONPATH: "/app", REHEARSAL_FAIL_GUEST_AFTER_HELLO: "1"} : {})}});
                 },
                 destroy: native.destroy.bind(native),
                 interceptOutboundHttps: native.interceptOutboundHttps.bind(native),
@@ -216,16 +219,26 @@ function placementInventory(application) {
       assert.ok(!guest.Config.Env.some((value) =>
         /^(BIFROST_SECRET_KEY|BIFROST_WORKER_CAPACITY_TOKEN|BIFROST_DATABASE_URL)=/.test(value)));
       if (Date.parse(guest.State.StartedAt) > 0) record.startedAt ??= guest.State.StartedAt;
-      if (!guest.State.Running && Date.parse(guest.State.FinishedAt) > 0) record.stoppedAt ??= guest.State.FinishedAt;
+      if (!guest.State.Running && Date.parse(guest.State.FinishedAt) > 0) {
+        record.stoppedAt ??= guest.State.FinishedAt;
+        record.exitCode ??= guest.State.ExitCode;
+      }
     } else if (record.startedAt) {
       record.stoppedAt ??= new Date().toISOString();
     }
     if (!record.startedAt || Date.parse(record.startedAt) <= 0) return [];
     return [{
       id: record.actor, application_id: application.id, image: record.image, started_at: record.startedAt,
-      status: {state: record.stoppedAt ? 'stopped' : 'active', updated_at: record.stoppedAt ?? record.startedAt},
+      status: {
+        state: record.stoppedAt ? (record.exitCode ? 'failed' : 'stopped') : 'running',
+        updated_at: record.stoppedAt ?? record.startedAt, exit_code: record.exitCode,
+      },
     }];
   });
+}
+
+function livePlacement(entry) {
+  return ['active', 'provisioning', 'running', 'stopping', 'unhealthy'].includes(entry.status.state);
 }
 
 function serveIngress(req, res) {
@@ -458,6 +471,12 @@ async function provider(req, res) {
   if (relative === '/workers/subdomain') return ok({subdomain: 'rehearsal'});
   if (relative === '/workers/scripts') return ok([...workers.keys()].map((id) => ({id})));
   if (config.containers) {
+    if (path === '/local/guest-fatal-mode' && method === 'POST') {
+      const {enabled} = await json();
+      assert.equal(typeof enabled, 'boolean');
+      failGuestAfterHello = enabled;
+      return ok(null);
+    }
     if (path === '/local/image-preparation-mode' && method === 'POST') {
       const {mode} = await json();
       assert.ok(['error', 'slow'].includes(mode));
@@ -536,7 +555,7 @@ async function provider(req, res) {
     }
     const inventory = (entry) => {
       const {script, foreign, ...app} = entry;
-      const active = placementInventory(entry).filter(({status}) => status.state === 'active');
+      const active = placementInventory(entry).filter(livePlacement);
       return {...app, health: {instances: {active: active.length, starting: 0}}};
     };
     if (relative === '/containers/applications') {
@@ -579,10 +598,12 @@ async function provider(req, res) {
           return record ? ok(record) : missing();
         }
         const state = url.searchParams.get('state');
-        return ok(observed.filter((entry) => state === null || entry.status.state === state));
+        return ok(observed.filter((entry) => state === null || (
+          state === 'active' ? livePlacement(entry) : entry.status.state === state
+        )));
       }
       if (method === 'DELETE') {
-        assert.ok(!placementInventory(app).some((entry) => entry.status.state === 'active'));
+        assert.ok(!placementInventory(app).some(livePlacement));
         applications.delete(id);
         event('container-application-delete', {id});
         return ok(null);
@@ -629,6 +650,7 @@ async function provider(req, res) {
         .filter(([key]) => key !== 'metadata').map(async ([key, value]) => [key, module(await value.text())])));
       const owner = meta.bindings.find(({name: key}) => key === 'BIFROST_CAPACITY_OWNER').text;
       workers.set(name, {name, meta, modules, owner, deployment: randomUUID(), version: randomUUID(),
+        failGuestAfterHello: Boolean(meta.containers?.length) && failGuestAfterHello,
         endpoint: {enabled: false, previews_enabled: false},
         namespaces: Object.entries(meta.exports)
           .filter(([, value]) => !meta.containers?.length || value.type === 'durable-object').map(([exported]) =>

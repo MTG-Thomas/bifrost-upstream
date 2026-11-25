@@ -169,6 +169,23 @@ it("acknowledges a completed disconnect when opening the page again", async () =
 	expect(mocks.observe).not.toHaveBeenCalled();
 });
 
+it("shows the sanitized Container qualification failure on Capacity", async () => {
+	mocks.get.mockResolvedValue({
+		installation,
+		deployment: { container_qualification: {
+			stage: "sdk-witness", fatal_stage: "sdk-witness", exception_class: "TimeoutError",
+			reason: "timeout", close_code: 1011, close_category: "internal",
+			provider_terminal_state: "failed", provider_exit_code: 1,
+		} },
+	});
+	renderCapacity();
+	expect(await screen.findByText("Last Container Guest Stage")).toBeVisible();
+	expect(screen.getByText("sdk-witness")).toBeVisible();
+	expect(screen.getByText("TimeoutError at sdk-witness (timeout)")).toBeVisible();
+	expect(screen.getByText("1011 (internal)")).toBeVisible();
+	expect(screen.getByText("failed (exit 1)")).toBeVisible();
+});
+
 
 it.each([
 	["Scale In", "scale-in", "scaled_in", "Scaled In"],

@@ -1486,7 +1486,10 @@ class HostedContainers(ContainerRehearsal):
             if state["status"] not in ACTIVE_JOB and (
                 state["status"] != "succeeded" or result.get("outcome") != outcome
             ):
-                evidence("hosted-shaped-enable-failed", {"code": code, "canary_failure": result.get("canary_failure")})
+                evidence("hosted-shaped-enable-failed", {
+                    "code": code, "canary_failure": result.get("canary_failure"),
+                    "container_qualification": result.get("container_qualification"),
+                })
                 raise RuntimeError(f"Enable did not succeed ({code})")
             count = self.canaries()
             job_canaries = self.canaries(job=job)
@@ -1818,6 +1821,42 @@ def exercise_image_preparation_failure(fixture, trial):
     fixture.provider("/local/image-preparation-mode", "POST", {"mode": "slow"})
 
 
+def exercise_guest_fatal(fixture, trial):
+    """Fail the real Docker guest after bootstrap and inspect the product evidence."""
+    plan = trial.plan_activation()
+    baseline = trial.opening_inventory(plan)
+    fixture.provider("/local/guest-fatal-mode", "POST", {"enabled": True})
+    try:
+        accepted = trial.send("/api/capacity/cloudflare/activate", trial.activation_request)
+        job = str(UUID(accepted["job_id"]))
+
+        def completed():
+            state = trial.send(f"/api/platform-jobs/{job}", method="GET")
+            return state if state["status"] not in ACTIVE_JOB else None
+
+        state = wait("Injected post-hello guest failure", completed, trial.active_window(trial.enable_result_seconds))
+        assert state["status"] == "requires_action" and state["result"]["code"] == "CF_CONTAINERS_UNVERIFIED"
+        result = state["result"]["container_qualification"]
+        assert result["generation"] == result["fatal_generation"] == result["close_generation"] == 1
+        assert result["stage"] == result["fatal_stage"] == "requirements"
+        assert result["exception_class"] == "RuntimeError" and result["reason"] == "runtime"
+        assert (result["close_code"], result["close_category"]) == (1011, "internal")
+        assert (result["provider_terminal_state"], result["provider_exit_code"]) == ("failed", 1)
+        status = trial.send("/api/capacity/cloudflare", method="GET")
+        assert status["deployment"]["container_qualification"] == result
+        assert not status["installation"]["admission_open"]
+        assert trial.canaries(job=job) == trial.canaries(job=job, settled=True) == 1
+        assert "rehearsal-secret-in-guest-exception" not in json.dumps([state, status])
+        evidence("guest-fatal-after-hello", result)
+    finally:
+        original = sys.exception()
+        try:
+            trial.teardown(baseline, plan, None, original)
+        finally:
+            fixture.provider("/local/guest-fatal-mode", "POST", {"enabled": False})
+    assert trial.install() is None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
@@ -1827,13 +1866,18 @@ def main():
     modes.add_argument("--hosted-upgrade-config", type=Path, help="Run the rehearsed Upgrade against a dedicated hosted ingress")
     modes.add_argument("--containers-hosted-shape", action="store_true", help="Run the Containers trial sequence")
     parser.add_argument("--hosted-containers-config", type=Path, help="Use this hosted config with --containers-hosted-shape")
-    parser.add_argument("--exercise-image-preparation-failure", action="store_true",
+    exercises = parser.add_mutually_exclusive_group()
+    exercises.add_argument("--exercise-image-preparation-failure", action="store_true",
                         help="Locally rehearse a failed preparation and Disconnect before the slow happy path")
+    exercises.add_argument("--exercise-guest-fatal", action="store_true",
+                        help="Locally rehearse one post-hello Docker guest failure and Disconnect")
     args = parser.parse_args()
     if args.hosted_containers_config and not args.containers_hosted_shape:
         parser.error("--hosted-containers-config requires --containers-hosted-shape")
     if args.exercise_image_preparation_failure and (not args.containers_hosted_shape or args.hosted_containers_config):
         parser.error("--exercise-image-preparation-failure requires the local hosted-shaped fixture")
+    if args.exercise_guest_fatal and (not args.containers_hosted_shape or args.hosted_containers_config):
+        parser.error("--exercise-guest-fatal requires the local hosted-shaped fixture")
     if args.hosted_upgrade_config:
         HostedUpgrade(args.hosted_upgrade_config).run()
         return
@@ -1854,6 +1898,9 @@ def main():
                 "live_target_usd": "0.03", "live_abort_usd": "0.05", "settled_cap_usd": "0.02",
             }))
             trial = HostedContainers(config)
+            if args.exercise_guest_fatal:
+                exercise_guest_fatal(fixture, trial)
+                return
             if args.exercise_image_preparation_failure:
                 exercise_image_preparation_failure(fixture, trial)
             if fixture.cfg.get("foreignInventory"):

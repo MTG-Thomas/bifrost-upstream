@@ -16916,6 +16916,10 @@ export interface components {
             ingress_verified_at?: string | null;
             /** Signed Canary At */
             signed_canary_at?: string | null;
+            /** Container Qualification */
+            container_qualification?: {
+                [key: string]: string | number;
+            } | null;
         };
         /** CloudflareDiscoveryChoice */
         CloudflareDiscoveryChoice: {

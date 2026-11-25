@@ -88,6 +88,7 @@ from src.services.worker_pool.cloudflare_containers_policy import (
     QUALIFICATION_DEFERRED_KEY,
     QUALIFICATION_DEFERRED_RELEASE_KEY,
     ContainersPolicy,
+    container_qualification_evidence,
     fleet_envelope,
     qualification_deferred,
 )
@@ -1199,13 +1200,25 @@ async def _enable(
 ) -> dict[str, Any]:
     payload = CloudflareEnablePayload.model_validate(parsed)
     await context.report("Checking Cloudflare Release and Entitlement")
+
+    async def qualification_evidence() -> dict[str, Any]:
+        async with get_db_context() as db:
+            evidence = await container_qualification_evidence(
+                db, payload.installation_id, job_id=context.job_id, lease_token=context.lease_token,
+            )
+        return {"container_qualification": evidence} if evidence is not None else {}
+
     try:
         release = load_workers_release()
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
-            return await _settle_enable(
+            result = await _settle_enable(
                 context, payload, http, release, repair_tunnel_ingress=repair_tunnel_ingress,
                 refresh_container_egress=refresh_container_egress,
             )
+        return {**result, **await qualification_evidence()}
+    except (PlatformJobFailure, PlatformJobRequiresAction) as exc:
+        exc.result = {**(exc.result or {}), **await qualification_evidence()}
+        raise
     except WorkersReleaseUnavailable:
         raise PlatformJobRequiresAction("Install a Qualified Workers Release", {"code": "CF_RELEASE_UNAVAILABLE"}) from None
     except ContainersReleaseUnavailable:

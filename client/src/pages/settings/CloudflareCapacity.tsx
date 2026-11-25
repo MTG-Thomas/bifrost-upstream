@@ -680,6 +680,7 @@ export function CloudflareCapacity() {
 	const [rotateError, setRotateError] = useState<unknown>();
 	const [editing, setEditing] = useState(false);
 	const installation = data?.installation;
+	const qualification = data?.deployment?.container_qualification;
 	const jobId = acceptedJobId ?? data?.latest_job_id;
 	const job = observedJob?.id === jobId ? observedJob : undefined;
 	const instructions = job?.result?.instructions;
@@ -946,6 +947,14 @@ export function CloudflareCapacity() {
 									<div><dt className="text-muted-foreground">Last Verified Ingress Probe</dt><dd>{timestamp(data.deployment.ingress_verified_at)}</dd></div>
 									<div><dt className="text-muted-foreground">Last Verified DNS</dt><dd>{installation.reachability_mode === "managed_tunnel" ? timestamp(data.deployment.dns_verified_at) : "Not Separately Verified"}</dd></div>
 									<div><dt className="text-muted-foreground">Last Signed Canary</dt><dd>{timestamp(data.deployment.signed_canary_at)}</dd></div>
+									{qualification && (
+										<>
+											{qualification.stage != null && <div><dt className="text-muted-foreground">Last Container Guest Stage</dt><dd>{qualification.stage}</dd></div>}
+											{qualification.exception_class != null && <div><dt className="text-muted-foreground">Container Guest Failure</dt><dd>{qualification.exception_class} at {qualification.fatal_stage} ({qualification.reason})</dd></div>}
+											{qualification.close_code != null && <div><dt className="text-muted-foreground">Container Control Close</dt><dd>{qualification.close_code} ({qualification.close_category})</dd></div>}
+											{qualification.provider_terminal_state != null && <div><dt className="text-muted-foreground">Container Provider State</dt><dd>{qualification.provider_terminal_state}{qualification.provider_exit_code != null && ` (exit ${qualification.provider_exit_code})`}</dd></div>}
+										</>
+									)}
 									{data.deployment.revision != null && <div><dt className="text-muted-foreground">Ingress and Canary Evidence Revision</dt><dd>{data.deployment.revision}</dd></div>}
 									{installation.reachability_mode === "managed_tunnel" && (
 										<>

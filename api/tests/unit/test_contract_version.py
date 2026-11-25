@@ -488,7 +488,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # The CLI passes through response fields, so MIN_CLI_VERSION is unchanged.
     # Cloudflare policy saves require the independently reviewed policy version.
     # The unreleased 1.4.3 CLI floor includes the matching flag.
-    "6ec8a8b712d6810a2d288f47cca5638ddaff352a56245236e2d12225bed952d6"
+    # Optional Container qualification evidence is additive in Capacity JSON.
+    "2527fbd33e3f02e99166a46406ad6b30528edc77ceb5b22fcb32c2fc3a7f810d"
 )
 
 

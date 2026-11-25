@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
+
 from shared.models import ContainersPolicy as ContainersPolicy
 from sqlalchemy import (
     DateTime,
@@ -15,6 +17,7 @@ from sqlalchemy import (
     literal,
     select,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from src.models.orm.cloudflare_capacity import (
@@ -30,6 +33,27 @@ QUALIFICATION_DEFERRED_KEY = "container_qualification_deferred_revision"
 QUALIFICATION_DEFERRED_RELEASE_KEY = "container_qualification_deferred_release"
 # Match the provider registry's allowance when comparing the two clocks.
 CONTAINER_CLOCK_SKEW = timedelta(seconds=3)
+
+
+async def container_qualification_evidence(
+    db: AsyncSession, installation_id: UUID, *, job_id: UUID | None = None, lease_token: UUID | None = None,
+) -> dict[str, str | int] | None:
+    """Project the sanitized evidence of the most recent qualification guest."""
+    pin = CloudflareWorkerReservation
+    statement = select(pin.container_envelope).where(
+        pin.installation_id == installation_id, pin.scope == CONTAINERS_SCOPE,
+        pin.canary_job_id.is_not(None), pin.container_reserved_at.is_not(None),
+    )
+    if job_id is not None:
+        statement = statement.where(pin.canary_job_id == job_id, pin.canary_lease_token == lease_token)
+    envelope = await db.scalar(statement.order_by(pin.container_reserved_at.desc(), pin.worker_id).limit(1))
+    if not envelope:
+        return None
+    diagnostic = dict(envelope.get("guest_diagnostic") or {})
+    for key in ("provider_terminal_state", "provider_exit_code"):
+        if key in envelope:
+            diagnostic[key] = envelope[key]
+    return diagnostic or None
 
 
 def unresolved_container_reservation():

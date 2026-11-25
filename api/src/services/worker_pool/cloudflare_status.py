@@ -56,6 +56,7 @@ from src.services.worker_pool.cloudflare_containers_egress import (
 from src.services.worker_pool.cloudflare_containers_policy import (
     ContainersPolicy,
     container_deadline_sql,
+    container_qualification_evidence,
     qualification_deferred,
 )
 from src.services.worker_pool.cloudflare_provisioning import ObservationCheck, OwnershipCheck, OwnershipResource
@@ -359,6 +360,8 @@ async def _container_controller_reason(installation: CloudflareInstallation) -> 
 async def deployment_evidence(db: AsyncSession, installation: CloudflareInstallation) -> CloudflareDeploymentEvidence:
     stored = installation.deployment_evidence or {}
     evidence = CloudflareDeploymentEvidence.model_validate(stored)
+    if ContainersPolicy.model_validate(installation.containers_policy).enabled:
+        evidence.container_qualification = await container_qualification_evidence(db, installation.id)
     if installation.reachability_mode == "managed_tunnel":
         evidence.dns_verified_at = await db.scalar(select(func.max(CloudflareOwnedResource.observed_at)).where(
             CloudflareOwnedResource.installation_id == installation.id,
