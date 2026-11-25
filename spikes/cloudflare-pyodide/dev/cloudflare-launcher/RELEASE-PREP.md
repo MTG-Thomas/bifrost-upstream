@@ -2,10 +2,11 @@
 
 **Prepared locally. Publication is held for the frozen-target release review,
 owner approval, and fork settings checks.**
-The exact rc03 release candidate is `01393ec44c77ba509d05c7d0b258dc35e7a15571`
-on local branch `t3/cloudflare-release-rc03`. It includes the shared-account
-namespace fix, runner evidence fixes, and the Sigstore v0.3 verifier fix.
-The approved release body is byte-identical to rc02. Push the pinned candidate to
+The exact rc04 release candidate is `0a9ca46e2bd45d1d10621b141bc38bc4b63c8c07`
+on local branch `t3/cloudflare-release-rc04`. It includes the image preparation
+wait, exact registry cleanup, and runner evidence fixes.
+See [rc04 image preparation and cleanup](RC04-IMAGE-PREPARATION.md).
+The approved release body remains byte-identical to rc02 and rc03. Push the pinned candidate to
 `trial/cloudflare-containers-20261124` on `personal`
 (`MTG-Thomas/bifrost-upstream`). Keep the fork's `main` unchanged. The tag
 pins the commit before this documentation receipt.
@@ -34,22 +35,22 @@ pins the commit before this documentation receipt.
   variables on fork tags. The ten-digit date-based RC namespace is reserved
   for fork trials and rejected on upstream. Ordinary upstream tags retain
   optional packaging. The workflow uses the fork's `GITHUB_TOKEN`.
-- The fork published rc02 from `85e761039753a4421e872f40cda8c792e3fc5e4c`.
-  Hosted preflight found that Cosign's legacy parser rejected its v0.3
-  release bundle before any Cloudflare call. The new tag is **`v2.0.0-rc.2026112403`**.
+- The fork published rc03 from `01393ec44c77ba509d05c7d0b258dc35e7a15571`.
+  Hosted attempt four reached Activate, then exposed preparation and image
+  cleanup failures. The new tag is **`v2.0.0-rc.2026112404`**.
   The exact tag was absent on both remotes during preparation. The fork trial
-  branch pointed to rc02, an ancestor of this candidate. Recheck both refs
+  branch pointed to rc03, an ancestor of this candidate. Recheck both refs
   at the approval gate. The ten-digit
   suffix reserves it for fork trials and keeps the prerelease off `:latest`.
 - CI strips the leading `v` and sets both the API version and
-  `workers.release_version` to `2.0.0-rc.2026112403`. The version exceeds
+  `workers.release_version` to `2.0.0-rc.2026112404`. The version exceeds
   the CLI floor of `1.4.3`, and the API reconstructs the exact tag from the
   packaged Workers version. The CLI tarball uses PEP 440 metadata
-  `2.0.0rc2026112403`. The signer identity would be
-  `https://github.com/MTG-Thomas/bifrost-upstream/.github/workflows/ci.yml@refs/tags/v2.0.0-rc.2026112403`.
+  `2.0.0rc2026112404`. The signer identity would be
+  `https://github.com/MTG-Thomas/bifrost-upstream/.github/workflows/ci.yml@refs/tags/v2.0.0-rc.2026112404`.
 - The three plugin manifests match the prerelease version. The tag workflow
-  selects `product-updates/release-bodies/v2.0.0-rc.2026112403.md` by exact
-  filename. Both rc02 and rc03 bodies are retained.
+  selects `product-updates/release-bodies/v2.0.0-rc.2026112404.md` by exact
+  filename. The approved rc02, rc03 and rc04 bodies are retained.
   The general `scripts/release-check.sh` preflight requires a separately
   rendered Product Updates body with reviewed inventory metadata. The fork
   workflow checks the exact-tag body and prepares approved in-app updates
@@ -64,10 +65,10 @@ destination branch. Use only the explicit `personal` refspecs below.
 Never use `git push --tags` or `git push --follow-tags`. The commands remain unrun.
 
 ```sh
-git tag -a v2.0.0-rc.2026112403 01393ec44c77ba509d05c7d0b258dc35e7a15571 -m "Cloudflare Containers Trial"
-test "$(git rev-parse 'v2.0.0-rc.2026112403^{commit}')" = 01393ec44c77ba509d05c7d0b258dc35e7a15571 || exit 1
-git -c push.followTags=false push personal 01393ec44c77ba509d05c7d0b258dc35e7a15571:refs/heads/trial/cloudflare-containers-20261124
-git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112403:refs/tags/v2.0.0-rc.2026112403
+git tag -a v2.0.0-rc.2026112404 0a9ca46e2bd45d1d10621b141bc38bc4b63c8c07 -m "Cloudflare Containers Trial"
+test "$(git rev-parse 'v2.0.0-rc.2026112404^{commit}')" = 0a9ca46e2bd45d1d10621b141bc38bc4b63c8c07 || exit 1
+git -c push.followTags=false push personal 0a9ca46e2bd45d1d10621b141bc38bc4b63c8c07:refs/heads/trial/cloudflare-containers-20261124
+git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112404:refs/tags/v2.0.0-rc.2026112404
 ```
 
 The tag runs the full CI test suite on the fork's GitHub Actions before
@@ -145,7 +146,7 @@ script names, namespace script references, application name and registry
 repository for collisions before activation. Retain unattributed rows in the
 foreign inventory. Verify the foreign inventory after Disconnect and check
 that journaled namespace IDs are absent. Run the current harness against the
-published rc03 image pins. See the
+published rc04 image pins. See the
 [hosted response audit](../e2e/CONTAINERS-HOSTED-RESPONSE-AUDIT.md).
 For Existing HTTPS the zone is operator metadata and the
 runner does not send it or mutate DNS. The `.env` operator credentials and
@@ -166,7 +167,7 @@ the runner config stay private. Set the config mode to `0600`.
 }
 ```
 
-After rc03 is published and approved for the trial, pin the Compose project
+After rc04 is published and approved for the trial, pin the Compose project
 to its published API and client digests and verify the signed Linux digest.
 From that project directory, call the runner from the separate candidate
 checkout using the approved private config.
