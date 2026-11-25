@@ -3992,7 +3992,7 @@ async def test_disconnect_retry_recovers_failed_container_canary(
             else:
                 assert "tag-deleted" in events
             passes += 1
-            assert passes <= 4
+            assert passes <= (4 if observed_start else 5)  # One extra pass to retry the pending retire receipt.
 
         monkeypatch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=advance_scheduler))
         assert await lifecycle_job._settle_disable(context, payload, WorkersRestCleanup(http), tunnel_http=http) == {
@@ -5940,11 +5940,7 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         cooldown = await _container_scope_cooldown(db_session, fresh)
         assert cooldown is not None and cooldown.code == "CF_CONTAINERS_COOLDOWN"
         assert cooldown.retry_at is not None and cooldown.retry_at > fresh.now
-    assert await cloudflare_workers_remain(db_session, installation.id) is fenced
-    if fenced:
-        executor = await db_session.get(ExecutionWorker, worker)
-        assert executor is not None
-        executor.capacity_resource_deleted_at = pin.container_stopped_at
+    assert not await cloudflare_workers_remain(db_session, installation.id)
     assert await db_session.scalar(select(container_account_usage(literal(deadline))).where(
         CloudflareInstallation.id == installation.id,
     )) == Decimal("0.31" if fenced else "0.01")
