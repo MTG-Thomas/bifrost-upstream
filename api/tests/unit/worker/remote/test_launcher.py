@@ -99,7 +99,7 @@ async def test_managed_guest_reconnect_and_canary_refusal_preserve_the_fatal_rep
         ]),
     )
     launcher = Launcher(
-        dropped, identity=LauncherIdentity.from_environment({"HOSTNAME": "fixture"}),
+        dropped, identity=LauncherIdentity(uuid4(), uuid4(), None, None, "fixture", "external", "fixture"),
         secret="fixture-control-key", containers=True, container_release="a" * 64,
         container_probe_nonce="p" * 43, container_deadline=launcher_module.time.monotonic() + 60,
     )
