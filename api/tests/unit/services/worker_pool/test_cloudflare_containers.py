@@ -1104,6 +1104,55 @@ async def test_container_control_signs_each_route_for_the_incarnation(operation)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("state", "exit_code", "terminal", "sanitized_code"), [
+    ("failed", 1, True, 1),
+    ("stopped", 0, True, 0),
+    ("inactive", None, True, None),
+    ("failed", "private provider message", True, None),
+    ("failed", True, True, None),
+    ("failed", 2**40, True, None),
+    ("provisioning", 1, False, None),
+    ("running", 1, False, None),
+    ("stopping", 1, False, None),
+    ("unhealthy", 1, False, None),
+    ("unknown", 1, False, None),
+    ("future-provider-state", 1, False, None),
+])
+async def test_exact_container_stop_evidence(
+    observed_container, state, exit_code, terminal, sanitized_code,
+) -> None:
+    application, app_row = observed_container
+    actor = "e" * 64
+    image = "registry.cloudflare.com/account/image@sha256:" + "a" * 64
+    stopped = datetime.now(UTC)
+    started = stopped - timedelta(seconds=39, milliseconds=362)
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        if request.url.path.endswith(f"/instances/{actor}"):
+            result = {
+                "id": actor, "application_id": application.provider_id, "image": image,
+                "started_at": started.isoformat(),
+                "status": {"state": state, "updated_at": stopped.isoformat(), "exit_code": exit_code},
+            }
+        else:
+            assert request.url.path.endswith(f"/applications/{application.provider_id}")
+            result = app_row
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        adapter = ContainersRest(http)
+        args = {"instance_id": actor, "image": image, "not_before": started}
+        if terminal:
+            stop = await adapter.observe_instance_stop(TOKEN, application, **args)
+            assert (stop.started_at, stop.stopped_at) == (started, stopped)
+            assert (stop.terminal_state, stop.exit_code) == (state, sanitized_code)
+        else:
+            with pytest.raises(ObservationPending, match="has not witnessed a bounded stop"):
+                await adapter.observe_instance_stop(TOKEN, application, **args)
+
+
+@pytest.mark.asyncio
 async def test_concurrent_placement_reads_share_one_request_pacing_budget(observed_container, monkeypatch) -> None:
     application, row = observed_container
     now = 100.0

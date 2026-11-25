@@ -50,6 +50,10 @@ REGISTRY = "registry.cloudflare.com"
 _HEX32 = re.compile(r"[a-f0-9]{32}")
 _ACTOR_ID = re.compile(r"[a-f0-9]{64}")
 _APP_ID = re.compile(r"[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
+# The exact actor API also reports provisioning, running, stopping,
+# unhealthy and unknown. Only these three states witness a placement exit.
+# https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/get/
+_TERMINAL_INSTANCE_STATES = ("failed", "stopped", "inactive")
 _INVENTORY_PAGE_SIZE = 100
 _MAX_INVENTORY_PAGES = 100
 # Two settlement inventory reads per second per shared adapter leaves room
@@ -65,6 +69,8 @@ _IMAGE_COPY_LEASE_INTERVAL = 5
 class InstanceStop:
     started_at: datetime
     stopped_at: datetime
+    terminal_state: str
+    exit_code: int | None
 
 
 def _name(intent: ResourceIntent, kind: str) -> str:
@@ -335,7 +341,8 @@ class ContainersRest(WorkersRestCleanup):
             raise OwnershipConflict("Container placement differs from its journal")
         try:
             status = placement["status"]
-            if status["state"] not in ("stopped", "inactive"):
+            state = status["state"]
+            if state not in _TERMINAL_INSTANCE_STATES:
                 raise ValueError
             started_at = datetime.fromisoformat(placement["started_at"])
             stopped_at = datetime.fromisoformat(status["updated_at"])
@@ -343,7 +350,9 @@ class ContainersRest(WorkersRestCleanup):
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             raise ObservationPending("Provider has not witnessed a bounded stop for this placement") from None
-        return InstanceStop(started_at.astimezone(UTC), stopped_at.astimezone(UTC))
+        code = status.get("exit_code")
+        exit_code = code if type(code) is int and -(2**31) <= code < 2**31 else None
+        return InstanceStop(started_at.astimezone(UTC), stopped_at.astimezone(UTC), state, exit_code)
 
     async def observe_no_placement(self, token: SecretStr, application: ResourceObservation, instance_id: str) -> None:
         if await self._instance_inventory(token, application, instance_id) is not None:

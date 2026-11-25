@@ -188,6 +188,9 @@ async def settle_container_stop(
     ):
         raise ObservationPending("Container stop does not match the witnessed start")
     envelope["observed_started_at"] = stop.started_at.isoformat()
+    envelope["provider_terminal_state"] = stop.terminal_state
+    if stop.exit_code is not None:
+        envelope["provider_exit_code"] = stop.exit_code
     # Intercepted bytes are not a qualified provider billing measurement.
     pin.container_envelope = envelope
     observed_at = await db.scalar(select(func.clock_timestamp()))

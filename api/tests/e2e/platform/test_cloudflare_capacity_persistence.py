@@ -1310,6 +1310,8 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
 
     canary_started = canary_result != "missing"
     canary_ready = canary_result not in ("missing", "failed", "deferred-failed")
+    failed_placement = canary_result in ("failed", "deferred-failed")
+    start_observed = False
     deferred = canary_result == "canaries-exhausted" or canary_result.startswith("deferred-")
     revision = 2 if deferred or canary_result == "hours-exhausted" else 1
     container, image, config = make_release()
@@ -1432,7 +1434,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 pytest.fail(f"Unexpected OCI tool call {executable.name}, {args}")
 
     async def provider(request):
-        nonlocal bindings, application, started, stopped, actor
+        nonlocal bindings, application, started, stopped, actor, start_observed
         path = request.url.path
         if request.url.host == "github.com":
             return httpx.Response(200, content=assets[path.split("cloudflare-containers-")[1]])
@@ -1452,6 +1454,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 )
                 actor = canary_id.hex * 2
                 stopped = None
+                start_observed = False
                 row = await db_session.get(ExecutionWorker, canary_id)
                 pin = await db_session.get(CloudflareWorkerReservation, canary_id)
                 assert row is not None and row.reserved_for_dispatch_id is None
@@ -1498,7 +1501,14 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 assert body["closed_at"] == closed_at
                 events.append("retire")
                 return httpx.Response(200, json={"status": "retired"})
+            if path == "/v1/observe-start":
+                assert failed_placement and not start_observed
+                assert body["started_at"] == int(started.timestamp() * 1000)
+                start_observed = True
+                return httpx.Response(200, json={"status": "observed"})
             assert path == "/v1/close"
+            if failed_placement and not start_observed:
+                return httpx.Response(200, json={"status": "pending"})
             return httpx.Response(200, json={
                 "status": "closed", "instance": actor, "startedAt": int(started.timestamp() * 1000),
                 "authorizedAt": identity["reservedAt"], "closedAt": closed_at, "meterComplete": False,
@@ -1571,7 +1581,10 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             assert application is not None and started is not None and stopped is not None
             result = {
                 "id": actor, "application_id": application["id"], "image": full_image,
-                "started_at": started.isoformat(), "status": {"state": "stopped", "updated_at": stopped.isoformat()},
+                "started_at": started.isoformat(), "status": {
+                    "state": "failed" if failed_placement else "stopped",
+                    "updated_at": stopped.isoformat(), "exit_code": int(failed_placement),
+                },
             }
         else:
             assert application is not None and path.endswith(f"/containers/applications/{application['id']}")
@@ -1580,6 +1593,12 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
 
     monkeypatch.setattr(enable_job, "get_db_context", transaction)
     monkeypatch.setattr(cloudflare_containers_control, "get_db_context", transaction)
+    if failed_placement:
+        async def retire_pause(delay):
+            assert delay == 1 and start_observed
+
+        monkeypatch.setattr(enable_job, "sleep", retire_pause)
+        monkeypatch.setattr(cloudflare_containers_rest, "_PLACEMENT_READ_INTERVAL", 0)
     if canary_result == "image-superseded":
         monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_SETTLEMENT_INTERVAL", 0)
     else:
@@ -1686,6 +1705,8 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 assert installation.admitted_revision is installation.containers_ready_revision is None
                 assert installation.containers_release_digest is None
                 assert "container_qualification_deferred_revision" not in installation.deployment_evidence
+                if failed_placement:
+                    assert start_observed
                 return
             with monkeypatch.context() as cleanup:
                 cleanup.setattr(enable_job, "reconcile_container_stop", AsyncMock(side_effect=PlatformJobFailure(
@@ -1752,6 +1773,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 assert held.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
                 if canary_result == "failed":
                     assert held.value.result["canary_failure"] == {"stage": "ack", "error_class": "invalid_reply"}
+                    assert start_observed
     starts = 2 if canary_result == "pending-replaced" else int(canary_started)
     assert events == ["copy", "prepare", "launcher", "application"] + ["canary", "stop", "retire"] * starts
     assert provisioner.create.await_count == (3 if canary_ready else 0)
@@ -3538,6 +3560,268 @@ async def test_disconnect_after_unconfirmed_image_create(
     assert deletes == ([f"{name}:release"] if registry_tag == "matching" else [])
     await db_session.refresh(installation)
     assert installation.retired_at is not None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_retry_recovers_failed_container_canary(
+    db_session, installation, monkeypatch, lifecycle_audit_actor,
+) -> None:
+    from src.services.worker_pool import cloudflare_containers_control, cloudflare_containers_rest
+    from src.services.worker_pool.cloudflare_containers_policy import container_account_usage
+
+    now = datetime.now(UTC)
+    reserved_at = usage_period(now - timedelta(minutes=20))[0] + timedelta(minutes=5)
+    deadline = reserved_at + timedelta(seconds=15)
+    started = reserved_at + timedelta(seconds=4, milliseconds=7)
+    stopped = started + timedelta(seconds=39, milliseconds=362)
+    started_ms = int(started.timestamp() * 1000)
+    closed_ms = int(stopped.timestamp() * 1000) + 1000
+
+    installation.desired_state = "enabled"
+    installation.deployed_revision = 1
+    release, _, _ = make_release()
+    app = app_journal(installation, release.digest, reserved_at)
+    assert app.provider_version is not None
+    namespace_ids = {"ContainerLauncher": app.provider_version, "ContainerScopeRegistry": "b" * 32}
+    app.namespace_ids = {"ContainerLauncher": app.provider_version}
+    digest = release.manifest.image_digest
+    repository = f"registry.cloudflare.com/{installation.account_id}/{app.target_name}"
+    image = f"{repository}@{digest}"
+    tag = f"{repository}:release"
+    script = CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="containers", kind="worker_script", target_name=f"{app.target_name}-containers",
+        desired_revision=1, artifact_digest=release.digest, effect_id=uuid4(), state="present",
+        provider_id=str(uuid4()), provider_version=str(uuid4()), namespace_ids=namespace_ids,
+    )
+    registry = CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="containers", kind="container_image", target_name=app.target_name, desired_revision=1,
+        artifact_digest=release.digest, effect_id=uuid4(), state="present", provider_id=tag, provider_version=digest,
+        provider_details={"creation_sent": True, "image_digest": digest},
+    )
+    worker_id, uid, actor = uuid4(), uuid4().hex, "e" * 64
+    worker = ExecutionWorker(
+        id=worker_id, form="external", state="draining", capacity_scope="containers",
+        capacity_resource_uid=uid, remote_hello_sequence=1, remote_session_generation=1,
+        remote_owner_lease_expires_at=stopped + timedelta(seconds=8),
+    )
+    ref = CredentialRef(installation.id, installation.account_id, "scope_bearer", "containers", 1)
+    db_session.add_all([
+        app, script, registry, worker,
+        seal_credential(ref, SecretStr("synthetic-container-scope-key"), actor=str(OPERATOR_ID), now=reserved_at),
+    ])
+    await db_session.flush()
+    db_session.add(CloudflareCapacityScope(
+        installation_id=installation.id, scope="containers", deployment_revision=1,
+        endpoint="https://container-scope.example.test", bearer_version=1,
+    ))
+    pin = CloudflareWorkerReservation(
+        worker_id=worker_id, installation_id=installation.id, scope="containers", deployment_revision=1,
+        control_root_version=installation.control_root_version, container_tenant="qualification-canary",
+        container_release=release.digest, container_reserved_at=reserved_at,
+        canary_job_id=uuid4(), canary_lease_token=uuid4(),
+        container_envelope={
+            "seconds": 196, "second_usd": "0.00002056", "fixed_usd": "0.0000135",
+            "start_deadline": deadline.isoformat(), "image_digest": digest, "instance_type": "standard-1",
+            "credential_version": 1, "ingress_bytes": 100, "outbound_bytes": 100,
+        },
+    )
+    db_session.add(pin)
+    await db_session.flush()
+    prior, _ = await lifecycle_job.enqueue_cloudflare_disable(
+        db_session, _platform_operator(), installation_id=installation.id, expected_revision=1, action="disconnect",
+    )
+    prior.status = "requires_action"
+    prior.error_code = "CF_DRAIN_TIMEOUT"
+    await db_session.flush()
+    retry, reused = await lifecycle_job.enqueue_cloudflare_disable(
+        db_session, _platform_operator(), installation_id=installation.id, expected_revision=2, action="disconnect",
+    )
+    assert not reused and retry.id != prior.id and retry.payload["revision"] == 3
+    context = PlatformJobContext(retry.id, uuid4(), None, str(OPERATOR_ID), "", "")
+    retry.status = "running"
+    retry.started_at = now
+    retry.lease_token = context.lease_token
+    retry.lease_expires_at = now + timedelta(minutes=2)
+    await db_session.flush()
+
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def transaction():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as db:
+            yield db
+            await db.commit()
+
+    alive = {"application", "script", "registry", *namespace_ids.values()}
+    fence = "pending"
+    events = []
+    app_row = {
+        "id": app.provider_id, "name": app.target_name, "account_id": app.account_id,
+        "scheduling_policy": "durable_object", "durable_objects": {"namespace_id": app.provider_version},
+        "health": {"instances": {"active": 0, "starting": 0}},
+    }
+    owner = worker_owner_value(lifecycle_job._resource_intent(script))
+
+    def provider(request):
+        nonlocal fence
+        path = request.url.path
+        if request.url.host == "container-scope.example.test":
+            body = json.loads(request.content)
+            assert request.headers["x-bifrost-request-signature"] and body["pin"]["uid"] == uid
+            match path:
+                case "/v1/stop":
+                    result = {"status": "pending", "instance": actor}
+                case "/v1/void":
+                    result = {"status": "conflict"}
+                case "/v1/observe-start":
+                    assert fence == "pending" and body["started_at"] == started_ms
+                    fence = "observed"
+                    events.append("start-observed")
+                    result = {"status": "observed"}
+                case "/v1/close":
+                    result = {"status": "pending"}
+                    if fence != "pending":
+                        fence = "closed"
+                        result = {
+                            "status": "closed", "instance": actor,
+                            "authorizedAt": int(reserved_at.timestamp() * 1000) + 1000,
+                            "startedAt": started_ms, "closedAt": closed_ms,
+                        }
+                case "/v1/retire":
+                    assert fence == "closed" and body["closed_at"] == closed_ms
+                    events.append("registry-retired")
+                    result = {"status": "retired"}
+                case _:
+                    pytest.fail(f"Unexpected control path: {path}")
+            return httpx.Response(200, json=result)
+        assert request.url.host == "api.cloudflare.com"
+        if path.endswith(f"/instances/{actor}"):
+            assert "application" in alive
+            result = {
+                "id": actor, "application_id": app.provider_id, "image": image, "name": uid,
+                "started_at": started.isoformat(),
+                "status": {"state": "failed", "updated_at": stopped.isoformat(), "exit_code": 1},
+            }
+        elif path.endswith("/applications"):
+            result = [app_row] if "application" in alive else []
+        elif path.endswith(f"/applications/{app.provider_id}"):
+            if request.method == "DELETE":
+                assert events[-1] == "registry-retired"
+                alive.remove("application")
+                events.append("application-deleted")
+                return httpx.Response(204)
+            if "application" not in alive:
+                return httpx.Response(404)
+            result = app_row
+        elif path.endswith("/instances-v2"):
+            assert request.url.params["state"] == "active"
+            result = []
+        elif path.endswith(f"/scripts/{script.target_name}/settings"):
+            if "script" not in alive:
+                return httpx.Response(404)
+            result = {"bindings": [{"name": OWNER_BINDING, "type": "plain_text", "text": owner}]}
+        elif path.endswith(f"/scripts/{script.target_name}/deployments"):
+            result = {"deployments": [{
+                "id": script.provider_id, "versions": [{"version_id": script.provider_version, "percentage": 100}],
+            }]}
+        elif path.endswith(f"/scripts/{script.target_name}") and request.method == "DELETE":
+            alive.remove("script")
+            alive.difference_update(namespace_ids.values())
+            events.append("script-deleted")
+            return httpx.Response(200, json={"success": True, "result": {}})
+        elif path.endswith("/workers/durable_objects/namespaces"):
+            result = [
+                {"id": identifier, "script": script.target_name, "class": name}
+                for name, identifier in namespace_ids.items() if identifier in alive
+            ]
+            if not result:
+                events.append("namespaces-absent")
+        else:
+            assert path.endswith("/containers/registries/registry.cloudflare.com/credentials")
+            result = {
+                "account_id": installation.account_id, "registry_host": "registry.cloudflare.com",
+                "username": "fixture", "password": "fixture",
+            }
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async def registry_cli(_executable, *args, **_kwargs):
+        match args:
+            case ("--version",):
+                return b"1.0.0-beta.31"
+            case ("accounts", "get", "-q"):
+                return json_bytes({"id": installation.account_id})
+            case ("containers", "images", "list", "--filter", exact):
+                assert exact == f"^(?:{installation.account_id}/)?{app.target_name}$"
+                return json_bytes([{"name": app.target_name, "tags": ["release"]}] if "registry" in alive else [])
+            case ("digest", target):
+                assert target == tag and "registry" in alive
+                events.append("digest-verified")
+                return digest.encode()
+            case ("containers", "images", "delete", target, "--force"):
+                assert target == f"{app.target_name}:release" and events[-1] == "digest-verified"
+                alive.remove("registry")
+                events.append("tag-deleted")
+                return b""
+            case _:
+                pytest.fail(f"Unexpected registry command: {args}")
+
+    monkeypatch.setattr(cloudflare_containers_rest, "run_oci_tool", registry_cli)
+    monkeypatch.setattr(cloudflare_containers_rest, "_PLACEMENT_READ_INTERVAL", 0)
+    monkeypatch.setattr(lifecycle_job, "CREATE_SETTLEMENT_WINDOW", timedelta(0))
+    for module in (lifecycle_job, cloudflare_containers_control, cloudflare_supervisor):
+        monkeypatch.setattr(module, "get_db_context", transaction)
+    monkeypatch.setattr(cloudflare_supervisor, "record_controller_observation", AsyncMock())
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    payload = lifecycle_job.CloudflareDisablePayload.model_validate(retry.payload)
+    binding = ManagedCloudflareScope(installation.id, "containers", 1)
+    passes = 0
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        async def advance_scheduler(_delay):
+            nonlocal passes
+            if passes < 2:
+                await cloudflare_supervisor._reconcile_containers(
+                    binding, Settings(), http, uuid4(), {}, kubernetes=False,
+                )
+                await db_session.refresh(pin)
+                if passes == 0:
+                    assert pin.container_stopped_at is None and fence == "closed"
+                else:
+                    assert pin.container_stopped_at == stopped
+            else:
+                assert "tag-deleted" in events
+            passes += 1
+            assert passes <= 4
+
+        monkeypatch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=advance_scheduler))
+        assert await lifecycle_job._settle_disable(context, payload, WorkersRestCleanup(http), tunnel_http=http) == {
+            "outcome": "disconnected",
+        }
+
+    assert not alive
+    assert events == [
+        "start-observed", "registry-retired", "application-deleted", "script-deleted",
+        "namespaces-absent", "digest-verified", "tag-deleted",
+    ]
+    for receipt in (app, script, registry):
+        await db_session.refresh(receipt)
+        assert receipt.state == "absent" and receipt.observed_at is not None
+    await db_session.refresh(worker)
+    await db_session.refresh(installation)
+    assert worker.state == "retired" and worker.capacity_resource_deleted_at is not None
+    assert worker.ended_at == stopped
+    assert installation.retired_at is not None and installation.api_token_version is None
+    assert pin.container_envelope is not None
+    assert pin.container_envelope["provider_instance_id"] == actor
+    assert pin.container_envelope["registry_closed_at"] == closed_ms
+    assert pin.container_envelope["provider_terminal_state"] == "failed"
+    assert pin.container_envelope["provider_exit_code"] == 1
+    for seconds in (True, False):
+        billed = await db_session.scalar(select(container_account_usage(
+            literal(stopped), instance_seconds=seconds, account_id=installation.account_id,
+        )))
+        assert billed == Decimal("39.362" if seconds else "0.00082278272")
 
 
 @pytest.mark.asyncio

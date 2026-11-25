@@ -650,6 +650,22 @@ hold. Pair the closure with an exact management GET for the fenced actor
 under the verified application. Compare the placement start to the fence
 with the same three-second clock allowance as the registry.
 [Cloudflare exact instance lookup](https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/get/)
+
+| Exact actor state | Settlement treatment |
+| --- | --- |
+| `failed`, `stopped`, `inactive` | Terminal placement. Require a matching image and bounded start and stop timestamps before recording the start, closing the start fence, and settling. |
+| `provisioning`, `running`, `stopping`, `unhealthy` | Continue waiting for terminal evidence. |
+| `unknown` or any new value | Continue waiting for recognized terminal evidence. |
+
+The terminal state and an optional bounded integer exit code are retained
+in the reservation envelope. The existing ledger uses the witnessed span
+and retains the fixed hold. The hosted trial's cap calculation still
+rounds runtime up to a whole second. A failed qualification remains a
+qualification failure. Terminal readback lets cleanup complete and does
+not substitute for an ACK or an SDK witness. Disconnect can retry an
+existing unresolved reservation without a migration while its exact
+application, actor, and scope registry are still available.
+
 For application deletion, require an empty, terminal `instances-v2` read
 filtered to active placements, including provisioning and stopping, so
 stopped history cannot block deletion. Walk cursor pagination and check
