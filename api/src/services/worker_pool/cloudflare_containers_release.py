@@ -39,7 +39,7 @@ _COSIGN = Path("/app/artifacts/cloudflare/bin/cosign")
 _COSIGN_VERSION = "v2.4.1"
 _TRUSTED_ROOT_TARGET = ".sigstore/root/targets/trusted_root.json"
 _GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
-_DIGEST_DIAGNOSTIC_BYTES = 4096
+_OCI_DIAGNOSTIC_BYTES = 4096
 
 
 class ContainersReleaseUnavailable(Exception):
@@ -72,7 +72,7 @@ class OCIToolError(ContainersReleaseUnavailable):
         )
 
 
-def _digest_failure(stderr: bytes) -> OCIToolFailure:
+def _crane_registry_failure(stderr: bytes) -> OCIToolFailure:
     # crane v0.20.6 prints an OCI diagnostic code or a numeric HTTP status.
     # https://github.com/google/go-containerregistry/blob/v0.20.6/pkg/v1/remote/transport/error.go
     # A failed HEAD may log a warning before the final GET error.
@@ -87,6 +87,21 @@ def _digest_failure(stderr: bytes) -> OCIToolFailure:
         diagnostic,
     ):
         return OCIToolFailure.REGISTRY_UNAVAILABLE
+    return OCIToolFailure.REJECTED
+
+
+def _cf_registry_failure(stderr: bytes) -> OCIToolFailure:
+    # The pinned cf CLI renders an API status line inside its error block,
+    # followed by optional advice. Retain only the status category.
+    statuses = re.findall(rb"(?m)^[ \t]*(?:\xe2\x94\x82[ \t]*)?([45][0-9]{2})(?=[ \t]|$)", stderr)
+    if statuses:
+        status = int(statuses[-1])
+        if status in (401, 403):
+            return OCIToolFailure.REGISTRY_AUTH
+        if status in (408, 429) or status >= 500:
+            return OCIToolFailure.REGISTRY_UNAVAILABLE
+    elif re.search(rb"(?m)^[ \t]*(?:\xe2\x94\x82[ \t]*)?\[(?:10000|9109)\][ \t]", stderr):
+        return OCIToolFailure.REGISTRY_AUTH
     return OCIToolFailure.REJECTED
 
 
@@ -137,9 +152,13 @@ async def run_oci_tool(
     }
     if env:
         environment.update(env)
-    diagnose_digest = executable.name == "crane" and args[:1] == ("digest",)
+    classifier = None
+    if executable.name == "cf":
+        classifier = _cf_registry_failure
+    elif executable.name == "crane" and args[:1] in (("digest",), ("copy",), ("manifest",), ("config",)):
+        classifier = _crane_registry_failure
     try:
-        with (TemporaryFile(dir=cwd) if diagnose_digest else nullcontext(None)) as diagnostic:
+        with (TemporaryFile(dir=cwd) if classifier is not None else nullcontext(None)) as diagnostic:
             process = await asyncio.create_subprocess_exec(
                 str(executable.resolve(strict=True)), *args, cwd=cwd, env=environment,
                 stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
@@ -155,10 +174,10 @@ async def run_oci_tool(
                 raise
             if process.returncode:
                 failure = OCIToolFailure.REJECTED
-                if diagnostic is not None:
+                if diagnostic is not None and classifier is not None:
                     length = diagnostic.seek(0, os.SEEK_END)
-                    diagnostic.seek(max(0, length - _DIGEST_DIAGNOSTIC_BYTES))
-                    failure = _digest_failure(diagnostic.read(_DIGEST_DIAGNOSTIC_BYTES))
+                    diagnostic.seek(max(0, length - _OCI_DIAGNOSTIC_BYTES))
+                    failure = classifier(diagnostic.read(_OCI_DIAGNOSTIC_BYTES))
                 raise OCIToolError(failure)
     except FileNotFoundError:
         raise OCIToolError(OCIToolFailure.NOT_FOUND) from None

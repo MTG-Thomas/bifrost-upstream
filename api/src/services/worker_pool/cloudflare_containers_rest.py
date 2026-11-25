@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -20,8 +20,8 @@ from pydantic import SecretStr
 from src.services.worker_pool.cloudflare_containers_auth import container_scope_public_key
 from src.services.worker_pool.cloudflare_containers_policy import CONTAINER_CLOCK_SKEW, ContainersPolicy
 from src.services.worker_pool.cloudflare_containers_release import (
-    ContainersReleaseUnavailable,
     OCIToolError,
+    OCIToolFailure,
     VerifiedContainerRelease,
     run_oci_tool,
 )
@@ -473,6 +473,22 @@ class ContainerLauncherRest(ScriptRestProvisioner):
         )
 
 
+def _registry_tool_observation(
+    exc: OCIToolError, operation: Literal["inventory", "source", "copy", "digest"], *,
+    evidence: dict[str, str] | None = None, tag_listed: bool = False,
+) -> ObservationPending:
+    details = {} if evidence is None else evidence
+    count_key = f"{operation}_failure_count"
+    details[f"{operation}_failure_class"] = exc.failure.value
+    details[count_key] = str(int(details.get(count_key, "0")) + 1)
+    retryable = exc.retryable_readback or (tag_listed and exc.failure is OCIToolFailure.IMAGE_NOT_FOUND)
+    error = ObservationSettling if retryable else ObservationPending
+    return error(
+        f"Container registry {operation} could not be confirmed",
+        OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION, evidence=details,
+    )
+
+
 class ContainerRegistry:
     """Use the qualified crane and cf paths with isolated credential files."""
 
@@ -488,7 +504,10 @@ class ContainerRegistry:
     async def _tags(self, token: SecretStr, account: str, name: str, cwd: Path) -> frozenset[str]:
         env = {"CLOUDFLARE_ACCOUNT_ID": account, "CLOUDFLARE_API_TOKEN": token.get_secret_value()}
         if (await run_oci_tool(self.cf, "--version", cwd=cwd)).strip() != b"1.0.0-beta.31":
-            raise ContainersReleaseUnavailable("Expected the pinned registry CLI")
+            raise ObservationPending(
+                "Expected the pinned registry CLI",
+                OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
+            )
         try:
             owner = json.loads(await run_oci_tool(self.cf, "accounts", "get", "-q", cwd=cwd, env=env))
             if owner["id"] != account:
@@ -510,10 +529,16 @@ class ContainerRegistry:
             raise ObservationPending("Registry tag inventory is unconfirmed")
         return frozenset(rows[0]["tags"]) if rows else frozenset()
 
+    async def _deployment_tags(self, token: SecretStr, account: str, name: str, cwd: Path) -> frozenset[str]:
+        try:
+            return await self._tags(token, account, name, cwd)
+        except OCIToolError as exc:
+            raise _registry_tool_observation(exc, "inventory") from None
+
     async def require_empty(self, token: SecretStr, intent: ResourceIntent) -> None:
         name = _name(intent, "container_image")
         with TemporaryDirectory(prefix="bifrost-oci-") as temp:
-            tags = await self._tags(token, intent.target.account_id, name, Path(temp))
+            tags = await self._deployment_tags(token, intent.target.account_id, name, Path(temp))
         if tags:
             raise OwnershipConflict("Container registry repository is occupied",
                                     OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED)
@@ -550,17 +575,28 @@ class ContainerRegistry:
         with TemporaryDirectory(prefix="bifrost-oci-") as temp:
             cwd = Path(temp)
             await hold_lease()
-            if (await run_oci_tool(self.crane, "version", cwd=cwd)).strip() != b"0.20.6":
-                raise ContainersReleaseUnavailable("Expected the pinned OCI copy tool")
-            await self._verify_image(release.manifest.image, release, cwd)
-            tags = await self._tags(token, account, name, cwd)
+            try:
+                if (await run_oci_tool(self.crane, "version", cwd=cwd)).strip() != b"0.20.6":
+                    raise ObservationPending(
+                        "Expected the pinned OCI copy tool",
+                        OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
+                    )
+                await self._verify_image(release.manifest.image, release, cwd)
+            except OCIToolError as exc:
+                if exc.failure is OCIToolFailure.IMAGE_NOT_FOUND:
+                    raise  # The immutable source image is missing.
+                raise _registry_tool_observation(exc, "source") from None
+            tags = await self._deployment_tags(token, account, name, cwd)
             visible = "release" in tags
             if tags and (not previously_sent or tags != {"release"}):
                 raise OwnershipConflict("Container registry repository is occupied",
                                         OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED)
             await self._authenticate(token, account, cwd, push=not visible)
             if not visible:
-                await self._copy_while_current(release.manifest.image, destination, cwd, hold_lease)
+                try:
+                    await self._copy_while_current(release.manifest.image, destination, cwd, hold_lease)
+                except OCIToolError as exc:
+                    raise _registry_tool_observation(exc, "copy") from None
             digest = release.manifest.image_digest
             await self._wait_for_prepared_image(token, account, name, destination, digest, cwd, hold_lease)
         return ResourceObservation(intent, destination, digest)
@@ -595,36 +631,32 @@ class ContainerRegistry:
         hold_lease: Callable[[], Awaitable[None]],
     ) -> None:
         evidence = {"registry_tag": "unobserved"}
-        digest_failures = 0
         try:
             async with asyncio.timeout(_IMAGE_SETTLEMENT_SECONDS):
                 while True:
                     await hold_lease()
-                    tags = await self._tags(token, account, name, cwd)
-                    if tags - {"release"}:
-                        raise OwnershipConflict(
-                            "Container registry repository acquired an unexpected tag",
-                            OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED,
-                        )
-                    if not tags:
-                        evidence["registry_tag"] = "absent"
-                    else:
-                        evidence["registry_tag"] = "unconfirmed_digest"
-                        try:
-                            await self._require_tag_digest(tag, digest, cwd)
-                        except OCIToolError as exc:
-                            digest_failures += 1
-                            evidence.update(
-                                digest_failure_class=exc.failure.value,
-                                digest_failure_count=str(digest_failures),
+                    operation: Literal["inventory", "digest"] = "inventory"
+                    evidence["registry_tag"] = "unobserved"
+                    try:
+                        tags = await self._tags(token, account, name, cwd)
+                        if tags - {"release"}:
+                            raise OwnershipConflict(
+                                "Container registry repository acquired an unexpected tag",
+                                OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED,
                             )
-                            if not exc.retryable_readback:
-                                raise ObservationPending(
-                                    "Exact registry tag digest could not be read",
-                                    OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
-                                    evidence=evidence,
-                                ) from None
-                        else:
+                        evidence["registry_tag"] = "absent"
+                        if tags:
+                            operation = "digest"
+                            evidence["registry_tag"] = "unconfirmed_digest"
+                            await self._require_tag_digest(tag, digest, cwd)
+                    except OCIToolError as exc:
+                        failure = _registry_tool_observation(
+                            exc, operation, evidence=evidence, tag_listed=operation == "digest",
+                        )
+                        if not isinstance(failure, ObservationSettling):
+                            raise failure from None
+                    else:
+                        if tags:
                             evidence["registry_tag"] = "exact_digest"
                             await hold_lease()
                             if await self._prepare_image(token, account, name, digest, evidence):

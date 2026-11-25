@@ -255,6 +255,12 @@ async def test_release_fetch_distinguishes_settling_from_terminal_errors(tmp_pat
     ([], True, False, "digest_image_missing"),
     ([], True, False, "digest_unknown"),
     ([], True, False, "digest_cumulative"),
+    ([], True, False, "inventory_lag"),
+    ([], True, False, "inventory_timeout"),
+    ([], True, False, "inventory_auth"),
+    ([], True, False, "copy_timeout"),
+    ([], True, False, "copy_auth"),
+    ([], True, False, "copy_image_missing"),
 ])
 async def test_registry_replays_only_into_an_empty_repository(
     tmp_path, monkeypatch, initial_tags, previously_sent, conflict, preparation,
@@ -271,13 +277,23 @@ async def test_registry_replays_only_into_an_empty_repository(
     digest_reads = 0
     hold_lease = AsyncMock()
     digest_failure = {
-        "digest_lag": OCIToolFailure.REGISTRY_UNAVAILABLE,
+        "digest_lag": OCIToolFailure.IMAGE_NOT_FOUND,
         "digest_timeout": OCIToolFailure.TIMEOUT,
         "digest_auth": OCIToolFailure.REGISTRY_AUTH,
         "digest_tool_missing": OCIToolFailure.NOT_FOUND,
         "digest_image_missing": OCIToolFailure.IMAGE_NOT_FOUND,
         "digest_unknown": OCIToolFailure.REJECTED,
         "digest_cumulative": OCIToolFailure.REGISTRY_AUTH,
+    }.get(preparation)
+    inventory_failure = {
+        "inventory_lag": OCIToolFailure.REGISTRY_UNAVAILABLE,
+        "inventory_timeout": OCIToolFailure.REJECTED,
+        "inventory_auth": OCIToolFailure.REGISTRY_AUTH,
+    }.get(preparation)
+    copy_failure = {
+        "copy_timeout": OCIToolFailure.REGISTRY_UNAVAILABLE,
+        "copy_auth": OCIToolFailure.REGISTRY_AUTH,
+        "copy_image_missing": OCIToolFailure.IMAGE_NOT_FOUND,
     }.get(preparation)
 
     async def tool(executable, *args, **kwargs):
@@ -291,6 +307,10 @@ async def test_registry_replays_only_into_an_empty_repository(
         if args[:3] == ("containers", "images", "list"):
             tag_reads += 1
             assert hold_lease.await_count == tag_reads + len(copies) + len(preparations)
+            if inventory_failure is not None and tag_reads > 1 and (
+                preparation != "inventory_lag" or tag_reads == 2
+            ):
+                raise OCIToolError(inventory_failure)
             if preparation == "tag_lag" and tag_reads == 2:
                 return json_bytes([])
             return json_bytes([{"name": name, "tags": tags}] if tags or initial_tags is not None else [])
@@ -308,6 +328,9 @@ async def test_registry_replays_only_into_an_empty_repository(
         if args[0] == "copy":
             assert hold_lease.await_count == 2
             copies.append(args[:3])
+            if copy_failure is not None:
+                assert not tags
+                raise OCIToolError(copy_failure)
             tags.append("release")
             if preparation == "foreign_after_copy":
                 tags.append("another-tag")
@@ -322,7 +345,7 @@ async def test_registry_replays_only_into_an_empty_repository(
             digest = release.manifest.image_digest
             assert body == {"image": f"registry.cloudflare.com/{ACCOUNT}/{name}@{digest}"}
             status = preparation if not preparations else "ready"
-            if preparation in {"tag_lag", "digest_lag"}:
+            if preparation in {"tag_lag", "digest_lag", "inventory_lag"}:
                 status = "ready"
             if preparation == "timeout":
                 status = "pending"
@@ -342,7 +365,7 @@ async def test_registry_replays_only_into_an_empty_repository(
 
     monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_rest.run_oci_tool", tool)
     monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_SETTLEMENT_INTERVAL", 0)
-    if preparation in {"timeout", "digest_timeout", "digest_unknown"}:
+    if preparation in {"timeout", "digest_timeout", "digest_unknown", "digest_image_missing", "inventory_timeout"}:
         monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_SETTLEMENT_SECONDS", 0)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         registry = ContainerRegistry(ContainersRest(http), crane=tmp_path / "crane", cf=tmp_path / "cf")
@@ -379,24 +402,34 @@ async def test_registry_replays_only_into_an_empty_repository(
             assert "private-provider" not in json.dumps(details)
             assert preparations == ["pending"] and len(copies) == 1
             return
-        if digest_failure is not None and preparation != "digest_lag":
-            error = ObservationSettling if digest_failure in (
-                OCIToolFailure.TIMEOUT, OCIToolFailure.REJECTED,
-            ) else ObservationPending
+        operation = preparation.split("_", 1)[0]
+        tool_failure = {"digest": digest_failure, "inventory": inventory_failure, "copy": copy_failure}.get(operation)
+        if tool_failure is not None and preparation not in {"digest_lag", "inventory_lag"}:
+            retryable = preparation in {
+                "digest_timeout", "digest_unknown", "digest_image_missing", "inventory_timeout", "copy_timeout",
+            }
+            error = ObservationSettling if retryable else ObservationPending
             with pytest.raises(error) as failure:
                 await copy()
             assert type(failure.value) is error
             details = failure.value.as_result()
-            assert details["digest_failure_class"] == digest_failure.value
+            assert details[f"{operation}_failure_class"] == tool_failure.value
             expected_failed_reads = 3 if preparation == "digest_cumulative" else 1
-            assert details["digest_failure_count"] == str(expected_failed_reads)
-            assert details["registry_tag"] == "unconfirmed_digest"
-            assert digest_reads == expected_failed_reads and not preparations
+            assert details[f"{operation}_failure_count"] == str(expected_failed_reads)
+            assert not preparations and len(copies) == 1
+            if operation == "digest":
+                assert details["registry_tag"] == "unconfirmed_digest"
+                assert digest_reads == expected_failed_reads
+            else:
+                assert not digest_reads
+                assert tag_reads == (2 if operation == "inventory" else 1)
             return
         result = await copy()
         assert preparations == (["pending", "ready"] if preparation == "pending" else ["ready"])
         if preparation == "digest_lag":
             assert digest_reads == 3
+        if preparation == "inventory_lag":
+            assert tag_reads == 3 and digest_reads == 1
         assert result.provider_version == release.manifest.image_digest
         if initial_tags:
             assert permissions == [["pull"]] and not copies
@@ -409,6 +442,11 @@ async def test_registry_replays_only_into_an_empty_repository(
 @pytest.mark.parametrize(("stderr", "failure"), [
     ("HEAD registry.invalid: unexpected status code 403 Forbidden", OCIToolFailure.REGISTRY_AUTH),
     ("GET registry.invalid: UNAUTHORIZED: fixture credential", OCIToolFailure.REGISTRY_AUTH),
+    (
+        "Warning: HEAD request failed, falling back on GET: " + "x" * 5000
+        + "\nError: GET registry.invalid: unexpected status code 401 Unauthorized",
+        OCIToolFailure.REGISTRY_AUTH,
+    ),
     ("HEAD registry.invalid: unexpected status code 404 Not Found", OCIToolFailure.IMAGE_NOT_FOUND),
     (
         "Warning: HEAD request failed, falling back on GET: unexpected status code 401 Unauthorized\n"
@@ -433,6 +471,35 @@ async def test_crane_digest_classifies_tool_failure_without_exposing_stderr(tmp_
         "Container release tool rejected the operation" if stderr is not None
         else "Container release tool did not complete"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool_name", "args", "stderr", "failure"), [
+    (
+        "cf", ("containers", "images", "list"),
+        "┌ APIError\n│ [9109] private-provider-value\n│ 403 Forbidden · HTTP /accounts/example\n└\n"
+        "Check your API token permissions",
+        OCIToolFailure.REGISTRY_AUTH,
+    ),
+    (
+        "cf", ("accounts", "get"),
+        "┌ APIError\n│ private-provider-value\n│ 503 Service Unavailable · HTTP /accounts/example\n└",
+        OCIToolFailure.REGISTRY_UNAVAILABLE,
+    ),
+    (
+        "crane", ("copy", "source", "target"),
+        "Error: GET registry.invalid: DENIED: private-provider-value",
+        OCIToolFailure.REGISTRY_AUTH,
+    ),
+])
+async def test_registry_cli_errors_keep_only_the_failure_class(tmp_path, tool_name, args, stderr, failure):
+    executable = tmp_path / tool_name
+    executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{stderr}' >&2\nexit 1\n", encoding="utf-8")
+    executable.chmod(0o700)
+    with pytest.raises(OCIToolError) as error:
+        await run_oci_tool(executable, *args, cwd=tmp_path)
+    assert error.value.failure is failure
+    assert "private-provider-value" not in str(error.value)
 
 
 @pytest.mark.asyncio

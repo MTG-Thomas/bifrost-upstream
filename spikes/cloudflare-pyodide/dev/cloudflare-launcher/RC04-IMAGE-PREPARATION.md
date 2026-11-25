@@ -25,12 +25,17 @@ retains the OCI image digest separately. [Preparation API](https://developers.cl
 
 1. Commit an owned intent with `creation_sent` and the signed OCI digest
    before the copy. Copy only to the intended repository and release tag.
+   A transient copy error requeues the job. The next attempt rechecks the
+   exact destination before it can copy again.
 2. For up to 180 seconds after the copy, poll exact repository inventory and
-   the tag's digest at five-second intervals. An absent tag in inventory or
-   a transient or unclassified digest error is still settling. Explicit
-   authentication and image-not-found errors, and failure to start the tool,
-   stop immediately. Failure evidence records the last sanitized digest
-   failure class and the total number of failed reads.
+   the tag's digest at five-second intervals. An absent tag in inventory
+   is still settling. Transient and unclassified inventory or digest
+   errors also settle within this window. When inventory lists the exact
+   tag, an image-not-found digest response counts as registry lag. An
+   image-not-found copy error with an empty destination remains terminal.
+   Explicit authentication and tool startup failures stop immediately.
+   Failure evidence records the last sanitized class and the failure
+   count for each affected operation.
    Unexpected tags or a different digest violate the ownership fence.
    The source manifest and config are verified before copy. Destination
    readback uses the registry-reported digest because that digest pins the
@@ -44,12 +49,19 @@ retains the OCI image digest separately. [Preparation API](https://developers.cl
 4. The PlatformJob resource key excludes concurrent lifecycle jobs for the
    same installation while the attempt owns its lease. Check the lease
    before touching the registry, immediately before the copy, during the
-   copy, and on every poll. Source manifest reads and the credential mint
-   can still happen between the first two checks. Each check uses a short
+   copy, and on every poll. The first two checks bracket the `crane version`
+   check, signed source manifest and config reads, the first `cf` inventory
+   read (including CLI version and account checks), and the credential
+   mint. Each lease check uses a short
    transaction. The registry calls and sleeps run independently of those
    transactions. Lease loss cancels an in-flight copy and stops further
-   provider work. A superseded job with a valid lease commits the exact
-   image receipt and exits before launching the deployment.
+   provider work. A superseded job with a valid lease continues preparing
+   within the same window. If the image becomes ready, it commits the exact
+   receipt and exits before launching the deployment. If the wait expires
+   or a retryable error ends the attempt, it reports a retryable failure
+   and leaves the receipt at `creating` for unconfirmed-create cleanup.
+   Confirmed terminal errors still require operator verification and
+   leave the receipt available for that same cleanup.
 5. An exhausted wait produces a retryable `CF_DEPLOYMENT_UNVERIFIED` with
    the last sanitized observation. Enable already has three attempts and
    delays of 15 and 45 seconds. Requeue clears the old lease and preserves
