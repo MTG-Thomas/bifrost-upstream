@@ -1,5 +1,6 @@
 """Exact Container inventory and journal-bound registry effects."""
 
+import asyncio
 import base64
 import json
 import os
@@ -53,6 +54,8 @@ _MAX_INVENTORY_PAGES = 100
 # for other requests under the published account/user limit of 1,200/5 min.
 # https://developers.cloudflare.com/fundamentals/api/reference/limits/
 _PLACEMENT_READ_INTERVAL = 0.5
+_IMAGE_SETTLEMENT_SECONDS = 180
+_IMAGE_SETTLEMENT_INTERVAL = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,64 +556,118 @@ class ContainerRegistry:
             await self._authenticate(token, account, cwd, push=not visible)
             if not visible:
                 await run_oci_tool(self.crane, "copy", release.manifest.image, destination, cwd=cwd, timeout=90)
-            await self._verify_image(destination, release, cwd)
-            observed_tags = await self._tags(token, account, name, cwd)
-            if observed_tags - {"release"}:
-                raise OwnershipConflict(
-                    "Container registry repository acquired an unexpected tag",
-                    OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED,
-                )
-            if not observed_tags:
-                raise ObservationSettling(
-                    "Exact registry tag is still unconfirmed",
-                    OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
-                )
-        digest = release.manifest.image_digest
+            digest = release.manifest.image_digest
+            await self._wait_for_prepared_image(token, account, name, destination, digest, cwd)
+        return ResourceObservation(intent, destination, digest)
+
+    async def _wait_for_prepared_image(
+        self, token: SecretStr, account: str, name: str, tag: str, digest: str, cwd: Path,
+    ) -> None:
+        evidence = {"registry_tag": "unobserved"}
+        try:
+            async with asyncio.timeout(_IMAGE_SETTLEMENT_SECONDS):
+                while True:
+                    tags = await self._tags(token, account, name, cwd)
+                    if tags - {"release"}:
+                        raise OwnershipConflict(
+                            "Container registry repository acquired an unexpected tag",
+                            OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED,
+                        )
+                    if not tags:
+                        evidence["registry_tag"] = "absent"
+                    else:
+                        evidence["registry_tag"] = "unconfirmed_digest"
+                        try:
+                            await self._require_tag_digest(tag, digest, cwd)
+                        except ContainersReleaseUnavailable:
+                            # A listed tag may precede its OCI readback.
+                            pass
+                        else:
+                            evidence["registry_tag"] = "exact_digest"
+                            ready, preparation_evidence = await self._prepare_image(token, account, name, digest)
+                            evidence.update(preparation_evidence)
+                            if ready:
+                                return
+                    await asyncio.sleep(_IMAGE_SETTLEMENT_INTERVAL)
+        except TimeoutError:
+            raise ObservationSettling(
+                "Waiting for the exact Container image to be prepared",
+                OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
+                evidence=evidence,
+            ) from None
+
+    async def _prepare_image(
+        self, token: SecretStr, account: str, name: str, digest: str,
+    ) -> tuple[bool, dict[str, str]]:
+        # The digest-pinned POST idempotently starts or observes preparation.
+        # https://developers.cloudflare.com/api/resources/containers/subresources/images/methods/prepare/
         image = f"{REGISTRY}/{account}/{name}@{digest}"
         response = await self.rest._request(
-            token, account, "POST", "containers/image-preparations", json_body={"image": image},
+            token, account, "POST", "containers/image-preparations", json_body={"image": image}, include_http_status=True,
         )
         assert response is not None
         preparation = response["result"]
-        if not isinstance(preparation, dict) or preparation.get("image") != image:
+        row = preparation if isinstance(preparation, dict) else {}
+        status = row.get("status")
+        evidence = {
+            "registry_tag": "exact_digest",
+            "preparation_http_status": str(response["_http_status"]),
+            "preparation_shape": {"dict": "object", "list": "array", "NoneType": "null"}.get(
+                type(preparation).__name__, "scalar",
+            ),
+            "preparation_fields": ",".join(key for key in ("image", "status", "artifact_digest", "reason") if key in row),
+            "preparation_status": status if status in ("pending", "ready", "error") else "unknown",
+        }
+        if "image" in row and row["image"] != image:
             raise OwnershipConflict(
                 "Container preparation refers to a different image",
                 OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.RECEIPT_MISMATCH,
             )
-        status = preparation.get("status")
-        if status == "pending":
-            raise ObservationSettling(
-                "Waiting for the exact Container image to be prepared",
-                OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
-            )
-        if status != "ready":
+        if row.get("image") != image or status not in ("pending", "ready"):
             raise ObservationPending(
                 "Container image preparation did not return ready",
                 OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_IMAGE_PREPARATION,
+                evidence=evidence,
             )
-        return ResourceObservation(intent, destination, digest)
+        return status == "ready", evidence
 
-    async def delete(self, token: SecretStr, intent: ResourceIntent, digest: str) -> bool:
-        """Return False for an empty read; never delete an unowned tag."""
+    async def _require_tag_digest(self, tag: str, digest: str, cwd: Path) -> None:
+        observed_digest = await run_oci_tool(self.crane, "digest", tag, cwd=cwd)
+        if observed_digest.strip() != digest.encode():
+            raise OwnershipConflict("Container registry tag has a different digest",
+                                    OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.RECEIPT_MISMATCH)
+
+    async def _observe_tag(
+        self, token: SecretStr, intent: ResourceIntent, digest: str, cwd: Path,
+    ) -> ResourceObservation | None:
         name = _name(intent, "container_image")
         account = intent.target.account_id
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
             raise OwnershipConflict("Container image journal lacks a digest",
                                     OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.RECEIPT_MISSING)
+        tags = await self._tags(token, account, name, cwd)
+        if not tags:
+            return None
+        if tags != {"release"}:
+            raise OwnershipConflict("Container registry repository is occupied",
+                                    OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED)
+        await self._authenticate(token, account, cwd, push=False)
+        tag = f"{REGISTRY}/{account}/{name}:release"
+        await self._require_tag_digest(tag, digest, cwd)
+        return ResourceObservation(intent, tag, digest)
+
+    async def observe_tag(self, token: SecretStr, intent: ResourceIntent, digest: str) -> ResourceObservation | None:
+        with TemporaryDirectory(prefix="bifrost-oci-") as temp:
+            return await self._observe_tag(token, intent, digest, Path(temp))
+
+    async def delete(self, token: SecretStr, intent: ResourceIntent, digest: str) -> bool:
+        """Return False for an empty read; never delete an unowned tag."""
+        account = intent.target.account_id
         with TemporaryDirectory(prefix="bifrost-oci-") as temp:
             cwd = Path(temp)
-            tags = await self._tags(token, account, name, cwd)
-            if not tags:
+            if await self._observe_tag(token, intent, digest, cwd) is None:
                 return False
-            if tags != {"release"}:
-                raise OwnershipConflict("Container registry repository is occupied",
-                                        OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.TARGET_OCCUPIED)
-            await self._authenticate(token, account, cwd, push=False)
-            tag = f"{REGISTRY}/{account}/{name}:release"
-            observed_digest = await run_oci_tool(self.crane, "digest", tag, cwd=cwd)
-            if observed_digest.strip() != digest.encode():
-                raise OwnershipConflict("Container registry tag has a different digest",
-                                        OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.RECEIPT_MISMATCH)
+            name = _name(intent, "container_image")
             await run_oci_tool(
                 self.cf, "containers", "images", "delete", f"{name}:release", "--force", cwd=cwd,
                 env={"CLOUDFLARE_ACCOUNT_ID": account, "CLOUDFLARE_API_TOKEN": token.get_secret_value()},

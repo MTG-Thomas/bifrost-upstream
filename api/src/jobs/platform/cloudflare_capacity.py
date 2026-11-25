@@ -321,9 +321,6 @@ async def _cleanup_one(
         if container_adapter is None:
             raise ObservationPending("Container cleanup requires the registry adapter",
                                      OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_INVENTORY)
-        if resource.state != "deleting" and _container_create_may_exist(resource):
-            resource.state = "deleting"
-            return "progressed"
         return await _cleanup_container_image(ContainerRegistry(container_adapter), token, resource, intent)
     if resource.state == "creating":
         recorded = (
@@ -427,7 +424,18 @@ async def _cleanup_container_image(
             raise OwnershipConflict("Container image journal lacks its exact digest",
                                     OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.RECEIPT_MISSING)
         try:
-            if await registry.delete(token, intent, digest):
+            if resource.state != "deleting":
+                if resource.provider_id and resource.provider_version:
+                    resource.state = "deleting"
+                    return "progressed"
+                observed = await registry.observe_tag(token, intent, digest)
+                if observed is not None:
+                    resource.provider_id = observed.provider_id
+                    resource.provider_version = observed.provider_version
+                    resource.observed_at = now
+                    resource.state = "deleting"
+                    return "progressed"  # Commit the exact receipt before deleting.
+            elif await registry.delete(token, intent, digest):
                 resource.provider_details = {
                     key: value for key, value in resource.provider_details.items() if key != "creation_empty_observed"
                 }

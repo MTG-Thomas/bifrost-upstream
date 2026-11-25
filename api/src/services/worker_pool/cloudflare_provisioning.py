@@ -110,13 +110,15 @@ class ObservationPending(Exception):
     def __init__(
         self, message: str = "", resource: OwnershipResource = OwnershipResource.UNKNOWN,
         check: ObservationCheck = ObservationCheck.UNCLASSIFIED,
+        *, evidence: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.resource = resource
         self.check = check
+        self.evidence = evidence or {}
 
     def as_result(self) -> dict[str, str]:
-        return verification_details(self.resource.value, self.check.value)
+        return {**verification_details(self.resource.value, self.check.value), **self.evidence}
 
 
 class ObservationSettling(ObservationPending):

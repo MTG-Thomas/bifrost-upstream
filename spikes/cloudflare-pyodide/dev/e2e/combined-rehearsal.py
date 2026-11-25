@@ -1290,6 +1290,8 @@ class HostedContainers(ContainerRehearsal):
                 if pages is not None:
                     assert total is None or (page < pages) == more, "Inventory numbered continuation is inconsistent"
                     more = page < pages
+                    if more and total is None:
+                        assert len(batch) == (page_size or params["per_page"]), "Short nonterminal numbered page"
                 if more:
                     assert batch, "Inventory numbered continuation is inconsistent"
                     params["page"] = page + 1
@@ -1362,11 +1364,12 @@ class HostedContainers(ContainerRehearsal):
         return plan
 
     @staticmethod
-    def plan_matches(snapshot, plan):
+    def plan_matches(snapshot, plan, *, namespace_ids=frozenset()):
         scripts = set(plan["scripts"])
         return {
             "scripts": scripts.intersection(snapshot["scripts"]),
-            "namespaces": {identity for identity, (script, _, _) in snapshot["namespaces"].items() if script in scripts},
+            "namespaces": {identity for identity, (script, _, _) in snapshot["namespaces"].items()
+                           if script in scripts or identity in namespace_ids},
             "applications": {identity for identity, name in snapshot["applications"].items()
                              if name == plan["application"]},
             "registry": {plan["registry_repository"]}.intersection(snapshot["registry"]),
@@ -1380,10 +1383,10 @@ class HostedContainers(ContainerRehearsal):
         evidence("foreign-inventory-baseline", self.inventory_evidence(baseline))
         return baseline
 
-    def closing_inventory(self, baseline, plan):
+    def closing_inventory(self, baseline, plan, *, namespace_ids=frozenset()):
         after = self.provider_snapshot()
-        before_matches = self.plan_matches(baseline, plan)
-        leftovers = self.plan_matches(after, plan)
+        before_matches = self.plan_matches(baseline, plan, namespace_ids=namespace_ids)
+        leftovers = self.plan_matches(after, plan, namespace_ids=namespace_ids)
         drift = False
         changes = {}
         for kind, before in baseline.items():
@@ -1408,6 +1411,7 @@ class HostedContainers(ContainerRehearsal):
 
     def teardown(self, baseline, plan, app_path, original):
         first_error = None
+        namespace_ids = set()
 
         def attempt(step, action):
             nonlocal first_error
@@ -1422,11 +1426,16 @@ class HostedContainers(ContainerRehearsal):
             if self.install() is not None:
                 self.disconnect()
 
+        def record_namespaces():
+            for receipt in self.worker_receipts(installation_id=plan["installation"]):
+                namespace_ids.update(receipt["namespaces"].values())
+
         try:
             attempt("release-primary", self.release_primary)
+            attempt("namespace-receipts", record_namespaces)
             attempt("disconnect", disconnect_if_installed)
         finally:
-            attempt("closing-inventory", lambda: self.closing_inventory(baseline, plan))
+            attempt("closing-inventory", lambda: self.closing_inventory(baseline, plan, namespace_ids=namespace_ids))
             if app_path is not None:
                 attempt("application-absence", lambda: self.provider(app_path, status=404))
         # An in-flight journey exception resumes automatically after finally.
@@ -1501,6 +1510,16 @@ class HostedContainers(ContainerRehearsal):
         assert self.canaries() == before + 1
         assert self.canaries(settled=True) == before + 1
 
+    @staticmethod
+    def verify_stopped_placement(stopped, placement, application_id):
+        assert stopped["id"] == placement and stopped["application_id"] == application_id
+        assert stopped["status"]["state"] in ("stopped", "inactive")
+
+    @staticmethod
+    def verify_empty_application(application):
+        counts = application["health"]["instances"]
+        assert all(type(counts.get(key)) is int and counts[key] == 0 for key in ("active", "starting"))
+
     def run(self, plan=None):
         if plan is None:
             plan = self.plan_activation()
@@ -1545,16 +1564,14 @@ class HostedContainers(ContainerRehearsal):
                 ), 'null')"""), 150)
             assert self.sql(f"SELECT count(*) FROM execution_worker_claims WHERE subject_id='{execution}'") == 1
             stopped = self.provider(f"{app_path}/instances/{placement}")
-            assert stopped["id"] == placement and stopped["application_id"] == app["id"]
-            assert stopped["status"]["state"] in ("stopped", "inactive")
+            self.verify_stopped_placement(stopped, placement, app["id"])
             revoked = self.send(approval, method="DELETE")
             assert revoked["current_revision"] is None
             self.observe_scheduler("idle-stop", settled=True)
             self.completed(self.job("scale-in"), "scaled_in")
             assert not self.install()["admission_open"] and scripts <= self.scripts()
             assert owned_namespaces() == namespaces
-            counts = self.provider(app_path)["health"]["instances"]
-            assert all(type(counts.get(key)) is int and counts[key] == 0 for key in ("active", "starting"))
+            self.verify_empty_application(self.provider(app_path))
             self.observe_scheduler("scale-in", settled=True)
             self.enable()
             assert self.install()["desired_revision"] == revision and scripts <= self.scripts()
@@ -1677,6 +1694,37 @@ class HostedUpgrade(Rehearsal):
                                    for phase, readings in self.spending.items()})
 
 
+def exercise_image_preparation_failure(fixture, trial):
+    """Exercise the local registry effect that precedes a terminal preparation error."""
+    fixture.provider("/local/image-preparation-mode", "POST", {"mode": "error"})
+    plan = trial.plan_activation()
+    baseline = trial.opening_inventory(plan)
+    try:
+        accepted = trial.send("/api/capacity/cloudflare/activate", trial.activation_request)
+        job = str(UUID(accepted["job_id"]))
+
+        def completed():
+            state = trial.send(f"/api/platform-jobs/{job}", method="GET")
+            return state if state["status"] not in ACTIVE_JOB else None
+
+        state = wait("Injected image preparation failure", completed, ENABLE_RESULT_SECONDS)
+        assert state["status"] == "requires_action" and state["result"]["code"] == "CF_DEPLOYMENT_UNVERIFIED"
+        details = state["result"]["details"]
+        assert details["preparation_status"] == "error" and details["preparation_http_status"] == "200"
+        assert "fixture-provider-value" not in json.dumps(details)
+        installation = str(UUID(plan["installation"]))
+        image = trial.sql(f"""SELECT json_build_object(
+            'state', state, 'sent', provider_details->'creation_sent', 'provider_id', provider_id
+            ) FROM cloudflare_owned_resources WHERE installation_id='{installation}' AND kind='container_image'""")
+        assert image == {"state": "creating", "sent": True, "provider_id": None} and trial.canaries() == 0
+        assert plan["registry_repository"] in trial.provider_snapshot()["registry"]
+    finally:
+        trial.teardown(baseline, plan, None, sys.exception())
+    assert trial.install() is None and trial.canaries() == 0
+    evidence("failed-image-preparation-disconnected", {"preparation": details, "canaries": 0})
+    fixture.provider("/local/image-preparation-mode", "POST", {"mode": "slow"})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
@@ -1686,9 +1734,13 @@ def main():
     modes.add_argument("--hosted-upgrade-config", type=Path, help="Run the rehearsed Upgrade against a dedicated hosted ingress")
     modes.add_argument("--containers-hosted-shape", action="store_true", help="Run the Containers trial sequence")
     parser.add_argument("--hosted-containers-config", type=Path, help="Use this hosted config with --containers-hosted-shape")
+    parser.add_argument("--exercise-image-preparation-failure", action="store_true",
+                        help="Locally rehearse a failed preparation and Disconnect before the slow happy path")
     args = parser.parse_args()
     if args.hosted_containers_config and not args.containers_hosted_shape:
         parser.error("--hosted-containers-config requires --containers-hosted-shape")
+    if args.exercise_image_preparation_failure and (not args.containers_hosted_shape or args.hosted_containers_config):
+        parser.error("--exercise-image-preparation-failure requires the local hosted-shaped fixture")
     if args.hosted_upgrade_config:
         HostedUpgrade(args.hosted_upgrade_config).run()
         return
@@ -1709,6 +1761,8 @@ def main():
                 "live_target_usd": "0.03", "live_abort_usd": "0.05", "settled_cap_usd": "0.02",
             }))
             trial = HostedContainers(config)
+            if args.exercise_image_preparation_failure:
+                exercise_image_preparation_failure(fixture, trial)
             if fixture.cfg.get("foreignInventory"):
                 plan = trial.plan_activation()
                 fixture.provider("/local/foreign-inventory", "POST", {
@@ -1731,6 +1785,11 @@ def main():
                 trial.run()
             if fixture.cfg["workerNamespaceLagMs"]:
                 assert trial.enable_attempts[0] > 1
+            if args.exercise_image_preparation_failure:
+                states = [item["status"] for item in fixture.provider("/local/evidence")
+                          if item["kind"] == "container-image-preparation"]
+                assert states[:4] == ["error", "pending", "pending", "ready"]
+                evidence("slow-image-preparation", {"states": states})
         return
     if args.containers_only:
         ContainerRehearsal().run()

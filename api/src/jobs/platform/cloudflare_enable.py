@@ -875,9 +875,6 @@ async def _deploy_container_launcher(
         image_id = image.id
 
     async with get_db_context() as db:
-        # The committed image intent and provisioning advisory lock fence
-        # the registry write. Leave the installation row available during
-        # the copy so admission can close while the provider call runs.
         row = await _locked_current(db, context, payload, lock_row=False)
         if row is None:
             return False
@@ -889,15 +886,32 @@ async def _deploy_container_launcher(
             raise OwnershipConflict("Container image creation fence changed",
                                     OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.JOURNAL_STATE)
         token = await _management_token(db, row)
-        if image.state == "creating":
-            prepared = await registry.copy(token, intent, release, previously_sent=previously_sent)
+        prepared = None
+        if image.state == "present":
+            assert image.provider_id is not None and image.provider_version is not None
+            prepared = ResourceObservation(intent, image.provider_id, image.provider_version)
+
+    # The PlatformJob resource key serializes provisioning and cleanup.
+    # No database transaction spans the copy or the cancellable settling wait.
+    created = prepared is None
+    if prepared is None:
+        prepared = await registry.copy(token, intent, release, previously_sent=previously_sent)
+
+    async with get_db_context() as db:
+        await _hold_installation_lease(db, context, payload.installation_id)
+        image = await db.get(CloudflareOwnedResource, image_id, with_for_update=True)
+        if (
+            image is None or _resource_intent(image) != intent
+            or image.state != ("creating" if created else "present")
+            or image.provider_details.get("image_digest") != release.manifest.image_digest
+        ):
+            raise OwnershipConflict("Container image creation fence changed",
+                                    OwnershipResource.CONTAINER_IMAGE, OwnershipCheck.JOURNAL_STATE)
+        if created:
             image.provider_id = prepared.provider_id
             image.provider_version = prepared.provider_version
             image.state = "present"
             image.observed_at = datetime.now(UTC)
-        else:
-            assert image.provider_id is not None and image.provider_version is not None
-            prepared = ResourceObservation(intent, image.provider_id, image.provider_version)
         # Commit any exact image receipt even if the desired state changed.
         # There is no authority to journal a launcher for a superseded job.
         row = await _locked_current(db, context, payload)

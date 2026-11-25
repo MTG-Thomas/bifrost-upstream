@@ -242,6 +242,9 @@ async def test_release_fetch_distinguishes_settling_from_terminal_errors(tmp_pat
     ([], True, False, "error"),
     ([], True, False, "wrong_image"),
     ([], True, False, "foreign_after_copy"),
+    ([], True, False, "tag_lag"),
+    ([], True, False, "timeout"),
+    ([], True, False, "wrong_digest"),
 ])
 async def test_registry_replays_only_into_an_empty_repository(
     tmp_path, monkeypatch, initial_tags, previously_sent, conflict, preparation,
@@ -254,8 +257,10 @@ async def test_registry_replays_only_into_an_empty_repository(
     permissions = []
     copies = []
     preparations = []
+    tag_reads = 0
 
     async def tool(executable, *args, **kwargs):
+        nonlocal tag_reads
         if args == ("version",):
             return b"0.20.6"
         if args == ("--version",):
@@ -263,7 +268,12 @@ async def test_registry_replays_only_into_an_empty_repository(
         if args[:2] == ("accounts", "get"):
             return json_bytes({"id": ACCOUNT})
         if args[:3] == ("containers", "images", "list"):
+            tag_reads += 1
+            if preparation == "tag_lag" and tag_reads == 2:
+                return json_bytes([])
             return json_bytes([{"name": name, "tags": tags}] if tags or initial_tags is not None else [])
+        if args[0] == "digest":
+            return (("sha256:" + "b" * 64) if preparation == "wrong_digest" else release.manifest.image_digest).encode()
         if args[0] == "manifest":
             return image + b"\n"
         if args[0] == "config":
@@ -283,10 +293,16 @@ async def test_registry_replays_only_into_an_empty_repository(
             digest = release.manifest.image_digest
             assert body == {"image": f"registry.cloudflare.com/{ACCOUNT}/{name}@{digest}"}
             status = preparation if not preparations else "ready"
+            if preparation == "tag_lag":
+                status = "ready"
+            if preparation == "timeout":
+                status = "pending"
             preparations.append(status)
-            return httpx.Response(200, json={"success": True, "result": {
+            return httpx.Response(202 if status == "pending" else 200, json={"success": True, "result": {
                 "status": "ready" if status == "wrong_image" else status,
                 "image": "different-image" if status == "wrong_image" else body["image"],
+                "reason": "private-provider-value",
+                "private-provider-field": "private-provider-value",
             }})
         assert request.url.path.endswith("/containers/registries/registry.cloudflare.com/credentials")
         permissions.append(body["permissions"])
@@ -296,6 +312,9 @@ async def test_registry_replays_only_into_an_empty_repository(
         }})
 
     monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_rest.run_oci_tool", tool)
+    monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_SETTLEMENT_INTERVAL", 0)
+    if preparation == "timeout":
+        monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_SETTLEMENT_SECONDS", 0)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         registry = ContainerRegistry(ContainersRest(http), crane=tmp_path / "crane", cf=tmp_path / "cf")
         if conflict:
@@ -303,7 +322,7 @@ async def test_registry_replays_only_into_an_empty_repository(
                 await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
             assert not permissions and not copies and not preparations
             return
-        if preparation == "foreign_after_copy":
+        if preparation in {"foreign_after_copy", "wrong_digest"}:
             with pytest.raises(OwnershipConflict):
                 await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
             assert not preparations
@@ -314,16 +333,24 @@ async def test_registry_replays_only_into_an_empty_repository(
                 await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
             assert preparations == [preparation]
             return
-        if preparation == "pending":
-            with pytest.raises(ObservationSettling):
+        if preparation == "timeout":
+            with pytest.raises(ObservationSettling) as failure:
                 await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
+            details = failure.value.as_result()
+            assert details["preparation_http_status"] == "202"
+            assert details["preparation_status"] == "pending"
+            assert details["preparation_shape"] == "object"
+            assert details["preparation_fields"] == "image,status,reason"
+            assert "private-provider" not in json.dumps(details)
+            assert preparations == ["pending"] and len(copies) == 1
+            return
         result = await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
         assert preparations == (["pending", "ready"] if preparation == "pending" else ["ready"])
         assert result.provider_version == release.manifest.image_digest
         if initial_tags:
             assert permissions == [["pull"]] and not copies
         else:
-            assert permissions == ([["pull", "push"], ["pull"]] if preparation == "pending" else [["pull", "push"]])
+            assert permissions == [["pull", "push"]]
             assert copies == [("copy", release.manifest.image, result.provider_id)]
 
 

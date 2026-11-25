@@ -39,6 +39,7 @@ class InventoryTests(unittest.TestCase):
             "registry": {"trial-app-2": frozenset({"release"})},
         }
         self.trial.provider_snapshot = Mock(return_value=self.baseline)
+        self.trial.worker_receipts = Mock(return_value=[])
 
     def test_foreign_near_misses_are_allowed(self):
         self.assertEqual(self.trial.opening_inventory(self.plan), self.baseline)
@@ -140,6 +141,65 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "continuation is inconsistent"):
             self.trial.inventory("/inventory")
 
+    def test_numbered_inventory_can_finish_using_reported_page_size(self):
+        rows = [{"id": str(index)} for index in range(3)]
+        self.trial.inventory_page = Mock(side_effect=[
+            (rows[:2], {"page": 1, "per_page": 2}),
+            (rows[2:], {"page": 2, "per_page": 2}),
+        ])
+        self.assertEqual(self.trial.inventory("/inventory"), rows)
+
+    def test_numbered_inventory_rejects_changing_total(self):
+        self.trial.inventory_page = Mock(side_effect=[
+            ([{"id": "1"}], {"page": 1, "per_page": 1, "total_count": 3}),
+            ([{"id": "2"}], {"page": 2, "per_page": 1, "total_count": 2}),
+        ])
+        with self.assertRaisesRegex(AssertionError, "total_count mismatch"):
+            self.trial.inventory("/inventory")
+
+    def test_total_pages_without_count_requires_full_nonterminal_page(self):
+        self.trial.inventory_page = Mock(return_value=([{"id": "1"}], {"page": 1, "per_page": 2, "total_pages": 2}))
+        with self.assertRaisesRegex(AssertionError, "Short nonterminal numbered page"):
+            self.trial.inventory("/inventory")
+        self.trial.inventory_page.assert_called_once()
+
+    def test_bare_array_is_rejected_outside_unbounded_applications(self):
+        self.trial.provider_origin = "https://provider.example.test"
+        self.trial.cfg = {"managementToken": "fixture"}
+        with patch.object(runner, "request_json", return_value=(200, [{"id": "namespace"}])):
+            with self.assertRaisesRegex(AssertionError, "Malformed inventory envelope"):
+                self.trial.inventory(self.trial.account_root + "/workers/durable_objects/namespaces")
+
+    def test_durable_object_health_accepts_additional_fields(self):
+        for counts in ({"active": 0, "starting": 0, "assigned": 2}, {"active": 0, "starting": 0}):
+            self.trial.verify_empty_application({"health": {"instances": counts}})
+        for counts in ({"active": 0, "assigned": 0}, {"active": False, "starting": 0}, {"active": 1, "starting": 0}):
+            with self.subTest(counts=counts), self.assertRaises(AssertionError):
+                self.trial.verify_empty_application({"health": {"instances": counts}})
+
+    def test_exact_inactive_placement_is_terminal(self):
+        observed = {"id": "actor", "application_id": "owned", "status": {"state": "inactive"}}
+        self.trial.verify_stopped_placement(observed, "actor", "owned")
+        with self.assertRaises(AssertionError):
+            self.trial.verify_stopped_placement(observed, "other", "owned")
+        with self.assertRaises(AssertionError):
+            self.trial.verify_stopped_placement({**observed, "status": {"state": "active"}}, "actor", "owned")
+
+    def test_unattributed_recorded_namespace_is_a_teardown_leftover(self):
+        self.plan["installation"] = "fixture"
+        after = deepcopy(self.baseline)
+        after["namespaces"]["owned-id"] = (None, None, "Launcher")
+        self.trial.provider_snapshot.return_value = after
+        self.trial.worker_receipts.return_value = [{"namespaces": {"Launcher": "owned-id"}}]
+        self.trial.release_primary = Mock()
+        self.trial.install = Mock(return_value=None)
+        with patch.object(runner, "evidence") as emit, self.assertRaisesRegex(AssertionError, "still present"):
+            self.trial.teardown(self.baseline, self.plan, None, None)
+        closing, = [record for stage, record in (call.args for call in emit.call_args_list)
+                    if stage == "closing-provider-inventory"]
+        self.assertEqual(closing["trial_leftovers"]["namespaces"], ["owned-id"])
+        self.assertFalse(closing["foreign_drift"])
+
     def test_script_list_requires_single_page_completeness(self):
         rows = [{"id": "worker"}]
         self.trial.inventory_page = Mock(return_value=(rows, {}))
@@ -181,6 +241,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(receipt["changes"]["namespaces"]["removed"], [{"id": "ns1", "matches_plan": False}])
 
     def test_teardown_failure_still_records_inventory_and_preserves_journey_error(self):
+        self.plan["installation"] = "fixture"
         original = ValueError("injected activation failure")
         after = deepcopy(self.baseline)
         after["applications"]["partial-app-id"] = self.plan["application"]
@@ -201,6 +262,7 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(closing["foreign_drift"])
 
     def test_disconnect_failure_remains_primary_when_snapshot_also_fails(self):
+        self.plan["installation"] = "fixture"
         original = RuntimeError("injected disconnect failure")
         self.trial.release_primary = Mock()
         self.trial.install = Mock(return_value={"installation_id": "fixture"})

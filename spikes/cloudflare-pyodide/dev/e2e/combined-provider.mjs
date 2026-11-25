@@ -35,6 +35,8 @@ const workers = new Map();
 const runtimes = new Map();
 const applications = new Map();
 const images = new Map();
+const preparationReads = new Map();
+let preparationMode = 'ready';
 const foreignImages = new Set();
 const unattachedNamespaces = [];
 const placements = new Map();
@@ -456,6 +458,12 @@ async function provider(req, res) {
   if (relative === '/workers/subdomain') return ok({subdomain: 'rehearsal'});
   if (relative === '/workers/scripts') return ok([...workers.keys()].map((id) => ({id})));
   if (config.containers) {
+    if (path === '/local/image-preparation-mode' && method === 'POST') {
+      const {mode} = await json();
+      assert.ok(['error', 'slow'].includes(mode));
+      preparationMode = mode;
+      return ok(null);
+    }
     if (path === '/local/foreign-inventory' && method === 'POST') {
       const {scripts, application, mixed} = await json();
       assert.ok(scripts.length === 4 && workers.size === 0 && applications.size === 0 && images.size === 0);
@@ -518,7 +526,13 @@ async function provider(req, res) {
       const {image: digestReference} = await json();
       const target = digestReference.match(new RegExp('^registry\\.cloudflare\\.com/' + account + '/(' + name + ')@(.+)$'));
       assert.ok(target && images.get(target[1]) === target[2]);
-      return ok({image: digestReference, status: 'ready'});
+      const count = (preparationReads.get(digestReference) ?? 0) + 1;
+      preparationReads.set(digestReference, count);
+      const status = preparationMode === 'slow' && count <= 2 ? 'pending'
+        : preparationMode === 'error' ? 'error' : 'ready';
+      event('container-image-preparation', {status});
+      return send(status === 'pending' ? 202 : 200, {success: true,
+        result: {image: digestReference, status, reason: 'fixture-provider-value'}});
     }
     const inventory = (entry) => {
       const {script, foreign, ...app} = entry;
@@ -529,6 +543,12 @@ async function provider(req, res) {
       if (method === 'GET') {
         const filter = url.searchParams.get('name');
         const rows = [...applications.values()].filter((entry) => filter === null || entry.name.startsWith(filter));
+        if (config.foreignInventory) {
+          const offset = Number(url.searchParams.get('page_token') ?? 0);
+          const next = offset + 1 < rows.length ? String(offset + 1) : undefined;
+          return send(200, {success: true, result: rows.slice(offset, offset + 1).map(inventory),
+            result_info: {per_page: Number(url.searchParams.get('per_page') ?? 100), next_page_token: next}});
+        }
         return ok(rows.map(inventory));
       }
       if (method === 'POST') {

@@ -1381,12 +1381,18 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
         await db_session.flush()
     copied = False
     endpoint = {"enabled": True, "previews_enabled": False}
+    transaction_open = False
 
     @asynccontextmanager
     async def transaction():
-        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
-            yield session
-            await session.commit()
+        nonlocal transaction_open
+        transaction_open = True
+        try:
+            async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+                yield session
+                await session.commit()
+        finally:
+            transaction_open = False
 
     async def locked_current(session, _context, payload, *, lock_row=True):
         return await session.get(CloudflareInstallation, payload.installation_id, with_for_update=lock_row)
@@ -1407,10 +1413,14 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             case ("crane", ("config", _)):
                 return config
             case ("crane", ("copy", source, target)):
+                assert not transaction_open
                 assert source == manifest.image and target == full_image.split("@")[0] + ":release" and not copied
                 copied = True
                 events.append("copy")
                 return b""
+            case ("crane", ("digest", target)):
+                assert not transaction_open and target == full_image.split("@")[0] + ":release" and copied
+                return manifest.image_digest.encode()
             case ("cf", ("--version",)):
                 return b"1.0.0-beta.31"
             case ("cf", ("accounts", "get", "-q")):
@@ -1505,6 +1515,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             result = {"account_id": installation.account_id, "registry_host": "registry.cloudflare.com",
                       "username": "fixture", "password": "fixture"}
         elif path.endswith("/image-preparations"):
+            assert not transaction_open
             assert copied and json.loads(request.content) == {"image": full_image}
             events.append("prepare")
             result = {"image": full_image, "status": "ready"}
@@ -1566,6 +1577,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     monkeypatch.setattr(enable_job, "_locked_current", locked_current)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     monkeypatch.setattr(cloudflare_containers_release, "_SIGNER_FILE", signer)
+    monkeypatch.setattr(enable_job, "_hold_installation_lease", AsyncMock())
     for module in (cloudflare_containers_release, cloudflare_containers_rest):
         monkeypatch.setattr(module, "run_oci_tool", tool)
     workers_deployments = {}
@@ -3310,6 +3322,108 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
     assert installation.retired_at is not None and installation.api_token_version is None
     actions = set(await db_session.scalars(select(AuditLog.action).where(AuditLog.resource_id == installation.id)))
     assert {"capacity.cloudflare_disconnect", "capacity.cloudflare_retired"} <= actions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registry_tag", ["matching", "absent", "foreign_digest"])
+async def test_disconnect_after_unconfirmed_image_create(
+    db_session, installation, monkeypatch, lifecycle_audit_actor, registry_tag,
+) -> None:
+    from src.services.worker_pool import cloudflare_containers_rest
+    from src.services.worker_pool.cloudflare_containers_rest import ContainerRegistry, ContainersRest
+
+    release, _, _ = make_release()
+    digest = release.manifest.image_digest
+    name = f"bifrost-{installation.id.hex}-r1"
+    destination = f"registry.cloudflare.com/{installation.account_id}/{name}:release"
+    installation.desired_state = "enabled"
+    await db_session.flush()
+    connection = await db_session.connection()
+    visible = False
+    deletes = []
+    receipt = None
+
+    @asynccontextmanager
+    async def transaction():
+        nonlocal receipt
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as db:
+            yield db
+            item = await db.scalar(select(CloudflareOwnedResource).where(
+                CloudflareOwnedResource.installation_id == installation.id, CloudflareOwnedResource.kind == "container_image",
+            ))
+            await db.commit()
+            if item is not None:
+                receipt = (item.state, item.provider_id, item.provider_version)
+
+    async def failed_copy(*_args, **_kwargs):
+        nonlocal visible
+        assert receipt == ("creating", None, None)
+        visible = registry_tag != "absent"
+        raise ObservationPending("Fixture preparation failed after registry copy")
+
+    async def registry_cli(_executable, *args, **_kwargs):
+        nonlocal visible
+        match args:
+            case ("--version",):
+                return b"1.0.0-beta.31"
+            case ("accounts", "get", "-q"):
+                return json.dumps({"id": installation.account_id}).encode()
+            case ("containers", "images", "list", "--filter", exact):
+                assert exact == f"^(?:{installation.account_id}/)?{name}$"
+                return json.dumps([{"name": name, "tags": ["release"]}] if visible else []).encode()
+            case ("digest", tag):
+                assert tag == destination
+                return (("sha256:" + "f" * 64) if registry_tag == "foreign_digest" else digest).encode()
+            case ("containers", "images", "delete", tag, "--force"):
+                assert tag == f"{name}:release" and receipt == ("deleting", destination, digest)
+                deletes.append(tag)
+                visible = False
+                return b""
+            case _:
+                raise AssertionError(f"Unexpected fixture registry command {args[0]}")
+
+    def provider(request):
+        assert request.url.path.endswith("/containers/registries/registry.cloudflare.com/credentials")
+        return httpx.Response(200, json={"success": True, "result": {
+            "account_id": installation.account_id, "registry_host": "registry.cloudflare.com",
+            "username": "fixture", "password": "fixture",
+        }})
+
+    monkeypatch.setattr(ContainerRegistry, "copy", failed_copy)
+    monkeypatch.setattr(cloudflare_containers_rest, "run_oci_tool", registry_cli)
+    for module in (enable_job, lifecycle_job):
+        monkeypatch.setattr(module, "get_db_context", transaction)
+        monkeypatch.setattr(module, "_hold_installation_lease", AsyncMock())
+    monkeypatch.setattr(lifecycle_job, "CREATE_SETTLEMENT_WINDOW", timedelta(0))
+    monkeypatch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=AsyncMock()))
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    running = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        with pytest.raises(ObservationPending, match="Fixture preparation failed"):
+            await enable_job._deploy_container_launcher(
+                running, enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1),
+                http, ContainersRest(http), release,
+            )
+        assert receipt == ("creating", None, None)
+        job, _ = await lifecycle_job.enqueue_cloudflare_disable(
+            db_session, _platform_operator(), installation_id=installation.id, expected_revision=1, action="disconnect",
+        )
+        await db_session.flush()
+        payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
+        if registry_tag == "foreign_digest":
+            with pytest.raises(OwnershipConflict, match="different digest") as failed:
+                await lifecycle_job._settle_disable(running, payload, SimpleNamespace(), tunnel_http=http)
+            assert failed.value.check == OwnershipCheck.RECEIPT_MISMATCH
+            assert visible and receipt == ("creating", None, None) and deletes == []
+            return
+        assert await lifecycle_job._settle_disable(running, payload, SimpleNamespace(), tunnel_http=http) == {
+            "outcome": "disconnected",
+        }
+    assert not visible and receipt is not None and receipt[0] == "absent"
+    assert deletes == ([f"{name}:release"] if registry_tag == "matching" else [])
+    await db_session.refresh(installation)
+    assert installation.retired_at is not None
 
 
 @pytest.mark.asyncio

@@ -196,10 +196,12 @@ class WorkersRestCleanup:
         allow_missing: bool = False, params: dict[str, int | str] | None = None,
         files: dict[str, tuple[str, str | bytes, str]] | None = None,
         json_body: dict[str, Any] | None = None,
+        include_http_status: bool = False,
     ) -> dict[str, Any] | None:
         resource_path = f"accounts/{account}" + (f"/{path}" if path else "")
         return await self._request_resource(
             token, method, resource_path, allow_missing=allow_missing, params=params, files=files, json_body=json_body,
+            include_http_status=include_http_status,
         )
 
     async def _request_resource(
@@ -207,6 +209,7 @@ class WorkersRestCleanup:
         allow_missing: bool = False, params: dict[str, int | str] | None = None,
         files: dict[str, tuple[str, str | bytes, str]] | None = None,
         json_body: dict[str, Any] | None = None,
+        include_http_status: bool = False,
     ) -> dict[str, Any] | None:
         try:
             response = await self._http.request(
@@ -243,6 +246,8 @@ class WorkersRestCleanup:
             raise CloudflareRestObservation(
                 "Cloudflare REST returned an unconfirmed result", _rest_operation(method, path), ObservationCheck.REST_RESULT,
             )
+        if include_http_status:
+            payload["_http_status"] = response.status_code
         return payload
 
     async def verify_account(self, account_id: str, candidate: SecretStr) -> None:
