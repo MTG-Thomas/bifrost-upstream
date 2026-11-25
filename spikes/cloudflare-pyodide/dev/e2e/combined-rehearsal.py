@@ -628,9 +628,9 @@ async def {name}():
         assert self.scripts() == scripts and len(scripts) == 3
         assert self.sql("SELECT count(*) FROM cloudflare_usage_incarnations WHERE deleted_at IS NULL") == 0
 
-    def disconnect(self):
+    def disconnect(self, *, enqueue=None):
         receipts = self.worker_receipts()
-        job = self.job("disconnect")
+        job = self.job("disconnect") if enqueue is None else enqueue()
         if "managementToken" not in self.cfg:
             self.observe_status("disconnect-requested")
         self.completed(job, "disconnected", window=DISCONNECT_RESULT_SECONDS)
@@ -1409,7 +1409,7 @@ class HostedContainers(ContainerRehearsal):
         })
         assert not any(leftovers.values()), "Trial-owned resources are still present"
 
-    def teardown(self, baseline, plan, app_path, original):
+    def teardown(self, baseline, plan, app_path, original, *, enqueue_disconnect=None):
         first_error = None
         namespace_ids = set()
 
@@ -1424,7 +1424,10 @@ class HostedContainers(ContainerRehearsal):
 
         def disconnect_if_installed():
             if self.install() is not None:
-                self.disconnect()
+                if enqueue_disconnect is None:
+                    self.disconnect()
+                else:
+                    self.disconnect(enqueue=enqueue_disconnect)
 
         def record_namespaces():
             for receipt in self.worker_receipts(installation_id=plan["installation"]):
@@ -1694,11 +1697,63 @@ class HostedUpgrade(Rehearsal):
                                    for phase, readings in self.spending.items()})
 
 
+def queue_disconnect_after_worker_loss(trial, recovery):
+    """Pause the sole physical worker and let the real liveness sweep fence it."""
+    worker, = subprocess.check_output(trial.compose + ["ps", "-q", "worker"], text=True, timeout=8).split()
+
+    def physical_identity():
+        return subprocess.check_output([
+            "docker", "inspect", "--format", "{{.Config.Hostname}} {{.State.StartedAt}}", worker,
+        ], text=True, timeout=8).split()
+
+    physical = physical_identity()
+
+    def ready_workers():
+        return trial.sql("""SELECT coalesce(json_agg(json_build_object(
+            'id', id, 'launcher', remote_launcher_id, 'hostname', hostname
+            )), '[]') FROM execution_workers WHERE form='static' AND state='ready'
+            AND execution_lane='normal' AND memory_budget_bytes IS NOT NULL
+            AND remote_owner_lease_expires_at > clock_timestamp()""")
+
+    original, = ready_workers()
+    assert original["hostname"] == physical[0]
+    incarnation = str(UUID(original["id"]))
+    started = time.monotonic()
+    try:
+        subprocess.run(["docker", "pause", worker], check=True, capture_output=True, timeout=12)
+        # Allow the 20s owner lease, 30s heartbeat age and 15s dispatch sweep.
+        wait("static worker lost after heartbeat stopped", lambda: trial.sql(f"""SELECT to_json(EXISTS(
+            SELECT 1 FROM execution_workers WHERE id='{incarnation}' AND state='lost' AND end_reason='heartbeat_lost'
+            ))"""), 90)
+        assert ready_workers() == []
+        job = trial.job("disconnect")
+        queued = trial.send(f"/api/platform-jobs/{job}", method="GET")
+        assert queued["status"] == "queued" and queued["attempt"] == 0
+        evidence("disconnect-queued-without-worker", {
+            "status": queued["status"], "attempt": queued["attempt"],
+            "loss_seconds": round(time.monotonic() - started, 3),
+        })
+    finally:
+        paused = subprocess.check_output([
+            "docker", "inspect", "--format", "{{.State.Paused}}", worker,
+        ], text=True, timeout=8).strip()
+        if paused == "true":
+            subprocess.run(["docker", "unpause", worker], check=True, capture_output=True, timeout=12)
+
+    successor, = wait("replacement static incarnation ready", ready_workers, 45)
+    assert successor["id"] != original["id"] and successor["launcher"] != original["launcher"]
+    assert successor["hostname"] == physical[0] and physical_identity() == physical
+    assert subprocess.check_output(trial.compose + ["ps", "-q", "worker"], text=True, timeout=8).split() == [worker]
+    recovery.update(job=job, new_incarnation=True, same_container=True)
+    return job
+
+
 def exercise_image_preparation_failure(fixture, trial):
     """Exercise the local registry effect that precedes a terminal preparation error."""
     fixture.provider("/local/image-preparation-mode", "POST", {"mode": "error"})
     plan = trial.plan_activation()
     baseline = trial.opening_inventory(plan)
+    recovery = {}
     try:
         accepted = trial.send("/api/capacity/cloudflare/activate", trial.activation_request)
         job = str(UUID(accepted["job_id"]))
@@ -1719,8 +1774,15 @@ def exercise_image_preparation_failure(fixture, trial):
         assert image == {"state": "creating", "sent": True, "provider_id": None} and trial.canaries() == 0
         assert plan["registry_repository"] in trial.provider_snapshot()["registry"]
     finally:
-        trial.teardown(baseline, plan, None, sys.exception())
+        original = sys.exception()
+        trial.teardown(baseline, plan, None, original, enqueue_disconnect=(
+            (lambda: queue_disconnect_after_worker_loss(trial, recovery)) if original is None else None
+        ))
     assert trial.install() is None and trial.canaries() == 0
+    job = recovery.pop("job")
+    state = trial.send(f"/api/platform-jobs/{job}", method="GET")
+    assert state["status"] == "succeeded" and state["attempt"] == 1
+    evidence("static-worker-recovered-disconnect", {**recovery, "attempt": state["attempt"]})
     evidence("failed-image-preparation-disconnected", {"preparation": details, "canaries": 0})
     fixture.provider("/local/image-preparation-mode", "POST", {"mode": "slow"})
 
