@@ -2,9 +2,10 @@
 
 **Prepared locally. Publication is held for the frozen-target release review,
 owner approval, and fork settings checks.**
-The exact rc04 release candidate is `0a9ca46e2bd45d1d10621b141bc38bc4b63c8c07`
+The exact rc04 release candidate is `732c403fdd9725566164a8115033ae577042db55`
 on local branch `t3/cloudflare-release-rc04`. It includes the image preparation
-wait, exact registry cleanup, and runner evidence fixes.
+wait, exact registry cleanup, runner evidence fixes, and automatic recovery
+when a static worker loses its incarnation.
 See [rc04 image preparation and cleanup](RC04-IMAGE-PREPARATION.md).
 The approved release body remains byte-identical to rc02 and rc03. Push the pinned candidate to
 `trial/cloudflare-containers-20261124` on `personal`
@@ -65,9 +66,9 @@ destination branch. Use only the explicit `personal` refspecs below.
 Never use `git push --tags` or `git push --follow-tags`. The commands remain unrun.
 
 ```sh
-git tag -a v2.0.0-rc.2026112404 0a9ca46e2bd45d1d10621b141bc38bc4b63c8c07 -m "Cloudflare Containers Trial"
-test "$(git rev-parse 'v2.0.0-rc.2026112404^{commit}')" = 0a9ca46e2bd45d1d10621b141bc38bc4b63c8c07 || exit 1
-git -c push.followTags=false push personal 0a9ca46e2bd45d1d10621b141bc38bc4b63c8c07:refs/heads/trial/cloudflare-containers-20261124
+git tag -a v2.0.0-rc.2026112404 732c403fdd9725566164a8115033ae577042db55 -m "Cloudflare Containers Trial"
+test "$(git rev-parse 'v2.0.0-rc.2026112404^{commit}')" = 732c403fdd9725566164a8115033ae577042db55 || exit 1
+git -c push.followTags=false push personal 732c403fdd9725566164a8115033ae577042db55:refs/heads/trial/cloudflare-containers-20261124
 git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112404:refs/tags/v2.0.0-rc.2026112404
 ```
 

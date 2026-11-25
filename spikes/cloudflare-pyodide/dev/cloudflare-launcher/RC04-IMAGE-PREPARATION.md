@@ -64,9 +64,33 @@ before their respective deletion transitions. The existing observation
 constraint stays in force.
 
 The fourth attempt had zero active PlatformJob resource-key holders while
-Disconnect was queued. Its sole static launcher was lost after a worker
-control WebSocket close with code 1008. Recreating only that worker restored
-claim capacity, and Disconnect reached its first terminal result on attempt
-one. This explains the queue delay separately from the image-journal
-constraint violation after claim. The receipt does not establish the cause
-of the WebSocket close. The worker availability requirement stays in force.
+Disconnect was queued. Its sole static worker was marked lost, and reconnects
+received WebSocket close 1008. Recreating the worker gave it a new incarnation
+and restored claim capacity.
+
+The API-side executor writes a database heartbeat every five seconds on a
+dedicated liveness connection, with a five-second bound per write. The
+dispatch reconciler sweeps every 15 seconds when idle and can wake sooner. It
+requires 30 seconds of steady database reachability before marking a static
+executor lost, and then checks whether PostgreSQL has gone more than 30
+seconds without that executor's heartbeat. The remote owner lease also
+depends on fresh launcher telemetry and has a 20-second lifetime.
+
+Enable's registry preparation runs in a launcher child. Its HTTP and OCI
+operations do not run on the API event loop, and the preparation journal
+does not lock the executor row. The retained receipt does not include
+heartbeat timestamps, control telemetry, or renewal errors from the loss
+window. It establishes the lost state and the reconnect refusal. The
+initiating interruption and its timing relative to preparation remain unknown.
+
+The old hello path found the existing incarnation, skipped registration,
+and refused ownership because its row was lost. The launcher treated the
+generic close as a transport error and kept presenting the same identity.
+The host now sends an explicit loss close after authenticating a static
+hello and matching its recorded launcher identity. A lost static row can
+no longer renew its owner lease or authorize a new claim. The launcher
+clears readiness and stops that incarnation's children before enrolling
+under fresh incarnation and launcher IDs with empty inventory. A routine
+reconnect still retains its identity and children. Managed workers keep
+their existing provider-bound retirement paths. Disconnect still runs
+through the ordinary fenced PlatformJob claim path on a ready executor.
