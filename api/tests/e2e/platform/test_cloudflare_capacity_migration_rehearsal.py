@@ -327,13 +327,16 @@ def test_upgrade_migration_pauses_prior_pilot_and_scheduler_pins_the_new_release
     installation_id = uuid4()
 
     async def seed(connection: AsyncConnection) -> None:
+        identity = {"id": installation_id, "account": "a" * 32}
         await connection.execute(sa.text("""
             INSERT INTO cloudflare_installations (
                 id, account_id, worker_ingress_origin, consent_version, consent_actor, consent_at,
-                policy, desired_revision, desired_state, admitted_revision
+                policy, desired_revision, desired_state, admitted_revision, api_token_version, control_root_version
             ) VALUES (:id, :account, 'https://worker.example.test', 'test', 'test', now(),
-                      '{}', 1, 'enabled', 1)
-        """), {"id": installation_id, "account": "a" * 32})
+                      '{}', 1, 'enabled', 1, 1, 1)
+        """), identity)
+        for purpose in ("account_token", "control_root"):
+            await connection.execute(sa.text(_CREDENTIAL_SEED), {**identity, "purpose": purpose, "scope": ""})
 
     asyncio.run(_run_in_database(migration_database, seed))
     _upgrade(migration_database, "head")
