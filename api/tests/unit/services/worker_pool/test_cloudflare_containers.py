@@ -411,7 +411,10 @@ async def test_crane_digest_classifies_tool_failure_without_exposing_stderr(tmp_
     with pytest.raises(OCIToolError) as error:
         await run_oci_tool(crane, "digest", "fixture-tag", cwd=tmp_path)
     assert error.value.failure is failure
-    assert str(error.value) == "Container release tool failed"
+    assert str(error.value) == (
+        "Container release tool rejected the operation" if stderr is not None
+        else "Container release tool did not complete"
+    )
 
 
 @pytest.mark.asyncio

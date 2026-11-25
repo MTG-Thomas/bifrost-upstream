@@ -56,7 +56,10 @@ class OCIToolFailure(StrEnum):
 
 class OCIToolError(ContainersReleaseUnavailable):
     def __init__(self, failure: OCIToolFailure) -> None:
-        super().__init__("Container release tool failed")
+        if failure in (OCIToolFailure.NOT_FOUND, OCIToolFailure.START_FAILED, OCIToolFailure.TIMEOUT):
+            super().__init__("Container release tool did not complete")
+        else:
+            super().__init__("Container release tool rejected the operation")
         self.failure = failure
 
     @property
