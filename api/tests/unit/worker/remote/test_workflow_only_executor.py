@@ -15,6 +15,7 @@ import pytest
 # leaks it into later tests (observed in test_pyodide_attempt_journal).
 from src.jobs.consumers import workflow_execution  # noqa: F401
 from src.services.work_dispatch import WAKE_WORKFLOW
+from src.services.worker_pool import calibration
 from src.worker import pool_main
 from src.worker.remote import host
 from src.worker.remote.ownership import RemoteOwnerLease
@@ -117,8 +118,8 @@ async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monk
     monkeypatch.setattr(ThinRemoteProcessPool, "_apply_requirements_status", requirements_status)
     requirements_notification = AsyncMock()
     monkeypatch.setattr("src.services.execution.process_pool._notify_requirements_failures", requirements_notification)
-    calibration = AsyncMock()
-    monkeypatch.setattr("src.services.worker_pool.calibration.record_memory_calibration", calibration)
+    record_calibration = AsyncMock()
+    monkeypatch.setattr(calibration, "record_memory_calibration", record_calibration)
 
     inventory = {"event": "inventory", "inventory": {
         "version": 1, "routes": [], "terminal_routes": [],
@@ -166,7 +167,7 @@ async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monk
             getattr(target, method).assert_not_called()
         requirements_status.assert_not_called()
         requirements_notification.assert_not_called()
-        calibration.assert_not_called()
+        record_calibration.assert_not_called()
     finally:
         if worker._claim_ready:
             await asyncio.wait_for(session.stop(), timeout=2)
