@@ -1298,6 +1298,7 @@ async def test_container_application_effect_survives_provisioning_failures(
     "missing", "failed", "ready", "retire-timeout", "refresh-failure",
     "pending-wrong-digest", "pending-expired", "pending-near-expiry", "pending-replaced",
     "hours-exhausted", "canaries-exhausted", "deferred-failed", "deferred-conflict", "deferred-release-unavailable",
+    "image-superseded",
 ])
 async def test_cold_enable_prepares_image_and_deploys_container_application(
     db_session, installation, monkeypatch, tmp_path, canary_result,
@@ -1518,6 +1519,11 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             assert not transaction_open
             assert copied and json.loads(request.content) == {"image": full_image}
             events.append("prepare")
+            if canary_result == "image-superseded" and events.count("prepare") == 1:
+                await db_session.execute(update(CloudflareInstallation).where(
+                    CloudflareInstallation.id == installation.id,
+                ).values(desired_revision=revision + 1))
+                return httpx.Response(202, json={"success": True, "result": {"image": full_image, "status": "pending"}})
             result = {"image": full_image, "status": "ready"}
         elif path.endswith(f"/workers/scripts/{name}-containers") and request.method == "PUT":
             parts = BytesParser(policy=email_policy.default).parsebytes(
@@ -1574,10 +1580,13 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
 
     monkeypatch.setattr(enable_job, "get_db_context", transaction)
     monkeypatch.setattr(cloudflare_containers_control, "get_db_context", transaction)
-    monkeypatch.setattr(enable_job, "_locked_current", locked_current)
+    if canary_result == "image-superseded":
+        monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_SETTLEMENT_INTERVAL", 0)
+    else:
+        monkeypatch.setattr(enable_job, "_locked_current", locked_current)
+        monkeypatch.setattr(enable_job, "_hold_installation_lease", AsyncMock())
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     monkeypatch.setattr(cloudflare_containers_release, "_SIGNER_FILE", signer)
-    monkeypatch.setattr(enable_job, "_hold_installation_lease", AsyncMock())
     for module in (cloudflare_containers_release, cloudflare_containers_rest):
         monkeypatch.setattr(module, "run_oci_tool", tool)
     workers_deployments = {}
@@ -1601,6 +1610,17 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     )))
     payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=revision)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        if canary_result == "image-superseded":
+            assert await enable_job._settle_enable(context, payload, http, workers) == {"outcome": "superseded"}
+            resources = (await db_session.scalars(select(CloudflareOwnedResource).where(
+                CloudflareOwnedResource.installation_id == installation.id,
+            ))).all()
+            receipt, = resources
+            assert (receipt.kind, receipt.state) == ("container_image", "present")
+            assert receipt.provider_id == full_image.split("@")[0] + ":release"
+            assert receipt.provider_version == manifest.image_digest
+            assert events == ["copy", "prepare", "prepare"]
+            return
         if deferred:
             assert prior_pin is not None
             for module in (cloudflare_admission, cloudflare_policy, lifecycle_job):
@@ -3325,7 +3345,10 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
 
 
 @pytest.mark.asyncio
-async def test_container_image_preparation_stops_when_copy_loses_its_lease(db_session, installation, monkeypatch):
+@pytest.mark.parametrize("in_flight", [False, True], ids=["after-copy", "during-copy"])
+async def test_container_image_preparation_stops_when_copy_loses_its_lease(
+    db_session, installation, monkeypatch, in_flight,
+):
     from src.services.worker_pool import cloudflare_containers_rest
     from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
 
@@ -3342,10 +3365,15 @@ async def test_container_image_preparation_stops_when_copy_loses_its_lease(db_se
     connection = await db_session.connection()
     transaction_open = False
     copied = False
+    copy_started = False
+    lease_revoked = asyncio.Event()
+    copy_cancelled = False
 
     @asynccontextmanager
     async def transaction():
         nonlocal transaction_open
+        if copy_started:
+            await lease_revoked.wait()
         transaction_open = True
         try:
             async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as db:
@@ -3355,7 +3383,7 @@ async def test_container_image_preparation_stops_when_copy_loses_its_lease(db_se
             transaction_open = False
 
     async def tool(_executable, *args, **_kwargs):
-        nonlocal copied
+        nonlocal copied, copy_started, copy_cancelled
         assert not copied, "A fenced job must stop before the next registry poll"
         if args == ("--version",):
             return b"1.0.0-beta.31"
@@ -3371,10 +3399,17 @@ async def test_container_image_preparation_stops_when_copy_loses_its_lease(db_se
             return config
         if args[0] == "copy":
             assert not transaction_open
+            copy_started = True
             await db_session.execute(update(PlatformJob).where(PlatformJob.id == job.id).values(
                 status="queued", lease_token=None, lease_expires_at=None,
             ))
             copied = True
+            lease_revoked.set()
+            if in_flight:
+                try:
+                    await asyncio.Future()
+                finally:
+                    copy_cancelled = True
             return b""
         pytest.fail(f"Unexpected fixture registry command {args[0]}")
 
@@ -3388,11 +3423,13 @@ async def test_container_image_preparation_stops_when_copy_loses_its_lease(db_se
 
     monkeypatch.setattr(enable_job, "get_db_context", transaction)
     monkeypatch.setattr(cloudflare_containers_rest, "run_oci_tool", tool)
+    if in_flight:
+        monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_COPY_LEASE_INTERVAL", 0)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=installation.desired_revision)
         with pytest.raises(PlatformJobCancelled):
             await enable_job._deploy_container_launcher(context, payload, http, ContainersRest(http), release)
-    assert copied
+    assert copied and copy_cancelled is in_flight
     resources = (await db_session.scalars(select(CloudflareOwnedResource).where(
         CloudflareOwnedResource.installation_id == installation.id,
     ))).all()

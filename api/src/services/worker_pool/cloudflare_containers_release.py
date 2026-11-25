@@ -4,12 +4,13 @@ import asyncio
 import json
 import os
 import re
+from contextlib import nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, TemporaryFile
 from typing import Annotated, Literal
 
 import httpx
@@ -38,6 +39,7 @@ _COSIGN = Path("/app/artifacts/cloudflare/bin/cosign")
 _COSIGN_VERSION = "v2.4.1"
 _TRUSTED_ROOT_TARGET = ".sigstore/root/targets/trusted_root.json"
 _GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+_DIGEST_DIAGNOSTIC_BYTES = 4096
 
 
 class ContainersReleaseUnavailable(Exception):
@@ -50,7 +52,7 @@ class OCIToolFailure(StrEnum):
     REJECTED = "tool_rejected"
     TIMEOUT = "tool_timeout"
     REGISTRY_AUTH = "registry_auth"
-    TAG_NOT_VISIBLE = "tag_not_visible"
+    IMAGE_NOT_FOUND = "image_not_found"
     REGISTRY_UNAVAILABLE = "registry_unavailable"
 
 
@@ -64,17 +66,21 @@ class OCIToolError(ContainersReleaseUnavailable):
 
     @property
     def retryable_readback(self) -> bool:
-        return self.failure in (OCIToolFailure.TIMEOUT, OCIToolFailure.TAG_NOT_VISIBLE, OCIToolFailure.REGISTRY_UNAVAILABLE)
+        return self.failure not in (
+            OCIToolFailure.NOT_FOUND, OCIToolFailure.START_FAILED,
+            OCIToolFailure.REGISTRY_AUTH, OCIToolFailure.IMAGE_NOT_FOUND,
+        )
 
 
 def _digest_failure(stderr: bytes) -> OCIToolFailure:
     # crane v0.20.6 prints an OCI diagnostic code or a numeric HTTP status.
     # https://github.com/google/go-containerregistry/blob/v0.20.6/pkg/v1/remote/transport/error.go
-    diagnostic = stderr[:4096]
+    # A failed HEAD may log a warning before the final GET error.
+    diagnostic = stderr.rstrip().rsplit(b"\n", 1)[-1]
     if re.search(rb"\b(?:UNAUTHORIZED|DENIED):|unexpected status code (?:401|403)\b", diagnostic):
         return OCIToolFailure.REGISTRY_AUTH
     if re.search(rb"\b(?:MANIFEST_UNKNOWN|NAME_UNKNOWN):|unexpected status code 404\b", diagnostic):
-        return OCIToolFailure.TAG_NOT_VISIBLE
+        return OCIToolFailure.IMAGE_NOT_FOUND
     if re.search(
         rb"\b(?:TOOMANYREQUESTS|UNAVAILABLE):|unexpected status code (?:408|429|5[0-9]{2})\b"
         rb"|i/o timeout|connection (?:reset|refused)",
@@ -133,27 +139,33 @@ async def run_oci_tool(
         environment.update(env)
     diagnose_digest = executable.name == "crane" and args[:1] == ("digest",)
     try:
-        process = await asyncio.create_subprocess_exec(
-            str(executable.resolve(strict=True)), *args, cwd=cwd, env=environment,
-            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE if diagnose_digest else asyncio.subprocess.DEVNULL,
-        )
-        try:
-            async with asyncio.timeout(timeout):
-                output, diagnostic = await process.communicate()
-        except (TimeoutError, asyncio.CancelledError):
-            if process.returncode is None:
-                process.kill()
-            await process.wait()
-            raise
+        with (TemporaryFile(dir=cwd) if diagnose_digest else nullcontext(None)) as diagnostic:
+            process = await asyncio.create_subprocess_exec(
+                str(executable.resolve(strict=True)), *args, cwd=cwd, env=environment,
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                stderr=diagnostic if diagnostic is not None else asyncio.subprocess.DEVNULL,
+            )
+            try:
+                async with asyncio.timeout(timeout):
+                    output, _ = await process.communicate()
+            except (TimeoutError, asyncio.CancelledError):
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
+                raise
+            if process.returncode:
+                failure = OCIToolFailure.REJECTED
+                if diagnostic is not None:
+                    length = diagnostic.seek(0, os.SEEK_END)
+                    diagnostic.seek(max(0, length - _DIGEST_DIAGNOSTIC_BYTES))
+                    failure = _digest_failure(diagnostic.read(_DIGEST_DIAGNOSTIC_BYTES))
+                raise OCIToolError(failure)
     except FileNotFoundError:
         raise OCIToolError(OCIToolFailure.NOT_FOUND) from None
     except TimeoutError:
         raise OCIToolError(OCIToolFailure.TIMEOUT) from None
     except OSError:
         raise OCIToolError(OCIToolFailure.START_FAILED) from None
-    if process.returncode:
-        raise OCIToolError(_digest_failure(diagnostic) if diagnose_digest else OCIToolFailure.REJECTED)
     if len(output) > 4 * 1024 * 1024:
         raise OCIToolError(OCIToolFailure.REJECTED)
     return output

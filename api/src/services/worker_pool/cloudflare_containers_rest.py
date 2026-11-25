@@ -568,23 +568,27 @@ class ContainerRegistry:
     async def _copy_while_current(
         self, source: str, destination: str, cwd: Path, hold_lease: Callable[[], Awaitable[None]],
     ) -> None:
+        stopped = asyncio.Event()
+
         async def watch_lease() -> None:
-            while True:
-                await asyncio.sleep(_IMAGE_COPY_LEASE_INTERVAL)
-                await hold_lease()
+            while not stopped.is_set():
+                try:
+                    await asyncio.wait_for(stopped.wait(), timeout=_IMAGE_COPY_LEASE_INTERVAL)
+                except TimeoutError:
+                    if not stopped.is_set():
+                        await hold_lease()
 
         await hold_lease()
         watcher = asyncio.create_task(watch_lease())
         copy = asyncio.create_task(run_oci_tool(self.crane, "copy", source, destination, cwd=cwd, timeout=90))
         try:
-            done, _ = await asyncio.wait({copy, watcher}, return_when=asyncio.FIRST_COMPLETED)
-            if watcher in done:
-                watcher.result()
-            await copy
+            await asyncio.wait({copy, watcher}, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            watcher.cancel()
+            stopped.set()
             copy.cancel()
             await asyncio.gather(watcher, copy, return_exceptions=True)
+        watcher.result()
+        copy.result()
 
     async def _wait_for_prepared_image(
         self, token: SecretStr, account: str, name: str, tag: str, digest: str, cwd: Path,

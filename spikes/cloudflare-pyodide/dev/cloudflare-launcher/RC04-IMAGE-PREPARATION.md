@@ -26,11 +26,11 @@ retains the OCI image digest separately. [Preparation API](https://developers.cl
 1. Commit an owned intent with `creation_sent` and the signed OCI digest
    before the copy. Copy only to the intended repository and release tag.
 2. For up to 180 seconds after the copy, poll exact repository inventory and
-   the tag's digest at five-second intervals. An absent tag or an OCI read
-   reporting a missing manifest, timeout, or transient registry failure is
-   still settling. Authentication failures, missing tools, and unclassified
-   tool rejections stop immediately. Failure evidence records the last
-   sanitized digest failure class and the total number of failed reads.
+   the tag's digest at five-second intervals. An absent tag in inventory or
+   a transient or unclassified digest error is still settling. Explicit
+   authentication and image-not-found errors, and failure to start the tool,
+   stop immediately. Failure evidence records the last sanitized digest
+   failure class and the total number of failed reads.
    Unexpected tags or a different digest violate the ownership fence.
    The source manifest and config are verified before copy. Destination
    readback uses the registry-reported digest because that digest pins the
@@ -42,13 +42,14 @@ retains the OCI image digest separately. [Preparation API](https://developers.cl
    presence of known fields. It excludes provider messages, unknown keys,
    image URLs, and credentials.
 4. The PlatformJob resource key excludes concurrent lifecycle jobs for the
-   same installation while the attempt owns its lease. Check the lease and
-   installation revision before touching the registry, immediately before the
-   copy, during the copy, and on every poll. Each check uses a short
+   same installation while the attempt owns its lease. Check the lease
+   before touching the registry, immediately before the copy, during the
+   copy, and on every poll. Source manifest reads and the credential mint
+   can still happen between the first two checks. Each check uses a short
    transaction. The registry calls and sleeps run independently of those
    transactions. Lease loss cancels an in-flight copy and stops further
-   provider work. Recheck the lease and journal before storing a receipt or
-   proceeding to deployment.
+   provider work. A superseded job with a valid lease commits the exact
+   image receipt and exits before launching the deployment.
 5. An exhausted wait produces a retryable `CF_DEPLOYMENT_UNVERIFIED` with
    the last sanitized observation. Enable already has three attempts and
    delays of 15 and 45 seconds. Requeue clears the old lease and preserves

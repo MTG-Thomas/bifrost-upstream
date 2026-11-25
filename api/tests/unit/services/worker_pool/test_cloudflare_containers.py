@@ -252,6 +252,8 @@ async def test_release_fetch_distinguishes_settling_from_terminal_errors(tmp_pat
     ([], True, False, "digest_timeout"),
     ([], True, False, "digest_auth"),
     ([], True, False, "digest_tool_missing"),
+    ([], True, False, "digest_image_missing"),
+    ([], True, False, "digest_unknown"),
     ([], True, False, "digest_cumulative"),
 ])
 async def test_registry_replays_only_into_an_empty_repository(
@@ -267,11 +269,14 @@ async def test_registry_replays_only_into_an_empty_repository(
     preparations = []
     tag_reads = 0
     digest_reads = 0
+    hold_lease = AsyncMock()
     digest_failure = {
-        "digest_lag": OCIToolFailure.TAG_NOT_VISIBLE,
+        "digest_lag": OCIToolFailure.REGISTRY_UNAVAILABLE,
         "digest_timeout": OCIToolFailure.TIMEOUT,
         "digest_auth": OCIToolFailure.REGISTRY_AUTH,
         "digest_tool_missing": OCIToolFailure.NOT_FOUND,
+        "digest_image_missing": OCIToolFailure.IMAGE_NOT_FOUND,
+        "digest_unknown": OCIToolFailure.REJECTED,
         "digest_cumulative": OCIToolFailure.REGISTRY_AUTH,
     }.get(preparation)
 
@@ -285,13 +290,14 @@ async def test_registry_replays_only_into_an_empty_repository(
             return json_bytes({"id": ACCOUNT})
         if args[:3] == ("containers", "images", "list"):
             tag_reads += 1
+            assert hold_lease.await_count == tag_reads + len(copies) + len(preparations)
             if preparation == "tag_lag" and tag_reads == 2:
                 return json_bytes([])
             return json_bytes([{"name": name, "tags": tags}] if tags or initial_tags is not None else [])
         if args[0] == "digest":
             digest_reads += 1
             if preparation == "digest_cumulative" and digest_reads <= 2:
-                raise OCIToolError(OCIToolFailure.TAG_NOT_VISIBLE)
+                raise OCIToolError(OCIToolFailure.REJECTED)
             if digest_failure is not None and (preparation != "digest_lag" or digest_reads <= 2):
                 raise OCIToolError(digest_failure)
             return (("sha256:" + "b" * 64) if preparation == "wrong_digest" else release.manifest.image_digest).encode()
@@ -300,6 +306,7 @@ async def test_registry_replays_only_into_an_empty_repository(
         if args[0] == "config":
             return config + b"\n"
         if args[0] == "copy":
+            assert hold_lease.await_count == 2
             copies.append(args[:3])
             tags.append("release")
             if preparation == "foreign_after_copy":
@@ -311,6 +318,7 @@ async def test_registry_replays_only_into_an_empty_repository(
         body = json.loads(request.content)
         assert request.method == "POST"
         if request.url.path.endswith("/containers/image-preparations"):
+            assert hold_lease.await_count == tag_reads + len(copies) + len(preparations) + 1
             digest = release.manifest.image_digest
             assert body == {"image": f"registry.cloudflare.com/{ACCOUNT}/{name}@{digest}"}
             status = preparation if not preparations else "ready"
@@ -334,14 +342,14 @@ async def test_registry_replays_only_into_an_empty_repository(
 
     monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_rest.run_oci_tool", tool)
     monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_SETTLEMENT_INTERVAL", 0)
-    if preparation in {"timeout", "digest_timeout"}:
+    if preparation in {"timeout", "digest_timeout", "digest_unknown"}:
         monkeypatch.setattr(cloudflare_containers_rest, "_IMAGE_SETTLEMENT_SECONDS", 0)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         registry = ContainerRegistry(ContainersRest(http), crane=tmp_path / "crane", cf=tmp_path / "cf")
 
         async def copy():
             return await registry.copy(
-                TOKEN, intent, release, previously_sent=previously_sent, hold_lease=AsyncMock(),
+                TOKEN, intent, release, previously_sent=previously_sent, hold_lease=hold_lease,
             )
 
         if conflict:
@@ -372,7 +380,9 @@ async def test_registry_replays_only_into_an_empty_repository(
             assert preparations == ["pending"] and len(copies) == 1
             return
         if digest_failure is not None and preparation != "digest_lag":
-            error = ObservationSettling if preparation == "digest_timeout" else ObservationPending
+            error = ObservationSettling if digest_failure in (
+                OCIToolFailure.TIMEOUT, OCIToolFailure.REJECTED,
+            ) else ObservationPending
             with pytest.raises(error) as failure:
                 await copy()
             assert type(failure.value) is error
@@ -399,8 +409,15 @@ async def test_registry_replays_only_into_an_empty_repository(
 @pytest.mark.parametrize(("stderr", "failure"), [
     ("HEAD registry.invalid: unexpected status code 403 Forbidden", OCIToolFailure.REGISTRY_AUTH),
     ("GET registry.invalid: UNAUTHORIZED: fixture credential", OCIToolFailure.REGISTRY_AUTH),
-    ("HEAD registry.invalid: unexpected status code 404 Not Found", OCIToolFailure.TAG_NOT_VISIBLE),
+    ("HEAD registry.invalid: unexpected status code 404 Not Found", OCIToolFailure.IMAGE_NOT_FOUND),
+    (
+        "Warning: HEAD request failed, falling back on GET: unexpected status code 401 Unauthorized\n"
+        "Error: GET registry.invalid: unexpected status code 404 Not Found",
+        OCIToolFailure.IMAGE_NOT_FOUND,
+    ),
     ("GET registry.invalid: unexpected status code 503 Service Unavailable", OCIToolFailure.REGISTRY_UNAVAILABLE),
+    ("Error: GET registry.invalid: UNKNOWN: unknown error", OCIToolFailure.REJECTED),
+    ("Error: Get registry.invalid: net/http: TLS handshake timeout", OCIToolFailure.REJECTED),
     (None, OCIToolFailure.NOT_FOUND),
 ])
 async def test_crane_digest_classifies_tool_failure_without_exposing_stderr(tmp_path, stderr, failure):
@@ -411,6 +428,7 @@ async def test_crane_digest_classifies_tool_failure_without_exposing_stderr(tmp_
     with pytest.raises(OCIToolError) as error:
         await run_oci_tool(crane, "digest", "fixture-tag", cwd=tmp_path)
     assert error.value.failure is failure
+    assert error.value.retryable_readback is (failure in (OCIToolFailure.REGISTRY_UNAVAILABLE, OCIToolFailure.REJECTED))
     assert str(error.value) == (
         "Container release tool rejected the operation" if stderr is not None
         else "Container release tool did not complete"

@@ -1779,7 +1779,8 @@ def exercise_image_preparation_failure(fixture, trial):
             (lambda: queue_disconnect_after_worker_loss(trial, recovery)) if original is None else None
         ))
     assert trial.install() is None and trial.canaries() == 0
-    job = recovery.pop("job")
+    job = recovery.pop("job", None)
+    assert job is not None, "The recovered Disconnect was not recorded"
     state = trial.send(f"/api/platform-jobs/{job}", method="GET")
     assert state["status"] == "succeeded" and state["attempt"] == 1
     evidence("static-worker-recovered-disconnect", {**recovery, "attempt": state["attempt"]})

@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.core.database import get_db_context
 from src.jobs.platform.base import (
-    PlatformJobCancelled,
     PlatformJobContext,
     PlatformJobFailure,
     PlatformJobRequiresAction,
@@ -898,8 +897,7 @@ async def _deploy_container_launcher(
     if prepared is None:
         async def hold_image_lease() -> None:
             async with get_db_context() as db:
-                if await _locked_current(db, context, payload, lock_row=False) is None:
-                    raise PlatformJobCancelled
+                await _hold_installation_lease(db, context, payload.installation_id)
 
         prepared = await registry.copy(
             token, intent, release, previously_sent=previously_sent, hold_lease=hold_image_lease,
