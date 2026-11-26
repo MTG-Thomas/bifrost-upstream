@@ -16,7 +16,7 @@ from src.models.orm.cloudflare_capacity import (
 )
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
-from src.services.worker_pool.cloudflare_containers_policy import CONTAINER_CLOCK_SKEW, CONTAINERS_SCOPE
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINER_CLOCK_SKEW, CONTAINERS_SCOPE, container_provider_pin
 from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
 from src.services.worker_pool.cloudflare_provisioning import (
     ObservationPending,
@@ -64,13 +64,26 @@ class AbsentContainerStart:
     image: str
 
 
+@dataclass(frozen=True, slots=True)
+class EnrolledContainerStop:
+    """An enrolled actor whose stop is confirmed without a metered start."""
+
+    application: ResourceObservation
+    worker_id: UUID
+    resource_uid: str
+    instance_id: str
+    image: str
+    authorized_at_ms: int
+    observed_stop_at_ms: int
+
+
 # Matches the scope registry's boot observation bound.
 BOOT_OBSERVATION_MS = 60_000
 
 
 async def settle_container_stop(
     db: AsyncSession, rest: ContainersRest, *, token: SecretStr,
-    closure: ClosedContainerStart | VoidContainerStart | AbsentContainerStart,
+    closure: ClosedContainerStart | VoidContainerStart | AbsentContainerStart | EnrolledContainerStop,
 ) -> None:
     """Pair a closed start fence with independent authenticated management readback.
 
@@ -105,6 +118,7 @@ async def settle_container_stop(
         if (
             instance != closure.instance_id or bool(envelope.get("voided_unstarted")) != void
             or bool(envelope.get("settled_absent")) != absent
+            or bool(envelope.get("enrolled_stop_at")) != isinstance(closure, EnrolledContainerStop)
             or bool(envelope.get("allocation_refused")) != refused
         ):
             raise ObservationPending("Container stop replay does not match the settled reservation")
@@ -195,25 +209,52 @@ async def settle_container_stop(
         Execution.status.in_((ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING)),
     ))):
         raise ObservationPending("Container still owns a live execution claim")
-    stop = await rest.observe_instance_stop(
-        token, closure.application, instance_id=closure.instance_id,
-        image=closure.image, not_before=closure.last_start_effect_at,
-    )
-    assert stop.started_at is not None
-    if (
-        stop.started_at < pin.container_reserved_at - CONTAINER_CLOCK_SKEW
-        or int(stop.started_at.timestamp() * 1000) != int(closure.placement_started_at.timestamp() * 1000)
-    ):
-        raise ObservationPending("Container stop does not match the witnessed start")
-    envelope["observed_started_at"] = stop.started_at.isoformat()
-    envelope["provider_terminal_state"] = stop.terminal_state
-    if stop.exit_code is not None:
-        envelope["provider_exit_code"] = stop.exit_code
+    if isinstance(closure, EnrolledContainerStop):
+        wire = container_provider_pin(pin, closure.resource_uid)
+        observed_at = await db.scalar(select(func.clock_timestamp()))
+        assert observed_at is not None
+        try:
+            authorized = datetime.fromtimestamp(closure.authorized_at_ms / 1000, UTC)
+            stopped_at = datetime.fromtimestamp(closure.observed_stop_at_ms / 1000, UTC)
+            start_deadline, deadline = wire["startDeadline"], wire["deadline"]
+            assert isinstance(start_deadline, int) and isinstance(deadline, int)
+            if (
+                worker.remote_hello_sequence <= 0
+                or authorized < pin.container_reserved_at - CONTAINER_CLOCK_SKEW
+                or closure.authorized_at_ms >= start_deadline
+                or closure.observed_stop_at_ms < deadline or stopped_at > observed_at + CONTAINER_CLOCK_SKEW
+            ):
+                raise ValueError
+        except (OSError, TypeError, ValueError, OverflowError):
+            raise ObservationPending("Enrolled Container stop does not witness its expired reservation") from None
+        stop = await rest.observe_instance_outcome(
+            token, closure.application, instance_id=closure.instance_id, image=closure.image, not_before=authorized,
+        )
+        envelope["enrolled_stop_at"] = stopped_at.isoformat()
+        if stop is not None:
+            stopped_at = stop.stopped_at
+    else:
+        stop = await rest.observe_instance_stop(
+            token, closure.application, instance_id=closure.instance_id,
+            image=closure.image, not_before=closure.last_start_effect_at,
+        )
+        assert stop.started_at is not None
+        if (
+            stop.started_at < pin.container_reserved_at - CONTAINER_CLOCK_SKEW
+            or int(stop.started_at.timestamp() * 1000) != int(closure.placement_started_at.timestamp() * 1000)
+        ):
+            raise ObservationPending("Container stop does not match the witnessed start")
+        envelope["observed_started_at"] = stop.started_at.isoformat()
+        stopped_at = stop.stopped_at
+    if stop is not None:
+        envelope["provider_terminal_state"] = stop.terminal_state
+        if stop.exit_code is not None:
+            envelope["provider_exit_code"] = stop.exit_code
     # Intercepted bytes are not a qualified provider billing measurement.
     pin.container_envelope = envelope
     observed_at = await db.scalar(select(func.clock_timestamp()))
     assert observed_at is not None
-    pin.container_stopped_at = max(pin.container_reserved_at, min(stop.stopped_at, observed_at))
+    pin.container_stopped_at = max(pin.container_reserved_at, min(stopped_at, observed_at))
     worker.state = "retired"
     worker.ended_at = pin.container_stopped_at
     await db.flush()

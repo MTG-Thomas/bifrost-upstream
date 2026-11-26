@@ -31,6 +31,10 @@ export class ContainerScopeRegistry extends DurableObject {
         return this.registry.closeStart(uid, instance, Date.now());
     }
 
+    closeEnrolled(uid, instance, now, observedStopAt) {
+        return this.registry.closeEnrolled(uid, instance, now, observedStopAt);
+    }
+
     retire(uid, instance, closedAt) {
         return this.registry.retire(uid, instance, closedAt);
     }
@@ -120,6 +124,10 @@ export class ContainerLauncher extends DurableObject {
         return this.lifecycle(uid).closeAbsent(uid, observedAbsentAt);
     }
 
+    async closeEnrolled(uid, observedStopAt) {
+        return this.lifecycle(uid).closeEnrolled(uid, observedStopAt);
+    }
+
     async alarm() {
         const ticket = await this.ctx.storage.get("start-ticket");
         if (ticket) await this.lifecycle(ticket.uid).alarm();
@@ -156,7 +164,9 @@ export default {
                 case "/v1/void": return Response.json(await registry().voidUnstarted(pin, instance));
                 case "/v1/observe-start": return Response.json(await registry().observeStart(uid, instance, data.started_at));
                 case "/v1/close-absent": return Response.json(await actor().closeAbsent(uid, data.observed_absent_at));
-                case "/v1/close": return Response.json(await registry().close(uid, instance));
+                case "/v1/close": return Response.json(data.enrolled_stop_at === undefined
+                    ? await registry().close(uid, instance)
+                    : await actor().closeEnrolled(uid, data.enrolled_stop_at));
                 case "/v1/retire": return Response.json(await registry().retire(uid, instance, data.closed_at));
                 default: return new Response(null, { status: 404 });
             }

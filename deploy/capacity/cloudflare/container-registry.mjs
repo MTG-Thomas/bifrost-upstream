@@ -56,6 +56,9 @@ export class ScopeRegistry {
             ingress INTEGER NOT NULL DEFAULT 0, outbound INTEGER NOT NULL DEFAULT 0,
             relay_blocked INTEGER NOT NULL DEFAULT 0
         )`);
+        this.sql.exec(`CREATE TABLE IF NOT EXISTS enrolled_stop_fences (
+            uid TEXT PRIMARY KEY REFERENCES start_fences(uid), observed_stop_at INTEGER NOT NULL
+        )`);
         this.sql.exec("CREATE TABLE IF NOT EXISTS control_nonces (nonce TEXT PRIMARY KEY, expires INTEGER NOT NULL)");
     }
 
@@ -118,6 +121,10 @@ export class ScopeRegistry {
             // An acknowledged fence and an expired pin that never crossed its
             // start fence can no longer authorize a placement. Unacknowledged
             // fences must survive expiry until the API settles them.
+            this.sql.exec(
+                "DELETE FROM enrolled_stop_fences WHERE uid IN ("
+                + "SELECT uid FROM reservations WHERE deadline <= ? AND state = 'retired')", now,
+            );
             this.sql.exec(
                 "DELETE FROM start_fences WHERE uid IN ("
                 + "SELECT uid FROM reservations WHERE deadline <= ? AND state = 'retired')", now,
@@ -236,6 +243,8 @@ export class ScopeRegistry {
         return this.storage.transactionSync(() => {
             const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
             if (!start || start.instance !== instance || !Number.isSafeInteger(now)) return { status: "conflict" };
+            const enrolled = this.sql.exec("SELECT observed_stop_at FROM enrolled_stop_fences WHERE uid = ?", uid).toArray()[0];
+            if (enrolled) return this.#enrolledStopReceipt(start, enrolled.observed_stop_at);
             if (start.observed_at === null) {
                 if (start.closed_at === null) return { status: "pending" };
                 return {
@@ -262,6 +271,9 @@ export class ScopeRegistry {
         return this.storage.transactionSync(() => {
             const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
             if (!start || start.instance !== instance || start.observed_at !== null) return { status: "conflict" };
+            if (this.sql.exec("SELECT uid FROM enrolled_stop_fences WHERE uid = ?", uid).toArray().length) {
+                return { status: "conflict" };
+            }
             if (![now, observedAbsentAt].every(Number.isSafeInteger)
                 || observedAbsentAt > now + RESERVATION_CLOCK_SKEW_MS) {
                 return { status: "invalid" };
@@ -276,6 +288,32 @@ export class ScopeRegistry {
                 startDeadline: start.start_deadline, closedAt,
             };
         });
+    }
+
+    closeEnrolled(uid, instance, now, observedStopAt) {
+        return this.storage.transactionSync(() => {
+            const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
+            if (!start || start.instance !== instance) return { status: "conflict" };
+            if (![now, observedStopAt].every(Number.isSafeInteger)
+                || observedStopAt > now + RESERVATION_CLOCK_SKEW_MS) return { status: "invalid" };
+            if (now < start.deadline || observedStopAt < start.deadline) return { status: "pending" };
+            const existing = this.sql.exec("SELECT observed_stop_at FROM enrolled_stop_fences WHERE uid = ?", uid).toArray()[0];
+            if (existing) return this.#enrolledStopReceipt(start, existing.observed_stop_at);
+            // Preserve an earlier close stamp so a committed retirement receipt
+            // stays valid if the provider subsequently loses the start timestamp.
+            start.closed_at ??= Math.max(now, observedStopAt);
+            this.sql.exec("UPDATE start_fences SET closed_at = ? WHERE uid = ?", start.closed_at, uid);
+            this.sql.exec("INSERT INTO enrolled_stop_fences (uid, observed_stop_at) VALUES (?, ?)", uid, observedStopAt);
+            return this.#enrolledStopReceipt(start, observedStopAt);
+        });
+    }
+
+    #enrolledStopReceipt(start, observedStopAt) {
+        return {
+            status: "enrolled-stop", uid: start.uid, instance: start.instance,
+            authorizedAt: start.authorized_at, startDeadline: start.start_deadline,
+            closedAt: start.closed_at, enrolledStopAt: observedStopAt,
+        };
     }
 
     // The authenticated controller acknowledges a committed stop settlement.
@@ -512,6 +550,15 @@ export class ContainerInstanceLifecycle {
             if (!ticket || ticket.uid !== uid) return { status: "conflict" };
             if (this.ctx.container.running) return { status: "pending" };
             return this.registry.closeAbsent(uid, this.instance, Date.now(), observedAbsentAt);
+        });
+    }
+
+    async closeEnrolled(uid, observedStopAt) {
+        return this.ctx.blockConcurrencyWhile(async () => {
+            const ticket = await this.ctx.storage.get("start-ticket");
+            if (!ticket || ticket.uid !== uid) return { status: "conflict" };
+            if (!ticket.destroyed || this.ctx.container.running) return { status: "pending" };
+            return this.registry.closeEnrolled(uid, this.instance, Date.now(), observedStopAt);
         });
     }
 

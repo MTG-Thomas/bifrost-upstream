@@ -147,6 +147,7 @@ def container_account_usage(
     charged_end = case(
         # A closed fence without placement evidence cannot prove zero usage.
         (envelope["settled_absent"].as_boolean().is_(True), reserve_end),
+        (envelope["enrolled_stop_at"].as_string().is_not(None), reserve_end),
         else_=func.coalesce(reservation.container_stopped_at, reserve_end),
     )
     charged_start = func.coalesce(

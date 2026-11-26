@@ -58,6 +58,14 @@ that no guest enrolled or claimed work, and retains the full reservation
 duration and fixed control charge. The registry retirement receipt still
 controls when that seat is released.
 
+An authenticated hello fences off absent-start settlement. If the provider
+loses an enrolled actor or its start timestamp, retirement can confirm an
+enrolled stop after the reservation hard deadline. The actor must have a
+durable destruction ticket and report that it has stopped. Management
+readback must independently confirm that the exact actor is absent or terminal,
+and Bifrost must have no live claim for it. The ledger keeps the full
+reservation charge without recording an invented start time.
+
 The retained rc04
 installation can retry product Disconnect against the existing provider actor
 and registry fence, once a separately authorized upgraded stack is available.

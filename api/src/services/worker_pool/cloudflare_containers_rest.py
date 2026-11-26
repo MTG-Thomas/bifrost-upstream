@@ -73,6 +73,10 @@ class InstanceStop:
     exit_code: int | None
 
 
+class ContainerStartUnverified(ObservationPending):
+    """The exact actor read was absent or lacked a start timestamp."""
+
+
 def _name(intent: ResourceIntent, kind: str) -> str:
     target = intent.target
     name = f"bifrost-{target.installation_id.hex}-r{intent.desired_revision}"
@@ -326,9 +330,9 @@ class ContainersRest(WorkersRestCleanup):
             token, application, instance_id=instance_id, image=image, not_before=not_before,
         )
         if observed is None:
-            raise ObservationPending("Missing instance readback does not witness a stopped placement")
+            raise ContainerStartUnverified("Missing instance readback does not witness a stopped placement")
         if observed.started_at is None:
-            raise ObservationPending("Missing start readback does not witness a stopped placement")
+            raise ContainerStartUnverified("Missing start readback does not witness a stopped placement")
         return observed
 
     async def observe_instance_outcome(

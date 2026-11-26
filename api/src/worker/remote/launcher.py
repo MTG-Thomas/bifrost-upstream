@@ -412,12 +412,13 @@ class Launcher:
             raise
 
     def task(self, coroutine: Any) -> asyncio.Task[Any]:
+        socket = self.socket
         task = asyncio.create_task(coroutine)
         self._tasks.add(task)
-        task.add_done_callback(self.task_finished)
+        task.add_done_callback(lambda completed: self.task_finished(completed, socket))
         return task
 
-    def task_finished(self, task: asyncio.Task[Any]) -> None:
+    def task_finished(self, task: asyncio.Task[Any], socket: Any) -> None:
         self._tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
             if task is self._monitor_task:
@@ -432,18 +433,18 @@ class Launcher:
             elif not isinstance(error, (ConnectionError, ConnectionClosed)):
                 # Recover the control connection after a command task fails.
                 # The monitor still owns the lifetime of the physical guest.
-                reconnect = asyncio.create_task(self._close_guest_socket())
+                reconnect = asyncio.create_task(self._close_guest_socket(socket))
                 self._tasks.add(reconnect)
                 reconnect.add_done_callback(self._tasks.discard)
 
     async def _close_failed_guest(self, error: BaseException) -> None:
         await self.report_guest_fatal(error)
-        await self._close_guest_socket()
+        await self._close_guest_socket(self.socket)
 
-    async def _close_guest_socket(self) -> None:
+    async def _close_guest_socket(self, socket: Any) -> None:
         with contextlib.suppress(ConnectionClosed, ConnectionError, OSError, TimeoutError):
             async with asyncio.timeout(0.5):
-                await self.socket.close(code=1011, reason="Launcher supervision failed")
+                await socket.close(code=1011, reason="Launcher supervision failed")
 
     async def start(self) -> None:
         # This existing helper owns requirements IO and exits before ready.
@@ -488,6 +489,7 @@ class Launcher:
         except Exception:
             await self._send_guest_diagnostic()
             raise
+        await self._send_guest_diagnostic()
 
     def grant_runtime_lease(self, ttl_ms: object) -> None:
         """Arm hard expiry from a fenced API grant without extending the pinned lifetime."""

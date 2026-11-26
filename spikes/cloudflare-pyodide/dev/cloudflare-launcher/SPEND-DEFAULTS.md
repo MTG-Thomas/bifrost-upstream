@@ -8,6 +8,8 @@ within a monthly allocation. The ledger books startup, lifetime and cleanup
 seconds for each reservation, including canaries, then settles from receipts.
 A closed start fence with a failed actor and no reported start keeps the
 conservative reservation charge and adds zero measured runtime.
+An enrolled actor with incomplete placement readback keeps the same charge
+when its exact stop is confirmed after the hard deadline.
 The budget resets at the UTC month boundary. Exhausting it pauses Container
 workflow placement and routine refresh only. Qualification canaries still
 count toward instance-hours but may exceed the hours budget to admit the

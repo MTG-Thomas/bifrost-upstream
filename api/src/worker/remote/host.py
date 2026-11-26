@@ -22,9 +22,10 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
 from shared.worker_control_auth import external_worker_control_key
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketState
 
 from src.config import get_settings
@@ -2350,49 +2351,66 @@ async def _record_guest_socket_evidence(
             raise AuthenticationError("Guest diagnostic requires a managed Container session")
         return
     try:
-        async with asyncio.timeout(0.5), get_db_context() as db:
-            query = select(ExecutionWorker).where(ExecutionWorker.id == lease.worker_id)
-            if event is not None:
-                query = query.where(
-                    ExecutionWorker.remote_owner_lease_expires_at > func.now(),
-                    remote_enrollment_is_live(lease.container_release),
-                )
-            worker = await db.scalar(query.with_for_update(read=True, nowait=True, of=ExecutionWorker))
-            if (
-                worker is None or worker.remote_launcher_id != lease.launcher_id
-                or worker.remote_session_generation != lease.session_generation
-                or (worker.remote_owner_id != lease.owner_id and (close_code is None or worker.remote_owner_id is not None))
-                or worker.capacity_resource_uid is None
-            ):
-                if event is not None:
-                    raise AuthenticationError("Guest diagnostic session was replaced")
-                return
-            pin = await db.get(CloudflareWorkerReservation, lease.worker_id, with_for_update={"nowait": True})
-            if pin is None or pin.container_release != lease.container_release or pin.container_envelope is None:
-                if event is not None:
-                    raise AuthenticationError("Guest diagnostic lacks a managed reservation")
-                return
-            previous = pin.container_envelope.get("guest_diagnostic") or {}
-            evidence = dict(previous)
-            if close_code is not None:
-                evidence.update(close_evidence(close_code, close_reason), close_generation=lease.session_generation)
-            elif event is None:
-                evidence = {"stage": "hello", "generation": lease.session_generation}
-            else:
-                key = await load_managed_control_key(db, pin, worker.capacity_resource_uid)
-                diagnostic = verify_guest_diagnostic(key, lease.session_generation, sequence, event)
-                evidence.update(stage=diagnostic["stage"], generation=lease.session_generation)
-                if diagnostic["event"] == "guest_fatal":
-                    evidence.update(
-                        fatal_stage=diagnostic["stage"], fatal_generation=lease.session_generation,
-                        exception_class=diagnostic["exception_class"], reason=diagnostic["reason"],
-                    )
-            if evidence != previous:
-                pin.container_envelope = {**pin.container_envelope, "guest_diagnostic": evidence}
+        async with asyncio.timeout(0.5):
+            while True:
+                try:
+                    async with get_db_context() as db:
+                        # Release the worker share lock between attempts so
+                        # a busy reservation cannot hold up owner renewal.
+                        await db.execute(text("SET LOCAL lock_timeout = '50ms'"))
+                        await _write_guest_socket_evidence(db, lease, event, sequence, close_code, close_reason)
+                    return
+                except DBAPIError as exc:
+                    if getattr(exc.orig, "sqlstate", None) != "55P03":
+                        raise
     except (DBAPIError, SQLAlchemyTimeoutError, TimeoutError):
         # Diagnostic writes are best effort. The ordinary session and
         # qualification fences continue to enforce readiness independently.
         return
+
+
+async def _write_guest_socket_evidence(
+    db: AsyncSession, lease: RemoteOwnerLease, event: dict[str, Any] | None, sequence: int,
+    close_code: int | None, close_reason: str | None,
+) -> None:
+    query = select(ExecutionWorker).where(ExecutionWorker.id == lease.worker_id)
+    if event is not None:
+        query = query.where(
+            ExecutionWorker.remote_owner_lease_expires_at > func.now(),
+            remote_enrollment_is_live(lease.container_release),
+        )
+    worker = await db.scalar(query.with_for_update(read=True, of=ExecutionWorker))
+    if (
+        worker is None or worker.remote_launcher_id != lease.launcher_id
+        or worker.remote_session_generation != lease.session_generation
+        or (worker.remote_owner_id != lease.owner_id and (close_code is None or worker.remote_owner_id is not None))
+        or worker.capacity_resource_uid is None
+    ):
+        if event is not None:
+            raise AuthenticationError("Guest diagnostic session was replaced")
+        return
+    pin = await db.get(CloudflareWorkerReservation, lease.worker_id, with_for_update=True)
+    if pin is None or pin.container_release != lease.container_release or pin.container_envelope is None:
+        if event is not None:
+            raise AuthenticationError("Guest diagnostic lacks a managed reservation")
+        return
+    previous = pin.container_envelope.get("guest_diagnostic") or {}
+    evidence = dict(previous)
+    if close_code is not None:
+        evidence.update(close_evidence(close_code, close_reason), close_generation=lease.session_generation)
+    elif event is None:
+        evidence = {"stage": "hello", "generation": lease.session_generation}
+    else:
+        key = await load_managed_control_key(db, pin, worker.capacity_resource_uid)
+        diagnostic = verify_guest_diagnostic(key, lease.session_generation, sequence, event)
+        evidence.update(stage=diagnostic["stage"], generation=lease.session_generation)
+        if diagnostic["event"] == "guest_fatal":
+            evidence.update(
+                fatal_stage=diagnostic["stage"], fatal_generation=lease.session_generation,
+                exception_class=diagnostic["exception_class"], reason=diagnostic["reason"],
+            )
+    if evidence != previous:
+        pin.container_envelope = {**pin.container_envelope, "guest_diagnostic": evidence}
 
 
 async def start_remote_control_host(_application: Any) -> None:

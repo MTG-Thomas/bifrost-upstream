@@ -3741,14 +3741,85 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("observed_start", [True, False], ids=["started", "failed-before-start"])
+@pytest.mark.parametrize("table", [ExecutionWorker, CloudflareWorkerReservation], ids=["worker", "reservation"])
+async def test_container_fatal_survives_database_row_contention(async_session_factory, table) -> None:
+    from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
+    from src.worker.remote import host, ownership
+    from src.worker.remote.guest_diagnostics import guest_diagnostic_payload, guest_diagnostic_signature
+
+    now = datetime.now(UTC)
+    lease = RemoteOwnerLease(
+        worker_id=uuid4(), launcher_id=uuid4(), owner_id=uuid4(), session_generation=1,
+        container_release="a" * 64,
+    )
+    uid = uuid4().hex
+    async with async_session_factory() as db:
+        installation_id = await create_installation(db, "a" * 32)
+        installation = await db.get(CloudflareInstallation, installation_id)
+        assert installation is not None
+        db.add(ExecutionWorker(
+            id=lease.worker_id, form="external", state="ready", capacity_scope="containers",
+            capacity_resource_uid=uid, remote_hello_sequence=1, remote_session_generation=1,
+            remote_owner_id=lease.owner_id, remote_launcher_id=lease.launcher_id,
+            remote_owner_lease_expires_at=now + timedelta(seconds=20),
+        ))
+        await db.flush()
+        pin = CloudflareWorkerReservation(
+            worker_id=lease.worker_id, installation_id=installation_id, scope="containers", deployment_revision=1,
+            control_root_version=installation.control_root_version, container_release=lease.container_release,
+            container_tenant="qualification-canary", container_reserved_at=now, container_envelope={"seconds": 196},
+        )
+        db.add(pin)
+        key = await load_managed_control_key(db, pin, uid)
+        await db.commit()
+
+    event = guest_diagnostic_payload("requirements", RuntimeError("fixture fatal"))
+    event["signature"] = guest_diagnostic_signature(key, 1, 1, event)
+    try:
+        async with async_session_factory() as blocker, async_session_factory() as observer:
+            assert await blocker.get(table, lease.worker_id, with_for_update=True) is not None
+            pid = await blocker.scalar(select(func.pg_backend_pid()))
+            async with asyncio.TaskGroup() as tasks:
+                fatal = tasks.create_task(host._record_guest_socket_evidence(lease, event=event, sequence=1))
+                async with asyncio.timeout(0.25):
+                    while not await observer.scalar(text(
+                        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE :pid = ANY(pg_blocking_pids(pid)))",
+                    ), {"pid": pid}):
+                        assert not fatal.done()
+                        await observer.rollback()
+                        await asyncio.sleep(0.005)
+                    if table is CloudflareWorkerReservation:
+                        # The diagnostic share lock must yield to renewal
+                        # even while its reservation row remains blocked.
+                        assert await ownership.renew_remote_owner(lease)
+                assert not fatal.done()
+                await blocker.commit()
+
+        async with async_session_factory() as db:
+            recorded = await db.get(CloudflareWorkerReservation, lease.worker_id)
+            assert recorded is not None and recorded.container_envelope is not None
+            evidence = recorded.container_envelope["guest_diagnostic"]
+            assert evidence["fatal_stage"] == "requirements" and evidence["fatal_generation"] == 1
+    finally:
+        async with async_session_factory() as db:
+            await db.execute(delete(CloudflareWorkerReservation).where(CloudflareWorkerReservation.worker_id == lease.worker_id))
+            await db.execute(delete(ExecutionWorker).where(ExecutionWorker.id == lease.worker_id))
+            await db.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
+            await db.execute(delete(CloudflareInstallation).where(CloudflareInstallation.id == installation_id))
+            await db.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("placement", ["started", "failed-before-start", "enrolled-failed-no-start", "enrolled-missing"])
 async def test_disconnect_retry_recovers_failed_container_canary(
-    db_session, installation, monkeypatch, lifecycle_audit_actor, observed_start,
+    db_session, installation, monkeypatch, lifecycle_audit_actor, placement,
 ) -> None:
     from src.services.worker_pool import cloudflare_containers_control, cloudflare_containers_rest
     from src.services.worker_pool.cloudflare_containers_policy import container_account_usage
 
     now = datetime.now(UTC)
+    observed_start = placement == "started"
+    enrolled_stop = placement.startswith("enrolled-")
     reserved_at = usage_period(now - timedelta(minutes=20))[0] + timedelta(minutes=5)
     deadline = reserved_at + timedelta(seconds=15)
     started = reserved_at + timedelta(seconds=4, milliseconds=7)
@@ -3783,7 +3854,8 @@ async def test_disconnect_retry_recovers_failed_container_canary(
     worker_id, uid, actor = uuid4(), uuid4().hex, "e" * 64
     worker = ExecutionWorker(
         id=worker_id, form="external", state="draining", capacity_scope="containers",
-        capacity_resource_uid=uid, remote_hello_sequence=int(observed_start), remote_session_generation=int(observed_start),
+        capacity_resource_uid=uid, remote_hello_sequence=int(observed_start or enrolled_stop),
+        remote_session_generation=int(observed_start or enrolled_stop),
         remote_owner_lease_expires_at=stopped + timedelta(seconds=8),
     )
     ref = CredentialRef(installation.id, installation.account_id, "scope_bearer", "containers", 1)
@@ -3849,7 +3921,7 @@ async def test_disconnect_retry_recovers_failed_container_canary(
     owner = worker_owner_value(lifecycle_job._resource_intent(script))
 
     def provider(request):
-        nonlocal fence, retirement_pending
+        nonlocal fence, retirement_pending, closed_ms, expected_stop
         path = request.url.path
         if request.url.host == "container-scope.example.test":
             body = json.loads(request.content)
@@ -3865,23 +3937,33 @@ async def test_disconnect_retry_recovers_failed_container_canary(
                     events.append("start-observed")
                     result = {"status": "observed"}
                 case "/v1/close-absent":
-                    assert not observed_start and fence == "pending"
+                    assert not enrolled_stop and not observed_start and fence == "pending"
                     assert body["observed_absent_at"] >= body["pin"]["startDeadline"] + 60_000
                     fence = "closed"
                     events.append("closed-absent")
                     result = {"status": "absent"}
                 case "/v1/close":
                     result = {"status": "pending"}
+                    if "enrolled_stop_at" in body:
+                        assert enrolled_stop and fence == "pending"
+                        closed_ms = body["enrolled_stop_at"]
+                        assert closed_ms >= body["pin"]["deadline"]
+                        expected_stop = datetime.fromtimestamp(closed_ms / 1000, UTC) if placement == "enrolled-missing" else stopped
+                        fence = "closed"
+                        events.append("closed-enrolled")
                     if fence != "pending":
                         fence = "closed"
                         result = {
-                            "status": "closed" if observed_start else "absent", "instance": actor,
+                            "status": "enrolled-stop" if enrolled_stop else ("closed" if observed_start else "absent"),
+                            "instance": actor,
                             "authorizedAt": int(reserved_at.timestamp() * 1000) + 1000,
                             "closedAt": closed_ms,
                             **({"startedAt": started_ms} if observed_start else {
                                 "uid": uid, "startDeadline": body["pin"]["startDeadline"],
                             }),
                         }
+                        if enrolled_stop:
+                            result["enrolledStopAt"] = closed_ms
                 case "/v1/retire":
                     assert fence == "closed" and body["closed_at"] == closed_ms
                     if retirement_pending:
@@ -3897,6 +3979,8 @@ async def test_disconnect_retry_recovers_failed_container_canary(
         assert request.url.host == "api.cloudflare.com"
         if path.endswith(f"/instances/{actor}"):
             assert "application" in alive
+            if placement == "enrolled-missing":
+                return httpx.Response(404)
             result = {
                 "id": actor, "application_id": app.provider_id, "image": image, "name": uid,
                 **({"started_at": started.isoformat()} if observed_start else {}),
@@ -4001,7 +4085,7 @@ async def test_disconnect_retry_recovers_failed_container_canary(
 
     assert not alive
     assert events == [
-        "start-observed" if observed_start else "closed-absent",
+        "start-observed" if observed_start else ("closed-enrolled" if enrolled_stop else "closed-absent"),
         *([] if observed_start else ["registry-retirement-pending"]),
         "registry-retired", "application-deleted", "script-deleted",
         "namespaces-absent", "digest-verified", "tag-deleted",
@@ -4017,8 +4101,12 @@ async def test_disconnect_retry_recovers_failed_container_canary(
     assert pin.container_envelope is not None
     assert pin.container_envelope["provider_instance_id"] == actor
     assert pin.container_envelope["registry_closed_at"] == closed_ms
-    assert pin.container_envelope["provider_terminal_state"] == "failed"
-    assert pin.container_envelope["provider_exit_code"] == 1
+    if placement != "enrolled-missing":
+        assert pin.container_envelope["provider_terminal_state"] == "failed"
+        assert pin.container_envelope["provider_exit_code"] == 1
+    if enrolled_stop:
+        assert "settled_absent" not in pin.container_envelope
+        assert datetime.fromisoformat(pin.container_envelope["enrolled_stop_at"]) == datetime.fromtimestamp(closed_ms / 1000, UTC)
     for seconds in (True, False):
         billed = await db_session.scalar(select(container_account_usage(
             literal(stopped), instance_seconds=seconds, account_id=installation.account_id,
@@ -4026,7 +4114,7 @@ async def test_disconnect_retry_recovers_failed_container_canary(
         if observed_start:
             assert billed == Decimal("39.362" if seconds else "0.00082278272")
         else:
-            assert pin.container_envelope["settled_absent"] is True
+            assert bool(pin.container_envelope.get("settled_absent")) is not enrolled_stop
             assert "observed_started_at" not in pin.container_envelope
             assert billed == Decimal("196" if seconds else "0.00404326")
 

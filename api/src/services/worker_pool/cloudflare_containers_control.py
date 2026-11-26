@@ -23,11 +23,12 @@ from src.models.orm.work_dispatches import WorkDispatch
 from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.cloudflare_containers_auth import request_container_control
 from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_provider_pin
-from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+from src.services.worker_pool.cloudflare_containers_rest import ContainerStartUnverified, ContainersRest
 from src.services.worker_pool.cloudflare_containers_settlement import (
     BOOT_OBSERVATION_MS,
     AbsentContainerStart,
     ClosedContainerStart,
+    EnrolledContainerStop,
     VoidContainerStart,
     settle_container_stop,
 )
@@ -45,13 +46,14 @@ class Receipt(BaseModel):
 
     status: Literal[
         "allocation-refused", "void", "absent", "closed", "conflict", "invalid", "pending", "observed",
-        "reserved", "retired", "receipt-limit",
+        "reserved", "retired", "receipt-limit", "enrolled-stop",
     ]
     instance: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     uid: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     authorizedAt: int | None = None
     startedAt: int | None = None
     closedAt: int | None = None
+    enrolledStopAt: int | None = None
     startDeadline: int | None = None
     voidedAt: int | None = None
     outboundBytes: int | None = None
@@ -147,10 +149,12 @@ async def reconcile_container_stop(
             return True
         envelope = dict(pin.container_envelope)
         start = pin.container_reserved_at
+        enrolled = worker.remote_hello_sequence > 0
 
     uid = str(binding.pin["uid"])
     deadline = binding.pin["startDeadline"]
-    assert isinstance(deadline, int)
+    hard_deadline = binding.pin["deadline"]
+    assert isinstance(deadline, int) and isinstance(hard_deadline, int)
     closed_at = envelope.get("registry_closed_at")
     if closed_at is None:
         stopped = await binding.request(http, "stop")
@@ -161,20 +165,31 @@ async def reconcile_container_stop(
         if void.status in ("void", "allocation-refused"):
             if void.uid != uid or void.instance != instance or void.startDeadline != deadline or void.voidedAt is None:
                 raise ObservationPending("Container void does not match its reservation")
-            closure: ClosedContainerStart | VoidContainerStart | AbsentContainerStart = VoidContainerStart(
+            closure: ClosedContainerStart | VoidContainerStart | AbsentContainerStart | EnrolledContainerStop = VoidContainerStart(
                 binding.application, worker_id, uid, instance, deadline, void.voidedAt,
                 allocation_refused=void.status == "allocation-refused",
             )
         else:
             fence = await binding.request(http, "close")
-            if fence.status == "pending":
+            if fence.status == "pending" or (enrolled and fence.status == "absent"):
                 placement = await adapter.observe_instance_outcome(
                     management, binding.application, instance_id=instance, image=binding.prepared_image, not_before=start,
                 )
-                if placement is None or placement.started_at is None:
+                if placement is None or placement.started_at is None or fence.status == "absent":
                     now_ms = int(datetime.now(UTC).timestamp() * 1000)
+                    if enrolled:
+                        if now_ms >= hard_deadline:
+                            await binding.request(http, "close", enrolled_stop_at=now_ms)
+                        return False
                     if now_ms < deadline + BOOT_OBSERVATION_MS:
                         return False
+                    async with get_db_context() as db:
+                        current = await db.get(ExecutionWorker, worker_id, with_for_update=True)
+                        if current is None or current.remote_hello_sequence:
+                            return False
+                        # Close enrollment before the irreversible scope call.
+                        # The ledger and registry still hold the reservation.
+                        current.state = "retired"
                     # The active start ticket and the post-boot inventory read
                     # must agree on no start before this fence can close as absent.
                     await binding.request(http, "close-absent", observed_absent_at=now_ms)
@@ -187,18 +202,26 @@ async def reconcile_container_stop(
                 # Reserve the next paced read on the next pass. The registry
                 # retains its closed fence across controller or API restarts.
                 return False
-            if fence.status not in ("absent", "closed"):
+            if fence.status not in ("absent", "closed", "enrolled-stop"):
                 return False
             if fence.instance != instance or fence.authorizedAt is None or fence.closedAt is None:
                 raise ObservationPending("Container closure differs from its actor fence")
             closed_at = fence.closedAt
-            if fence.status == "absent":
+            if fence.status in ("absent", "enrolled-stop"):
                 if fence.uid != uid or fence.startDeadline != deadline:
                     raise ObservationPending("Absent Container receipt differs from its start fence")
-                closure = AbsentContainerStart(
-                    binding.application, worker_id, uid, instance, deadline, fence.authorizedAt, closed_at,
-                    binding.prepared_image,
-                )
+                if fence.status == "enrolled-stop":
+                    if fence.enrolledStopAt is None:
+                        raise ObservationPending("Enrolled Container closure lacks its independent stop observation")
+                    closure = EnrolledContainerStop(
+                        binding.application, worker_id, uid, instance, binding.prepared_image,
+                        fence.authorizedAt, fence.enrolledStopAt,
+                    )
+                else:
+                    closure = AbsentContainerStart(
+                        binding.application, worker_id, uid, instance, deadline, fence.authorizedAt, closed_at,
+                        binding.prepared_image,
+                    )
             else:
                 if fence.startedAt is None:
                     raise ObservationPending("Closed Container fence lacks the observed start")
@@ -208,7 +231,7 @@ async def reconcile_container_stop(
                     datetime.fromtimestamp(fence.startedAt / 1000, UTC),
                 )
 
-        if isinstance(closure, ClosedContainerStart):
+        if isinstance(closure, (ClosedContainerStart, EnrolledContainerStop)):
             async with get_db_context() as db:
                 updated = await db.get(CloudflareWorkerReservation, worker_id, with_for_update=True)
                 assert updated is not None and updated.container_envelope is not None
@@ -220,12 +243,27 @@ async def reconcile_container_stop(
                     updated.container_envelope = {
                         **updated.container_envelope, "provider_instance_id": instance, "prepared_image": binding.prepared_image,
                     }
+        missing_start = False
         async with get_db_context() as db:
-            await settle_container_stop(db, adapter, token=management, closure=closure)
-            if closed_at is not None:
-                updated = await db.get(CloudflareWorkerReservation, worker_id)
-                assert updated is not None and updated.container_envelope is not None
-                updated.container_envelope = {**updated.container_envelope, "registry_closed_at": closed_at}
+            try:
+                await settle_container_stop(db, adapter, token=management, closure=closure)
+            except ContainerStartUnverified:
+                # A previously observed fence can outlive the provider's
+                # placement record. Confirm a stopped enrolled actor after
+                # its hard deadline without claiming an unstarted placement.
+                if not enrolled:
+                    raise
+                missing_start = True
+            else:
+                if closed_at is not None:
+                    updated = await db.get(CloudflareWorkerReservation, worker_id)
+                    assert updated is not None and updated.container_envelope is not None
+                    updated.container_envelope = {**updated.container_envelope, "registry_closed_at": closed_at}
+        if missing_start:
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            if now_ms >= hard_deadline:
+                await binding.request(http, "close", enrolled_stop_at=now_ms)
+            return False
     if closed_at is not None:
         receipt = await binding.request(http, "retire", closed_at=closed_at)
         if receipt.status != "retired":

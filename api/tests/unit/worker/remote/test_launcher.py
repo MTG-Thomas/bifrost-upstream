@@ -128,6 +128,7 @@ async def test_managed_guest_reconnect_and_canary_refusal_preserve_the_fatal_rep
     dropped_stage = ControlEnvelope.from_json(dropped.send.await_args_list[-1].args[0])
     assert dropped_stage.payload["event"] == "guest_stage" and dropped_stage.payload["stage"] == "bootstrap"
     envelopes = [ControlEnvelope.from_json(call.args[0]) for call in reconnect.send.await_args_list[1:]]
+    assert envelopes[0].payload["stage"] == "runtime-grant"
     faults = [frame for frame in envelopes if frame.payload.get("event") == "guest_fatal"]
     fatal, = faults
     assert verify_guest_diagnostic(launcher.secret, 2, fatal.sequence, fatal.payload) == {
@@ -135,6 +136,29 @@ async def test_managed_guest_reconnect_and_canary_refusal_preserve_the_fatal_rep
     }
     assert any(frame.payload.get("error") == "Container qualification command failed" for frame in envelopes)
     reconnect.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_stale_command_fault_closes_only_its_original_socket(managed_launcher, monkeypatch) -> None:
+    launcher, _ = managed_launcher
+    original = launcher.socket
+    replacement = AsyncMock()
+    fail = asyncio.Event()
+
+    async def failed_command():
+        await fail.wait()
+        raise RuntimeError("old command failed")
+
+    command = launcher.task(failed_command())
+    monkeypatch.setattr(launcher, "_hello", AsyncMock())
+    await launcher.reconnect(replacement, {})
+    fail.set()
+    with pytest.raises(RuntimeError, match="old command failed"):
+        await command
+    await asyncio.gather(*launcher._tasks)
+    original.close.assert_awaited_once_with(code=1011, reason="Launcher supervision failed")
+    replacement.close.assert_not_awaited()
+    assert not launcher.failed
 
 
 @pytest.mark.asyncio

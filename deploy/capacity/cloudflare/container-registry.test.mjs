@@ -522,6 +522,47 @@ test("a registry authorization survives a local deadline advance; a throwing sta
     assert.equal(reserve(scope, pin()).status, "reserved");
 });
 
+test("an enrolled stopped actor keeps its seat until the exact post-deadline receipt retires", async (t) => {
+    const { db, registry, pin } = fixture(1);
+    t.after(() => db.close());
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    const slot = pin();
+    const actor = "b".repeat(64);
+    const scope = registry();
+    assert.equal(reserve(scope, slot).status, "reserved");
+    assert.equal(scope.authorizeStart(slot.uid, actor, Date.now(), slot.deadline).status, "authorized");
+    let ticket = { uid: slot.uid, deadline: slot.deadline, destroyed: false };
+    const container = { running: true, destroy: async () => { container.running = false; } };
+    const lifecycle = new ContainerInstanceLifecycle({
+        id: actor, container,
+        blockConcurrencyWhile: async (action) => action(),
+        storage: { get: async () => ticket, put: async (_key, stored) => { ticket = stored; } },
+    }, scope, {
+        origin: "https://ingress.example.test", intercept: {}, release: "c".repeat(64),
+        image: `registry.cloudflare.com/${"a".repeat(32)}/bifrost-${slot.installation.replaceAll("-", "")}-r2@${slot.image}`,
+    });
+    assert.equal((await lifecycle.stop(slot.uid)).status, "pending");
+    assert.equal((await lifecycle.closeEnrolled(slot.uid, Date.now())).status, "pending");
+    t.mock.timers.setTime(slot.deadline + 1);
+    assert.equal((await lifecycle.closeEnrolled("e".repeat(32), Date.now())).status, "conflict");
+    container.running = true;
+    assert.equal((await lifecycle.closeEnrolled(slot.uid, Date.now())).status, "pending");
+    container.running = false;
+    const receipt = await lifecycle.closeEnrolled(slot.uid, Date.now());
+    assert.deepEqual(receipt, {
+        status: "enrolled-stop", uid: slot.uid, instance: actor, authorizedAt: 100,
+        startDeadline: slot.startDeadline, closedAt: Date.now(), enrolledStopAt: Date.now(),
+    });
+    assert.deepEqual(registry().closeStart(slot.uid, actor, Date.now()), receipt);
+    assert.equal(scope.closeAbsent(slot.uid, actor, Date.now(), Date.now()).status, "conflict");
+    assert.equal(scope.authorizeStart(slot.uid, actor, Date.now(), slot.deadline).status, "closed");
+    const next = { ...pin(), reservedAt: Date.now(), startDeadline: Date.now() + 1, deadline: Date.now() + 123_000 };
+    assert.equal(reserve(scope, next).status, "full");
+    assert.equal(scope.retire(slot.uid, actor, receipt.closedAt).status, "retired");
+    assert.equal(reserve(scope, next).status, "reserved");
+    assert.equal(db.prepare("SELECT count(*) AS total FROM enrolled_stop_fences").get().total, 0);
+});
+
 test("interceptors refuse asynchronous registry proofs", async () => {
     const guest = new Socket();
     const upstream = new Socket();
