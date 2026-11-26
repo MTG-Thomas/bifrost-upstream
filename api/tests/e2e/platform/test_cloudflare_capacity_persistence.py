@@ -3792,6 +3792,12 @@ async def test_container_fatal_survives_database_row_contention(async_session_fa
                         # The diagnostic share lock must yield to renewal
                         # even while its reservation row remains blocked.
                         assert await ownership.renew_remote_owner(lease)
+                    else:
+                        # Match release_remote_owner: expiry can be committed
+                        # while this already-authorized fatal is in flight.
+                        await blocker.execute(update(ExecutionWorker).where(
+                            ExecutionWorker.id == lease.worker_id,
+                        ).values(remote_owner_lease_expires_at=func.now()))
                 assert not fatal.done()
                 await blocker.commit()
 

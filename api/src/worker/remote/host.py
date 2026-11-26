@@ -2352,13 +2352,30 @@ async def _record_guest_socket_evidence(
         return
     try:
         async with asyncio.timeout(0.5):
+            fatal_authorized = False
             while True:
                 try:
                     async with get_db_context() as db:
+                        if not fatal_authorized and event is not None and event.get("event") == "guest_fatal":
+                            # Check arrival authority without waiting on a
+                            # renewal or a release. The write still fences
+                            # the exact owner and generation after locking.
+                            fatal_authorized = await db.scalar(select(ExecutionWorker.id).where(
+                                ExecutionWorker.id == lease.worker_id,
+                                ExecutionWorker.remote_owner_id == lease.owner_id,
+                                ExecutionWorker.remote_launcher_id == lease.launcher_id,
+                                ExecutionWorker.remote_session_generation == lease.session_generation,
+                                ExecutionWorker.remote_owner_lease_expires_at > func.now(),
+                                remote_enrollment_is_live(lease.container_release),
+                            )) is not None
+                            if not fatal_authorized:
+                                raise AuthenticationError("Guest diagnostic session was replaced")
                         # Release the worker share lock between attempts so
                         # a busy reservation cannot hold up owner renewal.
                         await db.execute(text("SET LOCAL lock_timeout = '50ms'"))
-                        await _write_guest_socket_evidence(db, lease, event, sequence, close_code, close_reason)
+                        await _write_guest_socket_evidence(
+                            db, lease, event, sequence, close_code, close_reason, fatal_authorized,
+                        )
                     return
                 except DBAPIError as exc:
                     if getattr(exc.orig, "sqlstate", None) != "55P03":
@@ -2371,14 +2388,13 @@ async def _record_guest_socket_evidence(
 
 async def _write_guest_socket_evidence(
     db: AsyncSession, lease: RemoteOwnerLease, event: dict[str, Any] | None, sequence: int,
-    close_code: int | None, close_reason: str | None,
+    close_code: int | None, close_reason: str | None, fatal_authorized: bool,
 ) -> None:
     query = select(ExecutionWorker).where(ExecutionWorker.id == lease.worker_id)
     if event is not None:
-        query = query.where(
-            ExecutionWorker.remote_owner_lease_expires_at > func.now(),
-            remote_enrollment_is_live(lease.container_release),
-        )
+        query = query.where(remote_enrollment_is_live(lease.container_release))
+        if not fatal_authorized:
+            query = query.where(ExecutionWorker.remote_owner_lease_expires_at > func.now())
     worker = await db.scalar(query.with_for_update(read=True, of=ExecutionWorker))
     if (
         worker is None or worker.remote_launcher_id != lease.launcher_id
