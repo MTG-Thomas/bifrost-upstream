@@ -2,7 +2,7 @@
 
 **Prepared locally. Publication is held for the frozen-target release review,
 owner approval, and fork settings checks.**
-The exact rc05 release candidate is `c91b480194e367f7156683a572dd0153dcb8c934`
+The exact rc05 release candidate is `567e14263fbd204edcc5cb783e975697bb050adf`
 on local branch `t3/cloudflare-release-rc05`. It settles failed placements,
 recovers the retained rc04 Disconnect journal, and keeps the signed fatal
 report available across reconnects. The capacity and SDK protocols are unchanged.
@@ -11,7 +11,7 @@ The approved release body remains byte-identical to rc02, rc03 and rc04. Push th
 `trial/cloudflare-containers-20261124` on `personal`
 (`MTG-Thomas/bifrost-upstream`). Keep the fork's `main` unchanged. The tag
 pins the commit before this documentation receipt. Its copy of this file
-therefore names the earlier candidate `b3ac224d1`. Use this receipt for the
+therefore names the earlier candidate `c91b48019`. Use this receipt for the
 exact tag target and commands.
 
 ## Fork, workflow and tag
@@ -68,9 +68,9 @@ destination branch. Use only the explicit `personal` refspecs below.
 Never use `git push --tags` or `git push --follow-tags`. The commands remain unrun.
 
 ```sh
-git tag -a v2.0.0-rc.2026112501 c91b480194e367f7156683a572dd0153dcb8c934 -m "Cloudflare Containers Trial"
-test "$(git rev-parse 'v2.0.0-rc.2026112501^{commit}')" = c91b480194e367f7156683a572dd0153dcb8c934 || exit 1
-git -c push.followTags=false push personal c91b480194e367f7156683a572dd0153dcb8c934:refs/heads/trial/cloudflare-containers-20261124
+git tag -a v2.0.0-rc.2026112501 567e14263fbd204edcc5cb783e975697bb050adf -m "Cloudflare Containers Trial"
+test "$(git rev-parse 'v2.0.0-rc.2026112501^{commit}')" = 567e14263fbd204edcc5cb783e975697bb050adf || exit 1
+git -c push.followTags=false push personal 567e14263fbd204edcc5cb783e975697bb050adf:refs/heads/trial/cloudflare-containers-20261124
 git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112501:refs/tags/v2.0.0-rc.2026112501
 ```
 
