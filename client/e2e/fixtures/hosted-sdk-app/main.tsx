@@ -8,7 +8,7 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    void authedFetch("/api/auth/me").then(
+    void authedFetch("/api/auth/me", { headers: { "X-Bifrost-SDK-Fixture": "mounted" } }).then(
       (response) => {
         if (active) setConnection(response.ok ? "Connected" : "Connection failed");
       },

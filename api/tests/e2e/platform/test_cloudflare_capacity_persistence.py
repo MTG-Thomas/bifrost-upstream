@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import warnings
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -3747,6 +3748,49 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
                 context, enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1),
             )
         assert failure.value.result == {"code": "CF_CONTAINERS_UNVERIFIED", "container_qualification": evidence}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fatal", [False, True], ids=["ready", "fatal-without-returncode"])
+async def test_capacity_http_serializes_container_startup_facts(db_session, installation, fatal) -> None:
+    from src.worker.remote.guest_init import collect_guest_facts
+
+    caller = _platform_operator()
+    installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
+    worker = ExecutionWorker(
+        form="external", state="ready", capacity_scope="containers", capacity_resource_uid=uuid4().hex,
+    )
+    db_session.add(worker)
+    await db_session.flush()
+    facts = {
+        "supervisor": {**collect_guest_facts(supervisor=True), "uid": 1000, "NoNewPrivs": True},
+        "child": {**collect_guest_facts(supervisor=False), "uid": 1001, "CapInh": None},
+    }
+    diagnostic = {"stage": "guest-init" if fatal else "ready", "generation": 1, "startup_facts": facts}
+    if fatal:
+        diagnostic.update(
+            fatal_stage="guest-init", fatal_generation=1, exception_class="GuestInitError",
+            reason="settings", child_returncode=None,
+        )
+    db_session.add(CloudflareWorkerReservation(
+        worker_id=worker.id, installation_id=installation.id, scope="containers", deployment_revision=1,
+        control_root_version=installation.control_root_version, container_release="a" * 64,
+        container_tenant="qualification-canary", container_reserved_at=datetime.now(UTC),
+        container_envelope={"seconds": 196, "guest_diagnostic": diagnostic},
+        canary_job_id=uuid4(), canary_lease_token=uuid4(),
+    ))
+    await db_session.flush()
+
+    app = FastAPI()
+    app.include_router(capacity_routes.router)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: caller.principal
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", message=r"Pydantic serializer warnings:")
+            response = await http.get("/api/capacity/cloudflare")
+    assert response.status_code == 200, response.text
+    assert response.json()["deployment"]["container_qualification"] == diagnostic
 
 
 @pytest.mark.asyncio

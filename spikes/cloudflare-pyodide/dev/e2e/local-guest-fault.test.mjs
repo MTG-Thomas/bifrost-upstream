@@ -24,11 +24,3 @@ test('local fatal launch mounts the hook read-only and retains the exact image r
   assert.ok(launch.Env.includes('PYTHONPATH=' + faultDirectory + ':/app'));
   assert.deepEqual(launch.HostConfig.Mounts, [{Type: 'bind', Source: source, Target: faultDirectory, ReadOnly: true}]);
 });
-
-test('the shared-memory fault only removes IPC mounts from the selected local guest', () => {
-  const launch = {Image: image, Env: [
-    'BIFROST_WORKER_RESOURCE_UID=fixture', 'REHEARSAL_GUEST_INIT_FAULT=shm-unavailable',
-  ]};
-  assert.equal(mountFaultHook(launch, {mode: 'shm-unavailable', image, source}), true);
-  assert.equal(launch.HostConfig.IpcMode, 'none');
-});

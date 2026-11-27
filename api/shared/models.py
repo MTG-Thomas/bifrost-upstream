@@ -15,6 +15,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from typing_extensions import NotRequired, TypedDict
 
 SEMVER_PATTERN = (
     r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
@@ -124,6 +125,55 @@ class CloudflareLaneStatus(BaseModel):
     reasons: list[CloudflarePlacementReason]
 
 
+StartupSizeBucket = Literal["empty", "under-4k", "under-64k", "under-1m", "under-64m", "under-1g", "under-4g", "4g-or-more"]
+
+
+class ContainerStartupFacts(TypedDict):
+    CapInh: str | None
+    CapPrm: str | None
+    CapEff: str | None
+    CapBnd: str | None
+    CapAmb: str | None
+    NoNewPrivs: bool | None
+    uid: int
+    gid: int
+    groups: int
+    shm_exists: bool
+    shm_size: StartupSizeBucket | None
+    ca_exists: bool
+    ca_readable: bool
+    ca_size: StartupSizeBucket | None
+    scratch_exists: bool
+    scratch_writable: bool
+    memory_limit: StartupSizeBucket | Literal["unlimited"] | None
+    cpu_count: int | None
+    kernel: str | None
+    pid_namespace: bool
+
+
+class ContainerStartupEvidence(TypedDict):
+    supervisor: ContainerStartupFacts
+    child: NotRequired[ContainerStartupFacts]
+
+
+class ContainerQualificationEvidence(TypedDict, total=False):
+    """Signed diagnostics and terminal placement observations, present as recorded."""
+
+    stage: str
+    generation: int
+    fatal_stage: str
+    fatal_generation: int
+    exception_class: str
+    reason: str
+    child_returncode: int | None
+    startup_facts: ContainerStartupEvidence
+    close_code: int
+    close_category: str
+    close_generation: int
+    provider_terminal_state: str
+    provider_exit_code: int
+
+
 class CloudflareDeploymentEvidence(BaseModel):
     revision: int | None = None
     connector_session: Literal["unobserved", "waiting_for_projection", "connected", "disconnected"] | None = None
@@ -132,7 +182,7 @@ class CloudflareDeploymentEvidence(BaseModel):
     dns_verified_at: datetime | None = None
     ingress_verified_at: datetime | None = None
     signed_canary_at: datetime | None = None
-    container_qualification: dict[str, str | int] | None = None
+    container_qualification: ContainerQualificationEvidence | None = None
 
 
 CloudflareReachabilityMode = Literal["existing_https_endpoint", "managed_tunnel"]

@@ -4,7 +4,7 @@ import os
 import re
 from contextlib import suppress
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal
 
 GUEST_CA = Path("/etc/cloudflare/certs/cloudflare-containers-ca.crt")
 GUEST_SCRATCH = "/workspace/guest"
@@ -13,14 +13,23 @@ CAP_MASKS = ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
 GuestFact = bool | int | str | None
 GuestFacts = dict[str, GuestFact]
 GuestInitPhase = Literal[
-    "identity", "prctl", "capabilities", "ca-unreadable", "shm-unavailable",
+    "identity", "prctl", "capabilities", "ca-unreadable",
     "scratch-unwritable", "runtime-import", "settings", "hook", "other",
 ]
 _SIZE_BUCKETS = ("empty", "under-4k", "under-64k", "under-1m", "under-64m", "under-1g", "under-4g", "4g-or-more")
 READY = b"\x01"
 FACTS = b"\x02"
 INIT_CODES: dict[bytes, GuestInitPhase] = {
-    bytes([value]): phase for value, phase in enumerate(get_args(GuestInitPhase), start=16)
+    b"\x10": "identity",
+    b"\x11": "prctl",
+    b"\x12": "capabilities",
+    b"\x13": "ca-unreadable",
+    # 0x14 was the fixture-only shared-memory outcome. Leave it unused.
+    b"\x15": "scratch-unwritable",
+    b"\x16": "runtime-import",
+    b"\x17": "settings",
+    b"\x18": "hook",
+    b"\x19": "other",
 }
 INIT_REASONS = frozenset(INIT_CODES.values()) | {
     "ready-timeout", "ready-eof", "ready-length", "ready-unknown", "ready-io",

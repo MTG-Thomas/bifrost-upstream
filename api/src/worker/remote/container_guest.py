@@ -122,6 +122,7 @@ class ContainerGuest:
         deadline = monotonic() + TEMPLATE_START_TIMEOUT_SECONDS
         self.startup_facts["supervisor"] = collect_guest_facts(supervisor=True)
         with self.ready:
+            os.set_blocking(self.ready.fileno(), False)
             code = self._read_ready_frame(1, deadline)
             if code == FACTS:
                 try:
@@ -148,21 +149,31 @@ class ContainerGuest:
             return None
 
     def _read_ready_frame(self, size: int, deadline: float) -> bytes:
+        def read_exact(length: int) -> bytes:
+            data = bytearray()
+            while len(data) < length:
+                remaining = deadline - monotonic()
+                if remaining <= 0 or not self.ready.poll(remaining):
+                    raise GuestInitError("ready-timeout", self.process.poll())
+                part = os.read(self.ready.fileno(), length - len(data))
+                if not part:
+                    raise EOFError
+                data.extend(part)
+            return bytes(data)
+
         try:
-            if not self.ready.poll(max(0, deadline - monotonic())):
-                raise GuestInitError("ready-timeout", self.process.poll())
-            return self.ready.recv_bytes(maxlength=size)
-        except GuestInitError:
-            raise
+            # Connection.send_bytes uses a four-byte signed network-order
+            # length for small frames. Ready messages never use extended lengths.
+            length = int.from_bytes(read_exact(4), "big", signed=True)
+            if not 0 <= length <= size:
+                raise GuestInitError("ready-length", self.process.poll())
+            return read_exact(length)
         except EOFError:
             returncode = self._startup_returncode(deadline)
             reason = "ready-eof" if returncode in (None, 0) else "ready-signal" if returncode < 0 else "ready-exit"
             raise GuestInitError(reason, returncode) from None
         except OSError:
-            # A frame exceeding maxlength closes this read-only Connection.
-            raise GuestInitError(
-                "ready-length" if self.ready.closed else "ready-io", self.process.poll(),
-            ) from None
+            raise GuestInitError("ready-io", self.process.poll()) from None
 
     @property
     def exited(self) -> bool:
@@ -260,12 +271,7 @@ def _initialize_guest(ready: Connection) -> bool:
         if not facts["scratch_writable"]:
             raise PermissionError("Container guest scratch is not writable")
         phase = "other"
-        try:
-            multiprocessing.set_start_method("spawn", force=True)
-        except OSError:
-            if not facts["shm_exists"]:
-                phase = "shm-unavailable"
-            raise
+        multiprocessing.set_start_method("spawn", force=True)
         phase = "ca-unreadable"
         if not facts["ca_readable"]:
             raise PermissionError("Container interception CA is not readable")

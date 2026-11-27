@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
+from pydantic import TypeAdapter
+from shared.models import ContainerQualificationEvidence
 from shared.models import ContainersPolicy as ContainersPolicy
 from sqlalchemy import (
     DateTime,
@@ -33,11 +35,12 @@ QUALIFICATION_DEFERRED_KEY = "container_qualification_deferred_revision"
 QUALIFICATION_DEFERRED_RELEASE_KEY = "container_qualification_deferred_release"
 # Match the provider registry's allowance when comparing the two clocks.
 CONTAINER_CLOCK_SKEW = timedelta(seconds=3)
+_QUALIFICATION_EVIDENCE = TypeAdapter(ContainerQualificationEvidence)
 
 
 async def container_qualification_evidence(
     db: AsyncSession, installation_id: UUID, *, job_id: UUID | None = None, lease_token: UUID | None = None,
-) -> dict[str, str | int] | None:
+) -> ContainerQualificationEvidence | None:
     """Project the sanitized evidence of the most recent qualification guest."""
     pin = CloudflareWorkerReservation
     statement = select(pin.container_envelope).where(
@@ -53,7 +56,7 @@ async def container_qualification_evidence(
     for key in ("provider_terminal_state", "provider_exit_code"):
         if key in envelope:
             diagnostic[key] = envelope[key]
-    return diagnostic or None
+    return _QUALIFICATION_EVIDENCE.validate_python(diagnostic) if diagnostic else None
 
 
 def unresolved_container_reservation():

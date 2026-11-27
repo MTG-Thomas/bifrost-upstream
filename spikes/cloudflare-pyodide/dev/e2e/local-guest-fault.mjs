@@ -5,7 +5,7 @@ import {createServer, request} from 'node:http';
 export const faultDirectory = '/opt/bifrost-fault-hook';
 export const faultMarker = 'bifrost-local-fault-hook: ' + faultDirectory + '/sitecustomize.py';
 export const guestInitFaults = [
-  'identity', 'prctl', 'capabilities', 'ca-unreadable', 'scratch-unwritable', 'shm-unavailable',
+  'identity', 'prctl', 'capabilities', 'ca-unreadable', 'scratch-unwritable',
   'runtime-import', 'settings', 'hook', 'ready-exit', 'ready-signal',
 ];
 
@@ -20,7 +20,6 @@ export function mountFaultHook(launch, {mode, image, source}) {
   launch.Env = launch.Env.filter((value) => !value.startsWith('PYTHONPATH='));
   launch.Env.push('PYTHONPATH=' + faultDirectory + ':' + pythonPath);
   const host = launch.HostConfig ??= {};
-  if (mode === 'shm-unavailable') host.IpcMode = 'none';
   const mounts = host.Mounts ??= [];
   assert.ok(!mounts.some((mount) => mount.Target === faultDirectory));
   mounts.push({Type: 'bind', Source: source, Target: faultDirectory, ReadOnly: true});

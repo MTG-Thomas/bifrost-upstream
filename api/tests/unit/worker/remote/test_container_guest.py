@@ -1,6 +1,7 @@
 """Container guest identity, readiness and process retirement contracts."""
 
 import json
+import os
 import signal
 from multiprocessing import Pipe
 from pathlib import Path
@@ -68,12 +69,30 @@ def test_ready_timeout_is_distinct_from_child_exit(guest_pipes, monkeypatch) -> 
     assert failure.value.reason == "ready-timeout" and failure.value.returncode is None
 
 
+@pytest.mark.parametrize("fragment", [b"\x00", b"\x00\x00\x00\x01"])
+def test_partial_ready_frame_cannot_block_past_deadline(guest_pipes, monkeypatch, fragment) -> None:
+    guest, send_ready = guest_pipes
+    monkeypatch.setattr(container_guest, "TEMPLATE_START_TIMEOUT_SECONDS", 0.05)
+    os.write(send_ready.fileno(), fragment)
+    with pytest.raises(GuestInitError, match="initialization failed") as failure:
+        guest.wait_ready()
+    assert failure.value.reason == "ready-timeout"
+
+
+def test_guest_readiness_wire_bytes_are_stable() -> None:
+    assert (container_guest.READY, FACTS) == (b"\x01", b"\x02")
+    assert INIT_CODES == {
+        b"\x10": "identity", b"\x11": "prctl", b"\x12": "capabilities", b"\x13": "ca-unreadable",
+        b"\x15": "scratch-unwritable", b"\x16": "runtime-import", b"\x17": "settings", b"\x18": "hook",
+        b"\x19": "other",
+    }
+
+
 @pytest.mark.parametrize("phase", INIT_CODES.values())
 def test_child_errors_emit_only_a_one_byte_class(guest_pipes, monkeypatch, phase) -> None:
     guest, send_ready = guest_pipes
     facts = collect_guest_facts(supervisor=False)
-    facts.update(ca_readable=phase != "ca-unreadable", scratch_writable=phase != "scratch-unwritable",
-                 shm_exists=phase != "shm-unavailable")
+    facts.update(ca_readable=phase != "ca-unreadable", scratch_writable=phase != "scratch-unwritable")
     monkeypatch.setattr(container_guest, "collect_guest_facts", lambda **_: facts)
     monkeypatch.setattr(container_guest.os, "getresuid", lambda: (1001,) * 3 if phase != "identity" else (1000,) * 3)
     monkeypatch.setattr(container_guest.os, "getresgid", lambda: (1001,) * 3)
@@ -84,7 +103,7 @@ def test_child_errors_emit_only_a_one_byte_class(guest_pipes, monkeypatch, phase
         name: "1" if phase == "capabilities" else "0" for name in CAP_MASKS
     })
     monkeypatch.setattr(container_guest.multiprocessing, "set_start_method", Mock(
-        side_effect=fault if phase in {"shm-unavailable", "other"} else None,
+        side_effect=fault if phase == "other" else None,
     ))
 
     def load_runtime(pipe, *, note_phase):

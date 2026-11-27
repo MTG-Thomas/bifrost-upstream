@@ -1852,7 +1852,7 @@ def exercise_image_preparation_failure(fixture, trial):
 
 
 GUEST_INIT_FAULTS = (
-    "identity", "prctl", "capabilities", "ca-unreadable", "scratch-unwritable", "shm-unavailable",
+    "identity", "prctl", "capabilities", "ca-unreadable", "scratch-unwritable",
     "runtime-import", "settings", "hook", "ready-exit", "ready-signal",
 )
 
@@ -1895,8 +1895,6 @@ def exercise_guest_fatal(fixture, trial, *, reconnect=False, init_fault=None):
                     assert child["ca_exists"] and not child["ca_readable"]
                 elif init_fault == "scratch-unwritable":
                     assert child["scratch_exists"] and not child["scratch_writable"]
-                elif init_fault == "shm-unavailable":
-                    assert not child["shm_exists"]
         else:
             assert result["exception_class"] == "RuntimeError" and result["reason"] == "runtime"
         assert (result["close_code"], result["close_category"]) == (1011, "internal")

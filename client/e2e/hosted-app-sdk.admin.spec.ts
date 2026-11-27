@@ -103,7 +103,9 @@ test("a legacy App keeps working before a hosted App picks up a compatible SDK u
       // alone can finish before the routed App module has loaded and mounted.
       const [connection] = await Promise.all([
         page.waitForResponse(response =>
-          response.request().method() === "GET" && new URL(response.url()).pathname === "/api/auth/me"
+          response.request().method() === "GET"
+          && new URL(response.url()).pathname === "/api/auth/me"
+          && response.request().headers()["x-bifrost-sdk-fixture"] === "mounted"
         ),
         navigate(),
       ]);

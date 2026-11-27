@@ -69,8 +69,6 @@ def install_startup_fault(mode):
             os.kill(os.getpid(), 9)
         elif mode == "prctl":
             container_guest._prctl = fail
-        elif mode == "shm-unavailable":
-            container_guest.multiprocessing.set_start_method = fail
         elif mode == "settings":
             from src import config
 
