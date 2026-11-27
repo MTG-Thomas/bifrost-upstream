@@ -159,8 +159,9 @@ class ContainerGuest:
             reason = "ready-eof" if returncode in (None, 0) else "ready-signal" if returncode < 0 else "ready-exit"
             raise GuestInitError(reason, returncode) from None
         except OSError:
+            # A frame exceeding maxlength closes this read-only Connection.
             raise GuestInitError(
-                "ready-io" if self.ready.readable else "ready-length", self.process.poll(),
+                "ready-length" if self.ready.closed else "ready-io", self.process.poll(),
             ) from None
 
     @property
