@@ -86,7 +86,25 @@ def install_startup_fault(mode):
         elif mode == "hook":
             from src.services.execution import virtual_import
 
-            virtual_import.install_virtual_import_hook = fail
+            install = virtual_import.install_virtual_import_hook
+            load_runtime = container_guest._load_workflow_runtime
+            final_hook = False
+
+            def install_or_fail():
+                if final_hook:
+                    fail()
+                return install()
+
+            def mark_hook(pipe, *, note_phase):
+                def note(value):
+                    nonlocal final_hook
+                    final_hook = value == "hook"
+                    note_phase(value)
+
+                return load_runtime(pipe, note_phase=note)
+
+            virtual_import.install_virtual_import_hook = install_or_fail
+            container_guest._load_workflow_runtime = mark_hook
         elif mode == "runtime-import":
             sys.modules["src.services.execution.engine"] = None
         raise SystemExit(container_guest._guest_main(*(int(value) for value in sys.argv[1:])))
