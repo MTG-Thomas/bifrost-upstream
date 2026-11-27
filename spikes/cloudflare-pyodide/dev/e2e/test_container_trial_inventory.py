@@ -330,8 +330,10 @@ class EnableDeadlineTests(unittest.TestCase):
 
     def test_enable_records_early_cleanup_diagnostics_before_cancellation(self):
         qualification = {
-            "stage": "requirements", "fatal_stage": "requirements", "exception_class": "RuntimeError",
-            "reason": "runtime", "close_code": 1011, "close_category": "internal",
+            "stage": "guest-init", "fatal_stage": "guest-init", "exception_class": "GuestInitError",
+            "reason": "capabilities", "child_returncode": 1,
+            "startup_facts": {"child": {"CapInh": "0000000000000020"}},
+            "close_code": 1011, "close_category": "internal",
             "provider_terminal_state": "failed", "provider_exit_code": 1,
         }
         self.trial.send = Mock(side_effect=[

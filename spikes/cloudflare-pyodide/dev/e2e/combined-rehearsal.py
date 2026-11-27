@@ -1491,6 +1491,7 @@ class HostedContainers(ContainerRehearsal):
         fields = (
             "generation", "stage", "fatal_generation", "fatal_stage", "exception_class", "reason",
             "close_generation", "close_code", "close_category", "provider_terminal_state", "provider_exit_code",
+            "startup_facts", "child_returncode",
         )
         evidence("hosted-shaped-enable-failed", {
             "code": result.get("code") or (state.get("error") or {}).get("code"),
