@@ -1877,7 +1877,13 @@ def exercise_guest_fatal(fixture, trial, *, reconnect=False, init_fault=None):
         assert result["stage"] == result["fatal_stage"] == ("guest-init" if init_fault else "requirements")
         if init_fault:
             assert result["exception_class"] == "GuestInitError" and result["reason"] == init_fault
-            assert result["child_returncode"] == {"ready-exit": 7, "ready-signal": -9}.get(init_fault, 1)
+            abrupt = {"ready-exit": 7, "ready-signal": -9}
+            if init_fault in abrupt:
+                assert result["child_returncode"] == abrupt[init_fault]
+            else:
+                # The pipe can report a valid code before Python finishes
+                # process cleanup. The provider still witnesses launcher exit 1.
+                assert result["child_returncode"] in (None, 1)
             facts = result["startup_facts"]
             assert facts["supervisor"]["uid"] == 1000 and facts["supervisor"]["pid_namespace"]
             if init_fault not in ("ready-exit", "ready-signal"):
