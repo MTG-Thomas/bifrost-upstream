@@ -3752,10 +3752,15 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fatal", [False, True], ids=["ready", "fatal-without-returncode"])
-async def test_capacity_http_serializes_container_startup_facts(db_session, installation, fatal) -> None:
+async def test_capacity_http_serializes_container_startup_facts(db_session, installation, monkeypatch, fatal) -> None:
     from src.worker.remote.guest_init import collect_guest_facts
 
-    caller = _platform_operator()
+    role = RoleGrant(uuid4(), frozenset({"platform.read"}), (Boundary(BoundaryKind.PLATFORM),))
+    caller = Caller(
+        UserPrincipal(OPERATOR_ID, "operator@example.test", None),
+        AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset(), (role,)),
+    )
+    monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=caller))
     installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
     worker = ExecutionWorker(
         form="external", state="ready", capacity_scope="containers", capacity_resource_uid=uuid4().hex,

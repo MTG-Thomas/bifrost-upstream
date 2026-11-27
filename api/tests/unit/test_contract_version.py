@@ -489,7 +489,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Cloudflare policy saves require the independently reviewed policy version.
     # The unreleased 1.4.3 CLI floor includes the matching flag.
     # Optional Container qualification evidence is additive in Capacity JSON.
-    "2527fbd33e3f02e99166a46406ad6b30528edc77ceb5b22fcb32c2fc3a7f810d"
+    # Its schema now describes the nested diagnostics already on the wire.
+    # The CLI prints that JSON without decoding the evidence. Fingerprint only.
+    "9246f2b9b6f067ec2a9fed50ba764dec4d74e17805698408e9b9ab627f043a8b"
 )
 
 

@@ -16916,10 +16916,7 @@ export interface components {
             ingress_verified_at?: string | null;
             /** Signed Canary At */
             signed_canary_at?: string | null;
-            /** Container Qualification */
-            container_qualification?: {
-                [key: string]: string | number;
-            } | null;
+            container_qualification?: components["schemas"]["ContainerQualificationEvidence"] | null;
         };
         /** CloudflareDiscoveryChoice */
         CloudflareDiscoveryChoice: {
@@ -17564,6 +17561,85 @@ export interface components {
             proposed_prompt: string;
             /** Affected Run Ids */
             affected_run_ids: string[];
+        };
+        /**
+         * ContainerQualificationEvidence
+         * @description Signed diagnostics and terminal placement observations, present as recorded.
+         */
+        ContainerQualificationEvidence: {
+            /** Stage */
+            stage?: string;
+            /** Generation */
+            generation?: number;
+            /** Fatal Stage */
+            fatal_stage?: string;
+            /** Fatal Generation */
+            fatal_generation?: number;
+            /** Exception Class */
+            exception_class?: string;
+            /** Reason */
+            reason?: string;
+            /** Child Returncode */
+            child_returncode?: number | null;
+            startup_facts?: components["schemas"]["ContainerStartupEvidence"];
+            /** Close Code */
+            close_code?: number;
+            /** Close Category */
+            close_category?: string;
+            /** Close Generation */
+            close_generation?: number;
+            /** Provider Terminal State */
+            provider_terminal_state?: string;
+            /** Provider Exit Code */
+            provider_exit_code?: number;
+        };
+        /** ContainerStartupEvidence */
+        ContainerStartupEvidence: {
+            supervisor: components["schemas"]["ContainerStartupFacts"];
+            child?: components["schemas"]["ContainerStartupFacts"];
+        };
+        /** ContainerStartupFacts */
+        ContainerStartupFacts: {
+            /** Capinh */
+            CapInh: string | null;
+            /** Capprm */
+            CapPrm: string | null;
+            /** Capeff */
+            CapEff: string | null;
+            /** Capbnd */
+            CapBnd: string | null;
+            /** Capamb */
+            CapAmb: string | null;
+            /** Nonewprivs */
+            NoNewPrivs: boolean | null;
+            /** Uid */
+            uid: number;
+            /** Gid */
+            gid: number;
+            /** Groups */
+            groups: number;
+            /** Shm Exists */
+            shm_exists: boolean;
+            /** Shm Size */
+            shm_size: ("empty" | "under-4k" | "under-64k" | "under-1m" | "under-64m" | "under-1g" | "under-4g" | "4g-or-more") | null;
+            /** Ca Exists */
+            ca_exists: boolean;
+            /** Ca Readable */
+            ca_readable: boolean;
+            /** Ca Size */
+            ca_size: ("empty" | "under-4k" | "under-64k" | "under-1m" | "under-64m" | "under-1g" | "under-4g" | "4g-or-more") | null;
+            /** Scratch Exists */
+            scratch_exists: boolean;
+            /** Scratch Writable */
+            scratch_writable: boolean;
+            /** Memory Limit */
+            memory_limit: ("empty" | "under-4k" | "under-64k" | "under-1m" | "under-64m" | "under-1g" | "under-4g" | "4g-or-more") | "unlimited" | null;
+            /** Cpu Count */
+            cpu_count: number | null;
+            /** Kernel */
+            kernel: string | null;
+            /** Pid Namespace */
+            pid_namespace: boolean;
         };
         /** ContainersPolicy */
         ContainersPolicy: {
