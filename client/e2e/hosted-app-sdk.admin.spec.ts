@@ -98,7 +98,18 @@ test("a legacy App keeps working before a hosted App picks up a compatible SDK u
     page.on("request", request => {
       if (new URL(request.url()).pathname.startsWith("/api/app-sdk/")) legacyHostedRequests.push(request.url());
     });
-    await page.goto(`/apps/${legacyApp.slug}/preview`);
+    const navigateAndObserveSdk = async (navigate: () => Promise<unknown>) => {
+      // The fixture sends this request from its mounted effect. Navigation
+      // alone can finish before the routed App module has loaded and mounted.
+      const [connection] = await Promise.all([
+        page.waitForResponse(response =>
+          response.request().method() === "GET" && new URL(response.url()).pathname === "/api/auth/me"
+        ),
+        navigate(),
+      ]);
+      expect(connection.ok()).toBe(true);
+    };
+    await navigateAndObserveSdk(() => page.goto(`/apps/${legacyApp.slug}/preview`));
     await expect(page.getByRole("heading", { name: "Hosted SDK Content", exact: true })).toBeVisible();
     await expect(page.getByLabel("SDK Theme")).toHaveText("light");
     await expect(page.getByLabel("SDK Connection")).toHaveText("Connected");
@@ -115,7 +126,7 @@ test("a legacy App keeps working before a hosted App picks up a compatible SDK u
     };
     await page.route(`**/api/applications/${hostedApp.id}/bundle-manifest*`, route => route.fulfill({ json: hostedManifest }));
     await serveAssets(hostedApp.id, hosted.assets);
-    await page.goto(`/apps/${hostedApp.slug}/preview`);
+    await navigateAndObserveSdk(() => page.goto(`/apps/${hostedApp.slug}/preview`));
     await expect(page.getByRole("heading", { name: "Hosted SDK Content", exact: true })).toBeVisible();
     await expect(page.getByLabel("SDK Theme")).toHaveText("light");
     await expect(page.getByLabel("SDK Connection")).toHaveText("Connected");
@@ -129,7 +140,7 @@ test("a legacy App keeps working before a hosted App picks up a compatible SDK u
     const second = { ...first, factory_id: factoryId, fingerprint, integrity: `sha256-${digest.toString("base64")}`, asset_url: `/api/app-sdk/assets/${fingerprint}.js` };
     await page.route("**/api/app-sdk/v1/manifest", route => route.fulfill({ json: second, headers: { "Cache-Control": "no-store" } }));
     await page.route(`**${second.asset_url}`, route => route.fulfill({ body: secondScript, contentType: "application/javascript", headers: { "Cache-Control": "public, max-age=31536000, immutable" } }));
-    await page.reload();
+    await navigateAndObserveSdk(() => page.reload());
     await expect(page.getByLabel("SDK Theme")).toHaveText("dark");
     await expect(page.getByLabel("SDK Connection")).toHaveText("Connected");
     const after = await (await api.get(`/api/applications/${hostedApp.slug}`)).json();
