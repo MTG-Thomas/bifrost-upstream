@@ -77,7 +77,7 @@ def collect_guest_facts(*, supervisor: bool) -> GuestFacts:
     shm_size = None
     if shm_exists:
         with suppress(OSError):
-            stat = SHM.statvfs()
+            stat = os.statvfs(SHM)
             shm_size = _size_bucket(stat.f_blocks * stat.f_frsize)
     ca_exists = GUEST_CA.is_file()
     ca_size = None
