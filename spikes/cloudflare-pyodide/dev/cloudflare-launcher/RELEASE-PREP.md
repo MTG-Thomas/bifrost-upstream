@@ -2,7 +2,7 @@
 
 **Prepared locally. Publication is held for the frozen-target release review,
 owner approval, and fork settings checks.**
-The exact rc06 release candidate is `60626bc42e0504995fa83d97794834960aa31252`
+The exact rc06 release candidate is `57eb89041479db9d62e900ebaa1803dee2f0e5b0`
 on local branch `t3/cloudflare-release-rc06`. It classifies managed guest
 readiness failures and retains bounded guest and supervisor facts in the
 signed qualification evidence. Capacity and SDK protocols are unchanged.
@@ -11,7 +11,7 @@ The approved release body remains byte-identical to rc05. Push the pinned candid
 `trial/cloudflare-containers-20261124` on `personal`
 (`MTG-Thomas/bifrost-upstream`). Keep the fork's `main` unchanged. The tag
 pins the commit before this documentation receipt. Its copy of this file
-therefore names the earlier candidate `2d0af45c1`. Use this receipt for the
+therefore names the earlier candidate `60626bc42`. Use this receipt for the
 exact tag target and commands.
 
 ## Fork, workflow and tag
@@ -68,9 +68,9 @@ destination branch. Use only the explicit `personal` refspecs below.
 Never use `git push --tags` or `git push --follow-tags`. The commands remain unrun.
 
 ```sh
-git tag -a v2.0.0-rc.2026112701 60626bc42e0504995fa83d97794834960aa31252 -m "Cloudflare Containers Trial"
-test "$(git rev-parse 'v2.0.0-rc.2026112701^{commit}')" = 60626bc42e0504995fa83d97794834960aa31252 || exit 1
-git -c push.followTags=false push personal 60626bc42e0504995fa83d97794834960aa31252:refs/heads/trial/cloudflare-containers-20261124
+git tag -a v2.0.0-rc.2026112701 57eb89041479db9d62e900ebaa1803dee2f0e5b0 -m "Cloudflare Containers Trial"
+test "$(git rev-parse 'v2.0.0-rc.2026112701^{commit}')" = 57eb89041479db9d62e900ebaa1803dee2f0e5b0 || exit 1
+git -c push.followTags=false push personal 57eb89041479db9d62e900ebaa1803dee2f0e5b0:refs/heads/trial/cloudflare-containers-20261124
 git -c push.followTags=false push personal refs/tags/v2.0.0-rc.2026112701:refs/tags/v2.0.0-rc.2026112701
 ```
 
