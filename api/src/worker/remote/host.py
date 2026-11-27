@@ -2420,11 +2420,15 @@ async def _write_guest_socket_evidence(
         key = await load_managed_control_key(db, pin, worker.capacity_resource_uid)
         diagnostic = verify_guest_diagnostic(key, lease.session_generation, sequence, event)
         evidence.update(stage=diagnostic["stage"], generation=lease.session_generation)
+        if "startup_facts" in diagnostic:
+            evidence["startup_facts"] = diagnostic["startup_facts"]
         if diagnostic["event"] == "guest_fatal":
             evidence.update(
                 fatal_stage=diagnostic["stage"], fatal_generation=lease.session_generation,
                 exception_class=diagnostic["exception_class"], reason=diagnostic["reason"],
             )
+            if "child_returncode" in diagnostic:
+                evidence["child_returncode"] = diagnostic["child_returncode"]
     if evidence != previous:
         pin.container_envelope = {**pin.container_envelope, "guest_diagnostic": evidence}
 

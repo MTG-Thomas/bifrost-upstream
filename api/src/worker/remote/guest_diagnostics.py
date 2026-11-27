@@ -3,8 +3,9 @@
 import hashlib
 import hmac
 import json
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
+from src.worker.remote.guest_init import INIT_REASONS, GuestFacts, GuestInitError, valid_guest_facts
 from src.worker.remote.protocol import AuthenticationError
 
 GuestStage = Literal[
@@ -41,9 +42,17 @@ _ERROR_REASONS = {
 _DOMAIN = b"bifrost.containers.guest-diagnostic.v1\0"
 
 
-def guest_diagnostic_payload(stage: GuestStage, error: BaseException | None = None) -> dict[str, str]:
+def guest_diagnostic_payload(
+    stage: GuestStage, error: BaseException | None = None, *, startup_facts: dict[str, GuestFacts] | None = None,
+) -> dict[str, Any]:
+    facts = {"startup_facts": startup_facts} if startup_facts else {}
     if error is None:
-        return {"event": "guest_stage", "stage": stage}
+        return {"event": "guest_stage", "stage": stage, **facts}
+    if isinstance(error, GuestInitError):
+        return {
+            "event": "guest_fatal", "stage": stage, "exception_class": "GuestInitError",
+            "reason": error.reason, "child_returncode": error.returncode, **facts,
+        }
     exception_class = type(error).__name__
     # HTTP clients wrap the TLS/DNS cause. Walk a bounded chain of class
     # names only and prefer those two specific categories when present.
@@ -60,7 +69,7 @@ def guest_diagnostic_payload(stage: GuestStage, error: BaseException | None = No
         exception_class = "Exception"
     return {
         "event": "guest_fatal", "stage": stage,
-        "exception_class": exception_class, "reason": _ERROR_REASONS[exception_class],
+        "exception_class": exception_class, "reason": _ERROR_REASONS[exception_class], **facts,
     }
 
 
@@ -69,18 +78,37 @@ def guest_diagnostic_signature(secret: str, generation: int, sequence: int, payl
     return hmac.new(secret.encode(), _DOMAIN + body, hashlib.sha256).hexdigest()
 
 
-def verify_guest_diagnostic(secret: str, generation: int, sequence: int, payload: dict) -> dict[str, str]:
+def verify_guest_diagnostic(secret: str, generation: int, sequence: int, payload: dict) -> dict[str, Any]:
     event, stage, signature = (payload.get(key) for key in ("event", "stage", "signature"))
     body = {key: value for key, value in payload.items() if key != "signature"}
     valid = event in GUEST_DIAGNOSTIC_EVENTS and stage in _STAGES
+    fields = set(body)
+    if "startup_facts" in fields:
+        facts = body["startup_facts"]
+        valid &= (
+            stage == "guest-init" and isinstance(facts, dict)
+            and set(facts) in ({"supervisor"}, {"child", "supervisor"})
+            and all(valid_guest_facts(item) for item in facts.values())
+        )
+        fields.remove("startup_facts")
     if event == "guest_stage":
-        valid &= set(body) == {"event", "stage"}
+        valid &= fields == {"event", "stage"}
     elif event == "guest_fatal":
         name = body.get("exception_class")
-        valid &= (
-            set(body) == {"event", "stage", "exception_class", "reason"}
-            and isinstance(name, str) and name in _ERROR_REASONS and _ERROR_REASONS[name] == body["reason"]
-        )
+        expected = {"event", "stage", "exception_class", "reason"}
+        if name == "GuestInitError":
+            reason = body.get("reason")
+            code = body.get("child_returncode")
+            valid &= (
+                stage == "guest-init" and fields == expected | {"child_returncode"}
+                and isinstance(reason, str) and reason in INIT_REASONS
+                and (code is None or (type(code) is int and -64 <= code <= 255))
+            )
+        else:
+            valid &= (
+                fields == expected
+                and isinstance(name, str) and name in _ERROR_REASONS and _ERROR_REASONS[name] == body["reason"]
+            )
     if (
         not valid or not isinstance(signature, str) or len(signature) != 64 or not signature.isascii()
         or not hmac.compare_digest(guest_diagnostic_signature(secret, generation, sequence, body), signature)

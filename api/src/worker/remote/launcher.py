@@ -381,7 +381,13 @@ class Launcher:
             return
         with contextlib.suppress(ConnectionError, TimeoutError):
             async with asyncio.timeout(0.5):
-                await self.send(guest_diagnostic_payload(self._guest_stage, error), guest_diagnostic=True)
+                facts = self.container_guest.startup_facts if (
+                    self._guest_stage == "guest-init" and self.container_guest is not None
+                ) else None
+                await self.send(
+                    guest_diagnostic_payload(self._guest_stage, error, startup_facts=dict(facts) if facts else None),
+                    guest_diagnostic=True,
+                )
 
     async def note_guest_stage(self, stage: GuestStage) -> None:
         if self.container_release is not None and self._guest_stage != stage:
@@ -460,6 +466,7 @@ class Launcher:
         if self.container_guest is not None:
             await self.note_guest_stage("guest-init")
             await asyncio.to_thread(self.container_guest.wait_ready)
+            await self._send_guest_diagnostic()
         elif self.agent_template is None:
             await asyncio.to_thread(self.template.start)
         else:

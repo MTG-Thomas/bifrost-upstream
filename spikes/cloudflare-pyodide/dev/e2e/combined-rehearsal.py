@@ -1850,11 +1850,17 @@ def exercise_image_preparation_failure(fixture, trial):
     fixture.provider("/local/image-preparation-mode", "POST", {"mode": "slow"})
 
 
-def exercise_guest_fatal(fixture, trial, *, reconnect=False):
+GUEST_INIT_FAULTS = (
+    "identity", "prctl", "capabilities", "ca-unreadable", "scratch-unwritable", "shm-unavailable",
+    "runtime-import", "settings", "hook", "ready-exit", "ready-signal",
+)
+
+
+def exercise_guest_fatal(fixture, trial, *, reconnect=False, init_fault=None):
     """Fail the real Docker guest after bootstrap and inspect the product evidence."""
     plan = trial.plan_activation()
     baseline = trial.opening_inventory(plan)
-    fixture.provider("/local/guest-fatal-mode", "POST", {"mode": "reconnect" if reconnect else "fatal"})
+    fixture.provider("/local/guest-fatal-mode", "POST", {"mode": init_fault or ("reconnect" if reconnect else "fatal")})
     try:
         accepted = trial.send("/api/capacity/cloudflare/activate", trial.activation_request)
         job = str(UUID(accepted["job_id"]))
@@ -1867,8 +1873,25 @@ def exercise_guest_fatal(fixture, trial, *, reconnect=False):
         assert state["status"] == "requires_action" and state["result"]["code"] == "CF_CONTAINERS_UNVERIFIED"
         result = state["result"]["container_qualification"]
         assert result["generation"] == result["fatal_generation"] == result["close_generation"] == (2 if reconnect else 1)
-        assert result["stage"] == result["fatal_stage"] == "requirements"
-        assert result["exception_class"] == "RuntimeError" and result["reason"] == "runtime"
+        assert result["stage"] == result["fatal_stage"] == ("guest-init" if init_fault else "requirements")
+        if init_fault:
+            assert result["exception_class"] == "GuestInitError" and result["reason"] == init_fault
+            assert result["child_returncode"] == {"ready-exit": 7, "ready-signal": -9}.get(init_fault, 1)
+            facts = result["startup_facts"]
+            assert facts["supervisor"]["uid"] == 1000 and facts["supervisor"]["pid_namespace"]
+            if init_fault not in ("ready-exit", "ready-signal"):
+                child = facts["child"]
+                assert child["uid"] == 1001 and child["pid_namespace"]
+                if init_fault == "capabilities":
+                    assert int(child["CapInh"], 16) != 0
+                elif init_fault == "ca-unreadable":
+                    assert child["ca_exists"] and not child["ca_readable"]
+                elif init_fault == "scratch-unwritable":
+                    assert child["scratch_exists"] and not child["scratch_writable"]
+                elif init_fault == "shm-unavailable":
+                    assert not child["shm_exists"]
+        else:
+            assert result["exception_class"] == "RuntimeError" and result["reason"] == "runtime"
         assert (result["close_code"], result["close_category"]) == (1011, "internal")
         assert (result["provider_terminal_state"], result["provider_exit_code"]) == ("failed", 1)
         status = trial.send("/api/capacity/cloudflare", method="GET")
@@ -1908,12 +1931,14 @@ def main():
                         help="Locally rehearse one post-hello Docker guest failure and Disconnect")
     exercises.add_argument("--exercise-guest-fatal-after-reconnect", action="store_true",
                         help="Locally drop bootstrap once, then rehearse a fatal Docker guest exit and Disconnect")
+    exercises.add_argument("--exercise-guest-init-fault", choices=GUEST_INIT_FAULTS,
+                        help="Locally exercise a classified child startup failure and Disconnect")
     args = parser.parse_args()
     if args.hosted_containers_config and not args.containers_hosted_shape:
         parser.error("--hosted-containers-config requires --containers-hosted-shape")
     if args.exercise_image_preparation_failure and (not args.containers_hosted_shape or args.hosted_containers_config):
         parser.error("--exercise-image-preparation-failure requires the local hosted-shaped fixture")
-    guest_fatal = args.exercise_guest_fatal or args.exercise_guest_fatal_after_reconnect
+    guest_fatal = args.exercise_guest_fatal or args.exercise_guest_fatal_after_reconnect or bool(args.exercise_guest_init_fault)
     if guest_fatal and (not args.containers_hosted_shape or args.hosted_containers_config):
         parser.error("Guest failure exercises require the local hosted-shaped fixture")
     if args.hosted_upgrade_config:
@@ -1940,7 +1965,8 @@ def main():
             }))
             trial = HostedContainers(config)
             if guest_fatal:
-                exercise_guest_fatal(fixture, trial, reconnect=args.exercise_guest_fatal_after_reconnect)
+                exercise_guest_fatal(fixture, trial, reconnect=args.exercise_guest_fatal_after_reconnect,
+                                     init_fault=args.exercise_guest_init_fault)
                 return
             if args.exercise_image_preparation_failure:
                 exercise_image_preparation_failure(fixture, trial)

@@ -10,7 +10,7 @@ import {BlockList, createConnection, isIPv4} from 'node:net';
 import {dirname, join} from 'node:path';
 import {buffer} from 'node:stream/consumers';
 import {fileURLToPath} from 'node:url';
-import {faultDirectory, faultMarker, listenFaultDocker} from './local-guest-fault.mjs';
+import {faultDirectory, faultMarker, guestInitFaults, listenFaultDocker} from './local-guest-fault.mjs';
 import {relayHeaders} from './relay-http.mjs';
 import {useOfflineWorkerd, verifyOfflinePyodide} from './offline-pyodide.mjs';
 
@@ -167,7 +167,8 @@ function containerRuntime(item) {
                         throw new Error("Unpinned local Docker start");
                     }
                     native.start({...options, image: native.images["bifrost-linux"],
-                        env: {...options.env, ...${JSON.stringify(item.guestFatalMode === 'off' ? {} : {
+                        env: {...options.env, ...${JSON.stringify(item.guestFatalMode === 'off' ? {}
+                          : guestInitFaults.includes(item.guestFatalMode) ? {REHEARSAL_GUEST_INIT_FAULT: item.guestFatalMode} : {
                             REHEARSAL_FAIL_GUEST_AFTER_HELLO: item.guestFatalMode === 'reconnect' ? '2' : '1',
                         })}}});
                 },
@@ -505,7 +506,7 @@ async function provider(req, res) {
   if (config.containers) {
     if (path === '/local/guest-fatal-mode' && method === 'POST') {
       const {mode} = await json();
-      assert.ok(['off', 'fatal', 'reconnect'].includes(mode));
+      assert.ok(['off', 'fatal', 'reconnect', ...guestInitFaults].includes(mode));
       if (mode !== 'off' && faultDocker === null) {
         faultDocker = await listenFaultDocker(join(dirname(config.ready), 'fault-docker.sock'),
           () => ({mode: guestFatalMode, image: config.containers.image, source: faultSource}));

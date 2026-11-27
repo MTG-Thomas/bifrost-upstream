@@ -33,7 +33,7 @@ import subprocess
 import sys
 from contextlib import suppress
 from multiprocessing.connection import Connection
-from typing import Any, Literal, get_args
+from typing import Any, Callable, Literal, get_args
 
 from src.services.execution.container_result import ContainerResultWriter
 
@@ -236,14 +236,19 @@ def _template_main(
     logger.info("Template process exiting")
 
 
-def _load_workflow_runtime(pipe: Connection) -> dict[str, Any] | None:
+def _load_workflow_runtime(
+    pipe: Connection | None, *, note_phase: Callable[[Literal["runtime-import", "settings", "hook"]], None] | None = None,
+) -> dict[str, Any] | None:
     """Preload the execution engine and scrub platform credentials.
 
-    Returns extra ``ready`` fields, or None after reporting a startup error.
+    The template passes its command pipe for legacy error reporting. The
+    managed guest classifies exceptions on its separate readiness pipe.
     """
     # ----- Load heavy dependencies -----
     # These imports pull in the full transitive closure of each library.
     # After fork, children share these pages via COW.
+    if note_phase is not None:
+        note_phase("runtime-import")
     install_virtual_import_hook = None
     try:
         # Core bifrost SDK and execution engine
@@ -280,9 +285,13 @@ def _load_workflow_runtime(pipe: Connection) -> dict[str, Any] | None:
             # workspace/package-name collisions must be resolved in execution
             # scope, which the template does not have.
         except ImportError as e:
+            if pipe is None:
+                raise
             logger.warning(f"Execution infrastructure not available: {e} — continuing without it")
 
     except Exception as e:
+        if pipe is None:
+            raise
         logger.exception(f"Template process failed to load dependencies: {e}")
         pipe.send({"status": "error", "error": str(e)})
         pipe.close()
@@ -298,6 +307,8 @@ def _load_workflow_runtime(pipe: Connection) -> dict[str, Any] | None:
     # Assertion: get_settings() must NOT have been called by this point.
     # If it were, the lru_cache would hold a Settings object with the secrets;
     # we log loudly and the cache_clear() below evicts it before priming.
+    if note_phase is not None:
+        note_phase("settings")
     from src.config import get_settings
     try:
         cache_info = get_settings.cache_info()
@@ -370,10 +381,12 @@ def _load_workflow_runtime(pipe: Connection) -> dict[str, Any] | None:
     # signs JWTs.
     os.environ["BIFROST_SECRET_KEY"] = "scrubbed-execution-children-hold-no-platform-credentials"
     os.environ["BIFROST_REDIS_URL"] = "redis://127.0.0.1:0/0"
-    get_settings.cache_clear()
-    get_settings()
-    del os.environ["BIFROST_SECRET_KEY"]
-    del os.environ["BIFROST_REDIS_URL"]
+    try:
+        get_settings.cache_clear()
+        get_settings()
+    finally:
+        del os.environ["BIFROST_SECRET_KEY"]
+        del os.environ["BIFROST_REDIS_URL"]
     logger.info("settings cache primed with inert secret and Redis values, env vars removed")
 
     # Preload the platform execution runtime after credential scrubbing. Every
@@ -385,6 +398,8 @@ def _load_workflow_runtime(pipe: Connection) -> dict[str, Any] | None:
     # SDK calls run under execution tracing; rebuilding models/client code in
     # every child adds avoidable latency. Share these common runtime modules,
     # while leaving database and object-storage implementations out entirely.
+    if note_phase is not None:
+        note_phase("runtime-import")
     import bifrost.client  # noqa: F401
     import bifrost.models  # noqa: F401
     import src.sdk.decorators  # noqa: F401
@@ -398,6 +413,8 @@ def _load_workflow_runtime(pipe: Connection) -> dict[str, Any] | None:
     # Forked children inherit the hook and provide the execution-scoped module
     # resolver needed for workspace and Solution imports.
     if install_virtual_import_hook is not None:
+        if note_phase is not None:
+            note_phase("hook")
         install_virtual_import_hook()
 
     return {}

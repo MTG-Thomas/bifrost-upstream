@@ -36,6 +36,7 @@ mounts=(
     --mount "type=bind,src=$PWD/api/shared,dst=/app/shared,readonly"
     --mount "type=bind,src=$PWD/api/bifrost,dst=/app/bifrost,readonly"
     --mount "type=bind,src=$PWD/api/qualification/cloudflare_containers,dst=/app/qualification,readonly"
+    --mount type=bind,src=/etc/ssl/certs/ca-certificates.crt,dst=/etc/cloudflare/certs/cloudflare-containers-ca.crt,readonly
 )
 for scenario in isolation cancel launcher; do
     docker run --pull=never --rm --network=none "${mounts[@]}" \

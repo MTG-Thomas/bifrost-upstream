@@ -4,16 +4,23 @@ import {createServer, request} from 'node:http';
 
 export const faultDirectory = '/opt/bifrost-fault-hook';
 export const faultMarker = 'bifrost-local-fault-hook: ' + faultDirectory + '/sitecustomize.py';
+export const guestInitFaults = [
+  'identity', 'prctl', 'capabilities', 'ca-unreadable', 'scratch-unwritable', 'shm-unavailable',
+  'runtime-import', 'settings', 'hook', 'ready-exit', 'ready-signal',
+];
 
 export function mountFaultHook(launch, {mode, image, source}) {
   if (mode === 'off' || launch.Image !== image) return false;
-  const generation = mode === 'reconnect' ? '2' : '1';
-  assert.ok(launch.Env.includes('REHEARSAL_FAIL_GUEST_AFTER_HELLO=' + generation));
+  const fault = guestInitFaults.includes(mode)
+    ? 'REHEARSAL_GUEST_INIT_FAULT=' + mode
+    : 'REHEARSAL_FAIL_GUEST_AFTER_HELLO=' + (mode === 'reconnect' ? '2' : '1');
+  assert.ok(launch.Env.includes(fault));
   assert.ok(launch.Env.some((value) => value.startsWith('BIFROST_WORKER_RESOURCE_UID=')));
   const pythonPath = launch.Env.find((value) => value.startsWith('PYTHONPATH='))?.slice(11) || '/app';
   launch.Env = launch.Env.filter((value) => !value.startsWith('PYTHONPATH='));
   launch.Env.push('PYTHONPATH=' + faultDirectory + ':' + pythonPath);
   const host = launch.HostConfig ??= {};
+  if (mode === 'shm-unavailable') host.IpcMode = 'none';
   const mounts = host.Mounts ??= [];
   assert.ok(!mounts.some((mount) => mount.Target === faultDirectory));
   mounts.push({Type: 'bind', Source: source, Target: faultDirectory, ReadOnly: true});
