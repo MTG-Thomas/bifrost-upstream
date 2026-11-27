@@ -1477,6 +1477,28 @@ class HostedContainers(ContainerRehearsal):
         return self.sql(f"""SELECT count(*) FROM cloudflare_worker_reservations
             WHERE scope='containers' AND canary_job_id IS NOT NULL{filters}""")
 
+    def record_enable_failure(self, state):
+        result = state.get("result") or {}
+        qualification = result.get("container_qualification")
+        if qualification is None:
+            try:
+                status = self.send("/api/capacity/cloudflare", method="GET")
+                qualification = (status.get("deployment") or {}).get("container_qualification")
+            except (AssertionError, OSError, RuntimeError, ValueError):
+                # Evidence collection must not delay teardown beyond one request
+                # or hide the failure that stopped qualification.
+                pass
+        fields = (
+            "generation", "stage", "fatal_generation", "fatal_stage", "exception_class", "reason",
+            "close_generation", "close_code", "close_category", "provider_terminal_state", "provider_exit_code",
+        )
+        evidence("hosted-shaped-enable-failed", {
+            "code": result.get("code") or (state.get("error") or {}).get("code"),
+            "canary_failure": result.get("canary_failure"),
+            "container_qualification": {key: qualification[key] for key in fields if key in qualification}
+            if isinstance(qualification, dict) else None,
+        })
+
     def completed(self, job, outcome, *, window=90):
         if outcome != "enabled":
             if outcome != "disconnected":
@@ -1484,9 +1506,10 @@ class HostedContainers(ContainerRehearsal):
             return super().completed(job, outcome, window=window)
 
         canary_deadline = None
+        state = {}
 
         def terminal():
-            nonlocal canary_deadline
+            nonlocal canary_deadline, state
             state = self.send(f"/api/platform-jobs/{job}", method="GET")
             result = state.get("result") or {}
             code = result.get("code") or (state.get("error") or {}).get("code")
@@ -1495,10 +1518,6 @@ class HostedContainers(ContainerRehearsal):
             if state["status"] not in ACTIVE_JOB and (
                 state["status"] != "succeeded" or result.get("outcome") != outcome
             ):
-                evidence("hosted-shaped-enable-failed", {
-                    "code": code, "canary_failure": result.get("canary_failure"),
-                    "container_qualification": result.get("container_qualification"),
-                })
                 raise RuntimeError(f"Enable did not succeed ({code})")
             count = self.canaries()
             job_canaries = self.canaries(job=job)
@@ -1520,7 +1539,8 @@ class HostedContainers(ContainerRehearsal):
 
         try:
             return wait(outcome, terminal, self.active_window(min(window, self.enable_result_seconds)))
-        except (AssertionError, RuntimeError):
+        except (AssertionError, OSError, RuntimeError, ValueError):
+            self.record_enable_failure(state)
             self.send(f"/api/platform-jobs/{job}/cancel")
             raise
 
@@ -1856,6 +1876,7 @@ def exercise_guest_fatal(fixture, trial, *, reconnect=False):
         assert not status["installation"]["admission_open"]
         assert trial.canaries(job=job) == trial.canaries(job=job, settled=True) == 1
         assert "rehearsal-secret-in-guest-exception" not in json.dumps([state, status])
+        trial.record_enable_failure(state)
         evidence("guest-fatal-after-hello", result)
     finally:
         original = sys.exception()

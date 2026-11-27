@@ -315,6 +315,7 @@ class EnableDeadlineTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.trial.send = Mock(side_effect=[
                     {"status": status, "result": {"code": "CF_DEPLOYMENT_UNVERIFIED"}},
+                    {},
                     None,
                 ])
                 with self.assertRaisesRegex(RuntimeError, "Enable did not succeed.*CF_DEPLOYMENT_UNVERIFIED"):
@@ -322,9 +323,30 @@ class EnableDeadlineTests(unittest.TestCase):
                 self.assertEqual(self.now, 0)
                 self.assertEqual(self.trial.send.call_args_list, [
                     unittest.mock.call("/api/platform-jobs/job", method="GET"),
+                    unittest.mock.call("/api/capacity/cloudflare", method="GET"),
                     unittest.mock.call("/api/platform-jobs/job/cancel"),
                 ])
                 self.trial.observe_scheduler.assert_not_called()
+
+    def test_enable_records_early_cleanup_diagnostics_before_cancellation(self):
+        qualification = {
+            "stage": "requirements", "fatal_stage": "requirements", "exception_class": "RuntimeError",
+            "reason": "runtime", "close_code": 1011, "close_category": "internal",
+            "provider_terminal_state": "failed", "provider_exit_code": 1,
+        }
+        self.trial.send = Mock(side_effect=[
+            {"status": "queued", "error": {"code": "CF_CONTAINERS_CLEANUP_PENDING"}},
+            {"deployment": {"container_qualification": {**qualification, "raw_reason": "private"}}},
+            None,
+        ])
+        with patch.object(runner, "evidence") as emit:
+            with self.assertRaisesRegex(RuntimeError, "CF_CONTAINERS_CLEANUP_PENDING"):
+                self.trial.completed("job", "enabled", window=self.trial.enable_result_seconds)
+        emit.assert_called_once_with("hosted-shaped-enable-failed", {
+            "code": "CF_CONTAINERS_CLEANUP_PENDING", "canary_failure": None,
+            "container_qualification": qualification,
+        })
+        self.trial.send.assert_called_with("/api/platform-jobs/job/cancel")
 
     def test_enable_stops_if_the_paid_canary_does_not_settle(self):
         self.trial.send = Mock(return_value={"status": "running"})
