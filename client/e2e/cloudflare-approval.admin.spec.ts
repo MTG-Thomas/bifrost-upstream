@@ -24,7 +24,7 @@ async def ${name}():
 		expect(registered.ok(), await registered.text()).toBe(true);
 		await page.goto("/settings/ai");
 		await page.getByRole("button", { name: "Capacity", exact: true }).click();
-		await page.getByRole("button", { name: "Scale Out With Cloudflare", exact: true }).click();
+		await page.getByRole("button", { name: "Scale Out with Cloudflare", exact: true }).click();
 		await page.getByRole("button", { name: "Review Eligible Workflows" }).click();
 		await page.getByRole("button", { name: `Generate Proposal for ${name}`, exact: true }).click();
 
