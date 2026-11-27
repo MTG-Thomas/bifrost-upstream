@@ -111,7 +111,7 @@ def valid_guest_facts(value: object) -> bool:
     return (
         set(value) == {*CAP_MASKS, *flags, *numbers, *sizes, "memory_limit", "NoNewPrivs", "kernel"}
         and all(value[key] is None or (
-            isinstance(value[key], str) and re.fullmatch(r"[a-f0-9]{1,16}", value[key])
+            isinstance(value[key], str) and re.fullmatch(r"[a-f0-9]{1,16}", value[key]) is not None
         ) for key in CAP_MASKS)
         and all(type(value[key]) is bool for key in flags)
         and all(type(value[key]) is int and 0 <= value[key] < 2**32 for key in numbers if value[key] is not None)
@@ -120,6 +120,6 @@ def valid_guest_facts(value: object) -> bool:
         and (value["memory_limit"] is None or value["memory_limit"] in (*_SIZE_BUCKETS, "unlimited"))
         and (value["NoNewPrivs"] is None or type(value["NoNewPrivs"]) is bool)
         and (value["kernel"] is None or (
-            isinstance(value["kernel"], str) and re.fullmatch(r"[0-9]{1,5}\.[0-9]{1,5}", value["kernel"])
+            isinstance(value["kernel"], str) and re.fullmatch(r"[0-9]{1,5}\.[0-9]{1,5}", value["kernel"]) is not None
         ))
     )
