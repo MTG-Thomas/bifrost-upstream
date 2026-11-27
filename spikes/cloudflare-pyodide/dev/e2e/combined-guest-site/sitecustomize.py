@@ -50,48 +50,48 @@ def install_startup_fault(mode):
 
     if os.getuid() != 1001:
         return
-    # The child runs `-m` as __main__. Reuse the module already loaded by
-    # sitecustomize, so the patch affects that exact child entrypoint.
-    if mode == "ca-unreadable":
-        from src.worker.remote import guest_init
+    import runpy
 
-        guest_init.GUEST_CA = ca_file
-    elif mode == "ready-exit":
-        os._exit(7)
-    elif mode == "ready-signal":
-        os.kill(os.getpid(), 9)
-    elif mode == "shm-unavailable":
-        container_guest.multiprocessing.set_start_method = fail
-    elif mode in ("runtime-import", "settings", "hook"):
-        if mode == "settings":
+    run_module = runpy._run_module_as_main
+
+    def run_guest(name, *args, **kwargs):
+        if name != container_guest.__name__:
+            return run_module(name, *args, **kwargs)
+        # Once interpreter initialization finishes, patch the same module
+        # whose guest entrypoint runs. Native imports must not run in sitecustomize.
+        if mode == "ca-unreadable":
+            from src.worker.remote import guest_init
+
+            guest_init.GUEST_CA = ca_file
+        elif mode == "ready-exit":
+            os._exit(7)
+        elif mode == "ready-signal":
+            os.kill(os.getpid(), 9)
+        elif mode == "prctl":
+            container_guest._prctl = fail
+        elif mode == "shm-unavailable":
+            container_guest.multiprocessing.set_start_method = fail
+        elif mode == "settings":
             from src import config
+
+            get_settings = config.get_settings
 
             @lru_cache
             def bad_settings():
-                fail()
+                if "BIFROST_SECRET_KEY" in os.environ:
+                    fail()
+                return get_settings()
 
             config.get_settings = bad_settings
         elif mode == "hook":
             from src.services.execution import virtual_import
 
             virtual_import.install_virtual_import_hook = fail
-        else:
+        elif mode == "runtime-import":
             sys.modules["src.services.execution.engine"] = None
+        raise SystemExit(container_guest._guest_main(*(int(value) for value in sys.argv[1:])))
 
-    # Run the same production child entrypoint after its setup is patched.
-    # Set argv only after Python has resolved the -m invocation.
-    if mode == "prctl":
-        import runpy
-
-        container_guest._prctl = fail
-        run_module = runpy._run_module_as_main
-
-        def run_guest(name, *args, **kwargs):
-            if name == container_guest.__name__:
-                raise SystemExit(container_guest._guest_main(*(int(value) for value in sys.argv[1:])))
-            return run_module(name, *args, **kwargs)
-
-        runpy._run_module_as_main = run_guest
+    runpy._run_module_as_main = run_guest
 
 
 if init_fault := os.environ.pop("REHEARSAL_GUEST_INIT_FAULT", ""):
