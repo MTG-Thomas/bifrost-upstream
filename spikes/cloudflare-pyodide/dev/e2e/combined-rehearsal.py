@@ -1876,6 +1876,11 @@ def exercise_guest_fatal(fixture, trial, *, reconnect=False):
         assert not status["installation"]["admission_open"]
         assert trial.canaries(job=job) == trial.canaries(job=job, settled=True) == 1
         assert "rehearsal-secret-in-guest-exception" not in json.dumps([state, status])
+        image, = [row for row in fixture.provider("/local/evidence") if row["kind"] == "guest-fault-image"]
+        assert image["hook_loaded_from_read_only_mount"] is True
+        _, _, digest = fixture.cfg["containers"]["image"].partition("@")
+        assert image["image_digest"] == (digest or None)
+        evidence("guest-fault-image", {"image_digest": image["image_digest"], "hook_loaded_from_read_only_mount": True})
         trial.record_enable_failure(state)
         evidence("guest-fatal-after-hello", result)
     finally:

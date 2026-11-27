@@ -9,6 +9,8 @@ import {createRequire} from 'node:module';
 import {BlockList, createConnection, isIPv4} from 'node:net';
 import {dirname, join} from 'node:path';
 import {buffer} from 'node:stream/consumers';
+import {fileURLToPath} from 'node:url';
+import {faultDirectory, faultMarker, listenFaultDocker} from './local-guest-fault.mjs';
 import {relayHeaders} from './relay-http.mjs';
 import {useOfflineWorkerd, verifyOfflinePyodide} from './offline-pyodide.mjs';
 
@@ -38,6 +40,8 @@ const images = new Map();
 const preparationReads = new Map();
 let preparationMode = 'ready';
 let guestFatalMode = 'off';
+let faultDocker = null;
+const faultSource = fileURLToPath(new URL('./combined-guest-site', import.meta.url));
 const droppedBootstraps = new Set();
 const foreignImages = new Set();
 const unattachedNamespaces = [];
@@ -132,6 +136,7 @@ function workerConfig({name, meta, modules}) {
 }
 
 function containerRuntime(item) {
+  const socketPath = item.guestFatalMode === 'off' ? 'unix:///run/docker.sock' : 'unix://' + faultDocker.address();
   assert.ok(config.containers);
   for (const [name, id] of [['image', 'imageId'], ['proxy', 'proxyId']]) {
     assert.equal(execFileSync('docker', ['image', 'inspect', '--format', '{{.Id}}', config.containers[name]],
@@ -163,7 +168,6 @@ function containerRuntime(item) {
                     }
                     native.start({...options, image: native.images["bifrost-linux"],
                         env: {...options.env, ...${JSON.stringify(item.guestFatalMode === 'off' ? {} : {
-                            PYTHONPATH: '/app',
                             REHEARSAL_FAIL_GUEST_AFTER_HELLO: item.guestFatalMode === 'reconnect' ? '2' : '1',
                         })}}});
                 },
@@ -178,7 +182,7 @@ function containerRuntime(item) {
   return new Miniflare({cf: false, workers: [
     {dev, config: worker}, outboundRelay(worker.env.CONTAINERS_ORIGIN.value),
   ], containerEngine: {localDocker: {
-    socketPath: 'unix:///run/docker.sock', containerEgressInterceptorImage: config.containers.proxy,
+    socketPath, containerEgressInterceptorImage: config.containers.proxy,
   }}});
 }
 
@@ -225,6 +229,20 @@ function placementInventory(application) {
       if (!guest.State.Running && Date.parse(guest.State.FinishedAt) > 0) {
         record.stoppedAt ??= guest.State.FinishedAt;
         record.exitCode ??= guest.State.ExitCode;
+        if (guestFatalMode !== 'off' && record.exitCode && !record.faultEvidence) {
+          const matches = guest.Mounts.filter(({Destination}) => Destination === faultDirectory);
+          assert.equal(matches.length, 1);
+          assert.equal(matches[0].RW, false);
+          assert.equal(matches[0].Source, faultSource);
+          assert.ok(guest.Config.Env.some(value => value.startsWith('PYTHONPATH=' + faultDirectory + ':')));
+          const logs = execFileSync('docker', ['logs', guest.Id], {encoding: 'utf8'});
+          assert.ok(logs.split('\n').includes(faultMarker), 'Fault hook did not load from the bind mount');
+          const info = JSON.parse(execFileSync('docker', ['image', 'inspect', guest.Image], {encoding: 'utf8'}))[0];
+          const image = config.containers.image;
+          if (image.includes('@sha256:')) assert.ok(info.RepoDigests.includes(image));
+          record.faultEvidence = true;
+          event('guest-fault-image', {image_digest: image.split('@')[1] ?? null, hook_loaded_from_read_only_mount: true});
+        }
       }
     } else if (record.startedAt) {
       record.stoppedAt ??= new Date().toISOString();
@@ -488,6 +506,10 @@ async function provider(req, res) {
     if (path === '/local/guest-fatal-mode' && method === 'POST') {
       const {mode} = await json();
       assert.ok(['off', 'fatal', 'reconnect'].includes(mode));
+      if (mode !== 'off' && faultDocker === null) {
+        faultDocker = await listenFaultDocker(join(dirname(config.ready), 'fault-docker.sock'),
+          () => ({mode: guestFatalMode, image: config.containers.image, source: faultSource}));
+      }
       guestFatalMode = mode;
       droppedBootstraps.clear();
       return ok(null);

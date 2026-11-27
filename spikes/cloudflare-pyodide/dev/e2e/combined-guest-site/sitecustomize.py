@@ -7,6 +7,9 @@ if os.getpid() == 1 and (generation := os.environ.pop("REHEARSAL_FAIL_GUEST_AFTE
 
     from src.worker.remote.launcher import Launcher
 
+    if __file__ == "/opt/bifrost-fault-hook/sitecustomize.py":
+        print("bifrost-local-fault-hook: " + __file__, flush=True)
+
     hello = Launcher.hello
     saw_bootstrap_drop = False
 
