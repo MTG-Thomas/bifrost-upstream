@@ -36,7 +36,12 @@ class GuestInitError(RuntimeError):
 
 
 def proc_status() -> dict[str, str]:
-    return dict(line.split(":\t", 1) for line in Path("/proc/self/status").read_text().splitlines() if ":\t" in line)
+    fields: dict[str, str] = {}
+    for line in Path("/proc/self/status").read_text().splitlines():
+        name, separator, value = line.partition(":")
+        if separator:
+            fields[name] = value.strip()
+    return fields
 
 
 def _size_bucket(size: int) -> str:
@@ -63,10 +68,10 @@ def collect_guest_facts(*, supervisor: bool) -> GuestFacts:
     status: dict[str, str] = {}
     with suppress(OSError, ValueError):
         status = proc_status()
-    masks: GuestFacts = {
-        name: value.lower() if re.fullmatch(r"[0-9a-fA-F]{1,16}", value) else None
-        for name in CAP_MASKS for value in (status.get(name, ""),)
-    }
+    masks: GuestFacts = {}
+    for name in CAP_MASKS:
+        value = status.get(name, "")
+        masks[name] = value.lower() if re.fullmatch(r"[0-9a-fA-F]{1,16}", value) else None
     kernel = re.match(r"\d{1,5}\.\d{1,5}(?!\d)", os.uname().release)
     shm_exists = SHM.is_dir()
     shm_size = None
@@ -102,16 +107,16 @@ def valid_guest_facts(value: object) -> bool:
         return False
     flags = ("shm_exists", "ca_exists", "ca_readable", "scratch_exists", "scratch_writable", "pid_namespace")
     numbers = ("uid", "gid", "groups", "cpu_count")
-    sizes = ("shm_size", "ca_size", "memory_limit")
+    sizes = ("shm_size", "ca_size")
     return (
-        set(value) == {*CAP_MASKS, *flags, *numbers, *sizes, "NoNewPrivs", "kernel"}
+        set(value) == {*CAP_MASKS, *flags, *numbers, *sizes, "memory_limit", "NoNewPrivs", "kernel"}
         and all(value[key] is None or (
             isinstance(value[key], str) and re.fullmatch(r"[a-f0-9]{1,16}", value[key])
         ) for key in CAP_MASKS)
         and all(type(value[key]) is bool for key in flags)
         and all(type(value[key]) is int and 0 <= value[key] < 2**32 for key in numbers if value[key] is not None)
         and all(value[key] is not None for key in ("uid", "gid", "groups"))
-        and all(value[key] is None or value[key] in _SIZE_BUCKETS for key in sizes[:2])
+        and all(value[key] is None or value[key] in _SIZE_BUCKETS for key in sizes)
         and (value["memory_limit"] is None or value["memory_limit"] in (*_SIZE_BUCKETS, "unlimited"))
         and (value["NoNewPrivs"] is None or type(value["NoNewPrivs"]) is bool)
         and (value["kernel"] is None or (

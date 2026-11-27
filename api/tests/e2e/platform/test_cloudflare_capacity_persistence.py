@@ -3609,6 +3609,7 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
     from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
     from src.worker.remote import host, ownership
     from src.worker.remote.guest_diagnostics import guest_diagnostic_payload, guest_diagnostic_signature
+    from src.worker.remote.guest_init import GuestInitError, collect_guest_facts
     from src.worker.remote.protocol import ControlEnvelope, FragmentAssembler
 
     secret = "secret-only-in-the-exception-and-close-reason"
@@ -3640,7 +3641,15 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
     await db_session.flush()
     key = await load_managed_control_key(db_session, pin, uid)
     valid = stage not in ("unsigned", "forged", "replayed", "same-sequence", "expired-owner", "heartbeat")
-    payload = guest_diagnostic_payload(stage if valid else "ack", RuntimeError(secret))
+    if stage == "guest-init":
+        facts = {"supervisor": collect_guest_facts(supervisor=True), "child": collect_guest_facts(supervisor=False)}
+        payload = guest_diagnostic_payload(stage, GuestInitError("settings", 1), startup_facts=facts)
+        fatal_evidence = {
+            "exception_class": "GuestInitError", "reason": "settings", "child_returncode": 1, "startup_facts": facts,
+        }
+    else:
+        payload = guest_diagnostic_payload(stage if valid else "ack", RuntimeError(secret))
+        fatal_evidence = {"exception_class": "RuntimeError", "reason": "runtime"}
     if stage != "unsigned":
         payload["signature"] = guest_diagnostic_signature(
             "forger" if stage == "forged" else key, 2 if stage == "replayed" else 1, 1, payload,
@@ -3709,7 +3718,7 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
         socket.close.assert_not_awaited()
         assert evidence == {
             "generation": 1, "stage": stage, "fatal_stage": stage, "fatal_generation": 1,
-            "exception_class": "RuntimeError", "reason": "runtime",
+            **fatal_evidence,
             "close_code": 1011, "close_category": "internal", "close_generation": 1,
         }
     else:
@@ -3724,7 +3733,7 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
     assert key not in json.dumps(pin.container_envelope)
     status = await cloudflare_status.deployment_evidence(db_session, installation)
     assert status.container_qualification == evidence
-    if stage == "ack":
+    if stage in ("ack", "guest-init"):
         capacity = await get_cloudflare_capacity_status(db_session, _platform_operator())
         assert capacity.deployment is not None and capacity.deployment.container_qualification == evidence
         monkeypatch.setattr(enable_job, "get_db_context", transaction)
