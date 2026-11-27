@@ -36,3 +36,8 @@ It checks signed evidence in both the job and Capacity status, confirms the
 canary remains unqualified, then verifies Disconnect. The hook is mounted
 read-only onto the selected local image. These switches are rejected with
 hosted configuration.
+
+Use a short private archive path for these fault modes. The Workerd proxy
+needs its Unix socket pathname to fit the platform limit. If preparing a
+reduced archive for the image-preparation journey, include
+`preflight-compose-worker.sh` alongside the runner's other inputs.
