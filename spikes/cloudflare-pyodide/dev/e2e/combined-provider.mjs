@@ -41,6 +41,7 @@ const images = new Map();
 const preparationReads = new Map();
 let preparationMode = 'ready';
 let guestFatalMode = 'off';
+const hostedCapabilityHellos = new Set();
 let faultDocker = null;
 const faultSource = fileURLToPath(new URL('./combined-guest-site', import.meta.url));
 const droppedBootstraps = new Set();
@@ -213,13 +214,31 @@ function runtime(capacity) {
   return value;
 }
 
+function nativePlacements() {
+  const ids = execFileSync('docker', ['ps', '-aq', '--filter', 'ancestor=' + config.containers.imageId],
+    {encoding: 'utf8'}).trim().split(/\s+/).filter(Boolean);
+  return ids.length ? JSON.parse(execFileSync('docker', ['inspect', ...ids], {encoding: 'utf8'})) : [];
+}
+
+function witnessGuestHook(guest, kind, marker = faultMarker) {
+  const matches = guest.Mounts.filter(({Destination}) => Destination === faultDirectory);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].RW, false);
+  assert.equal(matches[0].Source, faultSource);
+  assert.ok(guest.Config.Env.some(value => value.startsWith('PYTHONPATH=' + faultDirectory + ':')));
+  const logs = execFileSync('docker', ['logs', guest.Id], {encoding: 'utf8'});
+  assert.ok(logs.split('\n').includes(marker), 'Startup hook did not produce its witness');
+  const info = JSON.parse(execFileSync('docker', ['image', 'inspect', guest.Image], {encoding: 'utf8'}))[0];
+  const image = config.containers.image;
+  if (image.includes('@sha256:')) assert.ok(info.RepoDigests.includes(image));
+  event(kind, {image_digest: image.split('@')[1] ?? null, hook_loaded_from_read_only_mount: true});
+}
+
 function placementInventory(application) {
   if (application.foreign) return [{status: {state: 'active'}}];
   const records = [...placements.values()].filter((entry) => entry.application === application.id);
   if (!records.length) return [];
-  const ids = execFileSync('docker', ['ps', '-aq', '--filter', 'ancestor=' + config.containers.imageId],
-    {encoding: 'utf8'}).trim().split(/\s+/).filter(Boolean);
-  const native = ids.length ? JSON.parse(execFileSync('docker', ['inspect', ...ids], {encoding: 'utf8'})) : [];
+  const native = nativePlacements();
   return records.flatMap((record) => {
     const candidates = native.filter(({Config, Image}) =>
       Image === config.containers.imageId && Config.Env.includes('BIFROST_WORKER_RESOURCE_UID=' + record.uid));
@@ -232,23 +251,9 @@ function placementInventory(application) {
       if (!guest.State.Running && Date.parse(guest.State.FinishedAt) > 0) {
         record.stoppedAt ??= guest.State.FinishedAt;
         record.exitCode ??= guest.State.ExitCode;
-        const hostedCapabilities = guestFatalMode === hostedCapabilityMode;
-        if ((hostedCapabilities || (guestFatalMode !== 'off' && record.exitCode)) && !record.faultEvidence) {
-          const matches = guest.Mounts.filter(({Destination}) => Destination === faultDirectory);
-          assert.equal(matches.length, 1);
-          assert.equal(matches[0].RW, false);
-          assert.equal(matches[0].Source, faultSource);
-          assert.ok(guest.Config.Env.some(value => value.startsWith('PYTHONPATH=' + faultDirectory + ':')));
-          const logs = execFileSync('docker', ['logs', guest.Id], {encoding: 'utf8'});
-          assert.ok(logs.split('\n').includes(faultMarker), 'Fault hook did not load from the bind mount');
-          if (hostedCapabilities) assert.ok(logs.split('\n').includes(hostedCapabilityMarker));
-          const info = JSON.parse(execFileSync('docker', ['image', 'inspect', guest.Image], {encoding: 'utf8'}))[0];
-          const image = config.containers.image;
-          if (image.includes('@sha256:')) assert.ok(info.RepoDigests.includes(image));
+        if (guestFatalMode !== 'off' && guestFatalMode !== hostedCapabilityMode && record.exitCode && !record.faultEvidence) {
+          witnessGuestHook(guest, 'guest-fault-image');
           record.faultEvidence = true;
-          event(hostedCapabilities ? hostedCapabilityMode : 'guest-fault-image', {
-            image_digest: image.split('@')[1] ?? null, hook_loaded_from_read_only_mount: true,
-          });
         }
       }
     } else if (record.startedAt) {
@@ -323,6 +328,15 @@ function upgrade(req, socket, head) {
           worker.pause();
           try {
             await fenceRawTcp(identity);
+            if (guestFatalMode === hostedCapabilityMode && !hostedCapabilityHellos.has(identity)) {
+              // Successful instances can disappear before the next placement
+              // inventory. Witness the init hook while hello proves it is live.
+              const matched = nativePlacements().filter(({Config, Image, State}) => State.Running
+                && Image === config.containers.imageId && Config.Env.includes('BIFROST_WORKER_RESOURCE_UID=' + identity));
+              assert.equal(matched.length, 1);
+              witnessGuestHook(matched[0], hostedCapabilityMode, hostedCapabilityMarker);
+              hostedCapabilityHellos.add(identity);
+            }
           } catch (error) {
             console.error(`Local Container TCP fixture failed: ${error.name}`);
             close(1011);
@@ -519,6 +533,7 @@ async function provider(req, res) {
       }
       guestFatalMode = mode;
       droppedBootstraps.clear();
+      hostedCapabilityHellos.clear();
       return ok(null);
     }
     if (path === '/local/image-preparation-mode' && method === 'POST') {
