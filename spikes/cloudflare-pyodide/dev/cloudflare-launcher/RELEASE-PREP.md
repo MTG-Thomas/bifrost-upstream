@@ -56,6 +56,14 @@ constructs `Launcher` directly and does not call the baked-wheels, root PID 1
 Container startup or its capability helpers. The comparison did not require
 a product change or a timeout adjustment.
 
+After the backup window, the same two-test selection passed on both exact
+candidates. Rc07 passed in 25.64 s and rc06 (`57eb89041`) passed in 25.99 s.
+CT128 started with 9,057 and 9,078 MiB available, respectively. The lowest
+nested Docker samples were 22,546,852 and 22,653,668 kB available. Both were
+well above the 9,832,887 kB threshold for the sampled host. This confirms the
+static tests pass as written with adequate headroom and explains the pending
+dispatches reproduced under pressure.
+
 The single backend rerun (`./test.sh e2e`) on `021ea1b3f` ran 06:58:49–08:33:14
 UTC and stopped at 82% with 2,459 passes, six failures, one error, and 35
 skips reported before the hard timeout. PostgreSQL did not restart. The
@@ -65,6 +73,11 @@ stopped in `test_child_sigkill_restarts_with_new_attempt` after repeated
 85% service fork refusals. Four early failures in application publish or
 package installation also remain open. The hard pytest abort left no fresh
 JUnit result. Use the test transcript for these partial counts.
+
+The four additional failures were `test_publish_success_deduplication_and_requester_visibility`,
+`test_bundle_failure_is_persisted_and_does_not_publish`, `test_multiple_publishes`,
+and `test_package_available_after_installation`. The hard abort prevented a
+final pytest traceback report for those failures, so their causes remain open.
 
 The rerun started with 9,147 MiB available in CT128 and 12,355 MiB on the
 Proxmox host. The 30-second samples reached minimums of 5,402 MiB and 7,680
@@ -92,6 +105,25 @@ handler, the static launcher, or the browser code. Its Capacity status
 change applies only when Containers is opted in. The 5.544 s measurement
 establishes why the original five-second browser assertion missed the result.
 That timing does not, by itself, establish why the worker took 5.544 seconds.
+
+The single full browser rerun (`./test.sh client e2e`) ran after backup
+completion, 10:52:33–11:28:07 UTC, and passed all 227 tests. Its 30-second
+memory samples reached minimums of 5,857 MiB available in CT128 and
+20,813 MiB on Proxmox. The nested workers stayed below the pressure cutoff
+in all 68 samples. The four formerly red specs passed with their existing
+assertions and timeouts.
+
+| Spec | Green rc06-era run | Earlier rc07 failure | Monitored rc07 pass |
+| --- | ---: | --- | ---: |
+| Workers-only Capacity | 21.6 s | Rotation took 5.544 s before returning `CF_MANAGEMENT_CREDENTIAL` | 22.5 s total, 2.730 s for rotation |
+| Impersonation | 23.3 s | Logout hit the 30 s test deadline | 20.9 s |
+| Realtime policy | 2.8 s | Fixture setup hit the 30 s hook deadline | 2.8 s |
+| Solution reactivation | 10.3 s | Activation remained `running` at the 30 s deadline | 11.9 s |
+
+The backend gate still requires a complete run under sustained host headroom
+outside the backup window. The two full attempts had hard timeouts during
+service tests and produced partial backend counts. This evidence does not
+clear the remaining app publish or package installation failures.
 
 ## Fork, workflow and tag
 
