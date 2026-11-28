@@ -16917,6 +16917,8 @@ export interface components {
             /** Signed Canary At */
             signed_canary_at?: string | null;
             container_qualification?: components["schemas"]["ContainerQualificationEvidence"] | null;
+            /** Container Qualification Evidence Error */
+            container_qualification_evidence_error?: "ValidationError" | null;
         };
         /** CloudflareDiscoveryChoice */
         CloudflareDiscoveryChoice: {
@@ -17581,6 +17583,10 @@ export interface components {
             reason?: string;
             /** Child Returncode */
             child_returncode?: number | null;
+            /** Errno Class */
+            errno_class?: string;
+            /** Capability Bit */
+            capability_bit?: number;
             startup_facts?: components["schemas"]["ContainerStartupEvidence"];
             /** Close Code */
             close_code?: number;
