@@ -56,6 +56,26 @@ constructs `Launcher` directly and does not call the baked-wheels, root PID 1
 Container startup or its capability helpers. The comparison did not require
 a product change or a timeout adjustment.
 
+The single backend rerun (`./test.sh e2e`) on `021ea1b3f` ran 06:58:49–08:33:14
+UTC and stopped at 82% with 2,459 passes, six failures, one error, and 35
+skips reported before the hard timeout. PostgreSQL did not restart. The
+provider-identity case and all 19 cases that had errored following the first
+restart passed. The rerun observed both static workflow timeouts again and
+stopped in `test_child_sigkill_restarts_with_new_attempt` after repeated
+85% service fork refusals. Four early failures in application publish or
+package installation also remain open. The hard pytest abort left no fresh
+JUnit result. Use the test transcript for these partial counts.
+
+The rerun started with 9,147 MiB available in CT128 and 12,355 MiB on the
+Proxmox host. The 30-second samples reached minimums of 5,402 MiB and 7,680
+MiB respectively. Nested Docker's application memory reading crossed the
+85% cutoff in 250 of 362 samples. Docker lifecycle events showed only the
+test Compose project. CT128's idle admission check alone does not establish
+available memory for the static worker inside unbounded nested Docker.
+Proxmox records also show a scheduled backup starting at 07:00:22 UTC,
+93 seconds after the backend suite began. The backup overlapped that run.
+Its presence does not independently establish a cause for each failed test.
+
 TypeScript, lint, 4,516 Vitest tests, and 18 browser smoke tests passed.
 The full browser run completed with 223 passes and four failures. The
 Workers-only Capacity test waited five seconds for token rotation to show
@@ -63,6 +83,15 @@ Workers-only Capacity test waited five seconds for token rotation to show
 The other failures were an impersonation logout timeout, a realtime-policy
 fixture setup timeout, and a Solution activation job still running at the
 test deadline.
+
+The earlier green rc06-era verification is retained under `60626bc42`
+(3,019 backend E2E and 227 browser passes). In that browser run the Capacity,
+impersonation, realtime-policy, and Solution cases took 21.6 s, 23.3 s, 2.8 s,
+and 10.3 s respectively. Rc07 does not change the Workers token rotation
+handler, the static launcher, or the browser code. Its Capacity status
+change applies only when Containers is opted in. The 5.544 s measurement
+establishes why the original five-second browser assertion missed the result.
+That timing does not, by itself, establish why the worker took 5.544 seconds.
 
 ## Fork, workflow and tag
 
