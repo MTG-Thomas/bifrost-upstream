@@ -1,6 +1,7 @@
 """Container guest identity, readiness and process retirement contracts."""
 
 import ctypes
+import errno
 import json
 import os
 import signal
@@ -11,7 +12,7 @@ from unittest.mock import Mock
 import pytest
 from src.worker.remote import container_guest
 from src.worker.remote.guest_diagnostics import guest_diagnostic_payload, guest_diagnostic_signature, verify_guest_diagnostic
-from src.worker.remote.guest_init import CAP_MASKS, FACTS, INIT_CODES, GuestInitError, collect_guest_facts
+from src.worker.remote.guest_init import CAP_MASKS, FACTS, INIT_CODES, GuestInitError, SupervisorPrivilegeError, collect_guest_facts
 from src.worker.remote.protocol import AuthenticationError
 
 
@@ -184,7 +185,7 @@ def test_supervisor_refuses_capability_changes_with_multiple_threads(monkeypatch
     prctl = Mock()
     monkeypatch.setattr(container_guest, "Path", lambda _: jobs)
     monkeypatch.setattr(container_guest, "_prctl", prctl)
-    with pytest.raises(RuntimeError, match="single-threaded"):
+    with pytest.raises(SupervisorPrivilegeError, match="single-thread"):
         container_guest._drop_supervisor_privileges()
     prctl.assert_not_called()
 
@@ -217,23 +218,111 @@ def test_prepare_guest_capabilities_clears_both_inheritable_words(monkeypatch) -
 
     assert written == [(0x1E0, 0x1F0, 0), (0x10, 0x30, 0)]
     assert [call.args for call in kernel.prctl.call_args_list] == [
-        (47, 4, 0, 0, 0), (24, 5, 0, 0, 0), (24, 36, 0, 0, 0),
+        (24, 5, 0, 0, 0), (24, 36, 0, 0, 0), (38, 1, 0, 0, 0),
     ]
     assert [call[0] for call in kernel.mock_calls] == ["capget", "capset", "prctl", "prctl", "prctl"]
 
 
-@pytest.mark.parametrize(("failure", "message"), [
-    ("capget", "could not read capability masks"),
-    ("capset", "could not set capability masks"),
-    ("prctl", "privilege setup failed"),
+@pytest.mark.parametrize(("failure", "step", "bit"), [
+    ("capget", "capget", None),
+    ("capset", "inheritable-clear", None),
+    ((24, 5), "bounding-drop", 5),
+    ((24, 36), "bounding-drop", 36),
+    ((38, 1), "no-new-privs", None),
 ])
-def test_prepare_guest_capabilities_fails_closed_on_kernel_error(monkeypatch, failure, message) -> None:
+def test_prepare_guest_capabilities_fails_closed_on_kernel_error(monkeypatch, failure, step, bit) -> None:
     guest = container_guest
     kernel = Mock()
     kernel.capget.return_value = kernel.capset.return_value = kernel.prctl.return_value = 0
-    getattr(kernel, failure).return_value = -1
+    if isinstance(failure, str):
+        getattr(kernel, failure).return_value = -1
+    else:
+        kernel.prctl.side_effect = lambda option, value, *_: -1 if (option, value) == failure else 0
     monkeypatch.setattr(guest.ctypes, "CDLL", Mock(return_value=kernel))
+    monkeypatch.setattr(guest.ctypes, "get_errno", lambda: errno.EPERM)
     monkeypatch.setattr(guest, "_require_single_threaded_init", Mock())
+    monkeypatch.setattr(guest, "proc_status", lambda: {"CapBnd": "0000001000000020"})
+    monkeypatch.setattr(guest.os, "getuid", lambda: 0)
+    monkeypatch.setattr(guest.os, "getpid", lambda: 1)
+    spawn = Mock()
+    monkeypatch.setattr(guest.subprocess, "Popen", spawn)
 
-    with pytest.raises(RuntimeError, match=message):
-        guest._prepare_guest_capabilities()
+    with pytest.raises(SupervisorPrivilegeError) as failure_info:
+        guest.ContainerGuest.start_image("https://ingress.example.test")
+    exc = failure_info.value
+    assert (exc.step, exc.errno_class, exc.bit) == (step, "EPERM", bit)
+    spawn.assert_not_called()
+    if bit == 36:
+        assert [call.args[:2] for call in kernel.prctl.call_args_list] == [(24, 5), (24, 36)]
+
+
+@pytest.mark.parametrize(("operation", "step"), [
+    ((8, 1), "keepcaps-enable"),
+    ("setgroups", "setgroups"),
+    ("setresgid", "setresgid"),
+    ("setresuid", "setresuid"),
+    ("capset", "supervisor-capset"),
+    ((8, 0), "keepcaps-disable"),
+])
+def test_supervisor_drop_classifies_each_step(monkeypatch, operation, step) -> None:
+    guest = container_guest
+    denied = OSError(errno.EPERM, "do-not-publish-this")
+
+    def prctl(option, value):
+        if (option, value) == operation:
+            raise denied
+
+    monkeypatch.setattr(guest, "_require_single_threaded_init", Mock())
+    monkeypatch.setattr(guest, "_prctl", prctl)
+    for syscall in ("setgroups", "setresgid", "setresuid"):
+        monkeypatch.setattr(guest.os, syscall, Mock(side_effect=denied if syscall == operation else None))
+    monkeypatch.setattr(guest, "_set_capability_masks", Mock(side_effect=denied if operation == "capset" else None))
+
+    with pytest.raises(SupervisorPrivilegeError) as failure:
+        guest._drop_supervisor_privileges()
+    assert (failure.value.step, failure.value.errno_class) == (step, "EPERM")
+    assert "do-not-publish-this" not in str(failure.value)
+
+
+@pytest.mark.parametrize("failure", ["supervisor-identity", "bounding-read", "guest-spawn"])
+def test_start_image_classifies_other_supervisor_setup_errors(monkeypatch, failure) -> None:
+    guest = container_guest
+    monkeypatch.setattr(guest.os, "getpid", lambda: 2 if failure == "supervisor-identity" else 1)
+    monkeypatch.setattr(guest.os, "getuid", lambda: 0)
+    monkeypatch.setattr(guest, "_require_single_threaded_init", Mock())
+    kernel = Mock()
+    kernel.capset.return_value = kernel.prctl.return_value = kernel.capget.return_value = 0
+    monkeypatch.setattr(guest.ctypes, "CDLL", Mock(return_value=kernel))
+    monkeypatch.setattr(guest, "proc_status", lambda: {} if failure == "bounding-read" else {"CapBnd": "0"})
+    monkeypatch.setattr(guest.subprocess, "Popen", Mock(side_effect=OSError(errno.EACCES, "private path")))
+
+    with pytest.raises(SupervisorPrivilegeError) as error:
+        guest.ContainerGuest.start_image("https://ingress.example.test")
+    assert error.value.step == failure
+    assert error.value.errno_class == ("EACCES" if failure == "guest-spawn" else "none")
+
+
+def test_guest_does_not_initialize_without_supervisor_start_grant(monkeypatch) -> None:
+    read_work, write_work = Pipe(duplex=False)
+    read_ready, write_ready = Pipe(duplex=False)
+    read_result, write_result = Pipe(duplex=False)
+    initialize = Mock()
+    monkeypatch.setattr(container_guest, "_initialize_guest", initialize)
+    with read_work, write_work, read_ready, write_ready, read_result, write_result:
+        write_work.close()
+        assert container_guest._guest_main(
+            os.dup(write_ready.fileno()), os.dup(read_work.fileno()), os.dup(write_result.fileno()),
+        ) == 1
+    initialize.assert_not_called()
+
+
+@pytest.mark.parametrize(("field", "bad_value"), [
+    ("capability_bit", -1), ("capability_bit", 64), ("capability_bit", True),
+    ("errno_class", "injected untrusted text"), ("reason", "arbitrary"), ("stage", "ready"),
+])
+def test_supervisor_diagnostic_rejects_unbounded_fields(field, bad_value) -> None:
+    payload = guest_diagnostic_payload("guest-init", SupervisorPrivilegeError("bounding-drop", errno.EPERM, bit=5))
+    payload[field] = bad_value
+    payload["signature"] = guest_diagnostic_signature("key", 1, 2, payload)
+    with pytest.raises(AuthenticationError):
+        verify_guest_diagnostic("key", 1, 2, payload)

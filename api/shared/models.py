@@ -166,6 +166,8 @@ class ContainerQualificationEvidence(TypedDict, total=False):
     exception_class: str
     reason: str
     child_returncode: int | None
+    errno_class: str
+    capability_bit: int
     startup_facts: ContainerStartupEvidence
     close_code: int
     close_category: str
@@ -183,6 +185,7 @@ class CloudflareDeploymentEvidence(BaseModel):
     ingress_verified_at: datetime | None = None
     signed_canary_at: datetime | None = None
     container_qualification: ContainerQualificationEvidence | None = None
+    container_qualification_evidence_error: Literal["ValidationError"] | None = None
 
 
 CloudflareReachabilityMode = Literal["existing_https_endpoint", "managed_tunnel"]

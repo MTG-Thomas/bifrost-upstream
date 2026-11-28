@@ -5,7 +5,15 @@ import hmac
 import json
 from typing import Any, Literal, get_args
 
-from src.worker.remote.guest_init import INIT_REASONS, GuestFacts, GuestInitError, valid_guest_facts
+from src.worker.remote.guest_init import (
+    INIT_REASONS,
+    SUPERVISOR_ERRNO_CLASSES,
+    SUPERVISOR_PRIVILEGE_STEPS,
+    GuestFacts,
+    GuestInitError,
+    SupervisorPrivilegeError,
+    valid_guest_facts,
+)
 from src.worker.remote.protocol import AuthenticationError
 
 GuestStage = Literal[
@@ -48,6 +56,12 @@ def guest_diagnostic_payload(
     facts = {"startup_facts": startup_facts} if startup_facts else {}
     if error is None:
         return {"event": "guest_stage", "stage": stage, **facts}
+    if isinstance(error, SupervisorPrivilegeError):
+        return {
+            "event": "guest_fatal", "stage": stage, "exception_class": "SupervisorPrivilegeError",
+            "reason": error.step, "errno_class": error.errno_class,
+            **({"capability_bit": error.bit} if error.bit is not None else {}),
+        }
     if isinstance(error, GuestInitError):
         return {
             "event": "guest_fatal", "stage": stage, "exception_class": "GuestInitError",
@@ -96,7 +110,16 @@ def verify_guest_diagnostic(secret: str, generation: int, sequence: int, payload
     elif event == "guest_fatal":
         name = body.get("exception_class")
         expected = {"event", "stage", "exception_class", "reason"}
-        if name == "GuestInitError":
+        if name == "SupervisorPrivilegeError":
+            reason = body.get("reason")
+            bit = body.get("capability_bit")
+            valid &= (
+                stage == "guest-init" and reason in SUPERVISOR_PRIVILEGE_STEPS
+                and body.get("errno_class") in SUPERVISOR_ERRNO_CLASSES
+                and fields == expected | {"errno_class"} | ({"capability_bit"} if reason == "bounding-drop" else set())
+                and (reason != "bounding-drop" or (type(bit) is int and 0 <= bit < 64))
+            )
+        elif name == "GuestInitError":
             reason = body.get("reason")
             code = body.get("child_returncode")
             valid &= (

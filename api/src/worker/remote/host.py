@@ -2107,12 +2107,13 @@ class RemoteControlHost:
             if hello.execution_lane == "fast_path" and ("workflow.execute", 2) not in bootstrap["handlers"]:
                 raise AuthenticationError("Fast Path workers must support workflow.execute version 2")
             credential_protocol = hello_credential_protocol(initial)
+            diagnostic_only = hello.container_release is not None and initial.get("handlers") == []
             if hello.container_release is not None and (
                 credential_protocol != CLOUDFLARE_CREDENTIAL_PROTOCOL
-                or initial.get("handlers") != [list(CLOUDFLARE_WORKFLOW_HANDLER)]
+                or (not diagnostic_only and initial.get("handlers") != [list(CLOUDFLARE_WORKFLOW_HANDLER)])
             ):
                 raise ProtocolError("Managed Containers require protocol 2 and the Normal workflow handler")
-            if containers:
+            if containers and not diagnostic_only:
                 base = [list(CLOUDFLARE_WORKFLOW_HANDLER)]
                 staged = [*base, [SOLUTION_GIT_CAPABILITY, 1]]
                 if initial.get("handlers") == staged:
@@ -2427,8 +2428,9 @@ async def _write_guest_socket_evidence(
                 fatal_stage=diagnostic["stage"], fatal_generation=lease.session_generation,
                 exception_class=diagnostic["exception_class"], reason=diagnostic["reason"],
             )
-            if "child_returncode" in diagnostic:
-                evidence["child_returncode"] = diagnostic["child_returncode"]
+            for field in ("child_returncode", "errno_class", "capability_bit"):
+                if field in diagnostic:
+                    evidence[field] = diagnostic[field]
     if evidence != previous:
         pin.container_envelope = {**pin.container_envelope, "guest_diagnostic": evidence}
 

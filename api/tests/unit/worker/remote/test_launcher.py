@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import signal
@@ -19,6 +20,7 @@ from websockets.frames import Close
 from src.services.execution.container_result import InvalidContainerResult
 from src.worker.network import worker_network
 from src.worker.remote.guest_diagnostics import close_evidence, guest_diagnostic_payload, verify_guest_diagnostic
+from src.worker.remote.guest_init import SupervisorPrivilegeError
 from src.worker.remote.identity import LauncherIdentity
 from src.worker.remote.launcher import (
     Launcher,
@@ -27,7 +29,74 @@ from src.worker.remote.launcher import (
     _load_container_lifetime,
     _load_containers_control_secret,
 )
-from src.worker.remote.protocol import STATIC_INCARNATION_LOST, ControlEnvelope
+from src.worker.remote.protocol import STATIC_INCARNATION_LOST, ControlEnvelope, SignedHello, verify_hello
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session", ["accepted", "refused", "privileges-retained"])
+async def test_failed_supervisor_only_opens_signed_diagnostic_session(monkeypatch, session) -> None:
+    from src.worker.remote import launcher as launcher_module
+
+    secret = "fixture-control-key"
+    identity = LauncherIdentity(uuid4(), uuid4(), None, None, "fixture", "external", "fixture")
+    monkeypatch.setenv("BIFROST_API_URL", "https://ingress.example.test")
+    monkeypatch.setenv("BIFROST_BAKED_WHEELS_ONLY", "1")
+    monkeypatch.setenv("BIFROST_CONTAINER_RELEASE", "a" * 64)
+    monkeypatch.setenv("BIFROST_WORKER_CONTROL_SECRET", secret)
+    monkeypatch.delenv("BIFROST_CONTAINER_PROBE_NONCE", raising=False)
+    monkeypatch.setattr(launcher_module, "load_launcher_identity", lambda: identity)
+    monkeypatch.setattr(launcher_module, "load_control_headers", lambda _url: {"test": "header"})
+    monkeypatch.setattr(launcher_module, "_load_container_lifetime", lambda: (60, 120))
+    monkeypatch.setattr(launcher_module.ContainerGuest, "start_image", Mock(
+        side_effect=SupervisorPrivilegeError("bounding-drop", errno.EPERM, bit=5),
+    ))
+    drop = Mock(side_effect=PermissionError() if session == "privileges-retained" else None)
+    monkeypatch.setattr(launcher_module, "drop_failed_supervisor_privileges", drop)
+    load_secret = Mock(return_value=secret)
+    monkeypatch.setattr(launcher_module, "_load_containers_control_secret", load_secret)
+    monkeypatch.setattr(signal, "signal", Mock())
+    monkeypatch.setattr(signal, "setitimer", Mock())
+    monkeypatch.setattr(asyncio.get_running_loop(), "add_signal_handler", Mock())
+    start = AsyncMock()
+    monkeypatch.setattr(Launcher, "start", start)
+    connect_attempts = []
+    socket = SimpleNamespace(send=AsyncMock(), close=AsyncMock(), recv=AsyncMock(side_effect=[
+        json.dumps({"event": "welcome" if session == "accepted" else "refused", "session_generation": 1}),
+        ControlEnvelope(1, 1, "bootstrap", {"requirements_content": None, "ttl_ms": 1000}).to_json(),
+    ]))
+
+    @asynccontextmanager
+    async def connect(_url, _headers, *, container_intercept):
+        assert container_intercept
+        drop.assert_called_once()
+        load_secret.assert_called_once()
+        connect_attempts.append(1)
+        yield socket
+
+    monkeypatch.setattr(launcher_module, "connect_control", connect)
+    assert await launcher_module._run_launcher() == 1
+    start.assert_not_awaited()
+    if session == "privileges-retained":
+        assert not connect_attempts
+        load_secret.assert_not_called()
+        socket.send.assert_not_awaited()
+        return
+    assert len(connect_attempts) == 1
+    messages = [call.args[0] for call in socket.send.await_args_list]
+    hello = json.loads(messages[0])
+    assert hello["handlers"] == []
+    assert verify_hello(secret, SignedHello.from_dict(hello["hello"])).incarnation_id == identity.incarnation_id
+    if session == "refused":
+        assert len(messages) == 1
+        return
+    assert len(messages) == 2
+    frame = ControlEnvelope.from_json(messages[1])
+    assert verify_guest_diagnostic(secret, 1, frame.sequence, frame.payload) == {
+        "event": "guest_fatal", "stage": "guest-init",
+        "exception_class": "SupervisorPrivilegeError", "reason": "bounding-drop",
+        "errno_class": "EPERM", "capability_bit": 5,
+    }
+    socket.close.assert_awaited_once_with(code=1011, reason="Launcher supervision failed")
 
 
 @pytest.mark.asyncio

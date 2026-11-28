@@ -19,6 +19,53 @@ def set_init_inheritable(value, container_guest):
     assert int(container_guest.proc_status()["CapInh"], 16) == value
 
 
+def deny_bounding_drop(partial, container_guest):
+    import ctypes
+    import errno
+
+    class Comparison(ctypes.Structure):
+        _fields_ = [
+            ("arg", ctypes.c_uint), ("op", ctypes.c_int),
+            ("datum_a", ctypes.c_uint64), ("datum_b", ctypes.c_uint64),
+        ]
+
+    seccomp = ctypes.CDLL("libseccomp.so.2")
+    seccomp.seccomp_init.argtypes = [ctypes.c_uint32]
+    seccomp.seccomp_init.restype = ctypes.c_void_p
+    seccomp.seccomp_syscall_resolve_name.argtypes = [ctypes.c_char_p]
+    seccomp.seccomp_rule_add_array.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint, ctypes.POINTER(Comparison),
+    ]
+    seccomp.seccomp_load.argtypes = [ctypes.c_void_p]
+    seccomp.seccomp_release.argtypes = [ctypes.c_void_p]
+    bounding = int(container_guest.proc_status()["CapBnd"], 16)
+    bits = [bit for bit in range(bounding.bit_length()) if bounding & (1 << bit)]
+    assert len(bits) > 1
+    # Stack a narrower in-process filter over Docker's original seccomp policy.
+    comparisons = [Comparison(0, 4, container_guest.PR_CAPBSET_DROP, 0)]  # SCMP_CMP_EQ
+    if partial:
+        comparisons.append(Comparison(1, 4, bits[1], 0))
+    args = (Comparison * len(comparisons))(*comparisons)
+    ctx = seccomp.seccomp_init(0x7fff0000)  # SCMP_ACT_ALLOW
+    assert ctx
+    try:
+        assert seccomp.seccomp_rule_add_array(
+            ctx, 0x00050000 | errno.EPERM, seccomp.seccomp_syscall_resolve_name(b"prctl"), len(args), args,
+        ) == 0
+        assert seccomp.seccomp_load(ctx) == 0
+    finally:
+        seccomp.seccomp_release(ctx)
+    print(f"bifrost-local-seccomp-denied-bit: {bits[1 if partial else 0]}", flush=True)
+    prctl = container_guest._prctl
+
+    def witness_drop(option, value):
+        prctl(option, value)
+        if option == container_guest.PR_CAPBSET_DROP:
+            print(f"bifrost-local-bounding-drop-succeeded: {value}", flush=True)
+
+    container_guest._prctl = witness_drop
+
+
 def install_startup_fault(mode):
     from src.worker.remote import container_guest
 
@@ -30,6 +77,8 @@ def install_startup_fault(mode):
         raise error
 
     if os.getpid() == 1:
+        if mode in ("supervisor-seccomp", "supervisor-seccomp-partial"):
+            deny_bounding_drop(mode.endswith("-partial"), container_guest)
         if mode == "hosted-capabilities":
             bounding = int(container_guest.proc_status()["CapBnd"], 16)
             assert bounding
@@ -55,6 +104,7 @@ def install_startup_fault(mode):
 
         def start_child(args, **kwargs):
             if args[1:3] == ["-m", container_guest.__name__]:
+                assert not mode.startswith("supervisor-seccomp"), "a denied bounding drop reached Popen"
                 if mode == "capabilities":
                     assert int(container_guest.proc_status()["CapInh"], 16) == 0
                     set_init_inheritable(container_guest.CAP_KILL, container_guest)

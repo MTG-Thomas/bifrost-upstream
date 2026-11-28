@@ -231,7 +231,15 @@ function witnessGuestHook(guest, kind, marker = faultMarker) {
   const info = JSON.parse(execFileSync('docker', ['image', 'inspect', guest.Image], {encoding: 'utf8'}))[0];
   const image = config.containers.image;
   if (image.includes('@sha256:')) assert.ok(info.RepoDigests.includes(image));
-  event(kind, {image_digest: image.split('@')[1] ?? null, hook_loaded_from_read_only_mount: true});
+  const result = {image_digest: image.split('@')[1] ?? null, hook_loaded_from_read_only_mount: true};
+  if (guestFatalMode.startsWith('supervisor-seccomp')) {
+    const denied = /^bifrost-local-seccomp-denied-bit: (\d+)$/m.exec(logs);
+    assert.ok(denied);
+    result.denied_bit = Number(denied[1]);
+    result.completed_drops = [...logs.matchAll(/^bifrost-local-bounding-drop-succeeded: (\d+)$/gm)]
+      .map((entry) => Number(entry[1]));
+  }
+  event(kind, result);
 }
 
 function placementInventory(application) {

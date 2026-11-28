@@ -36,9 +36,10 @@ from src.services.execution.memory_monitor import (
 )
 from src.services.execution.template_process import TemplateProcess
 from src.worker.remote.container_egress import run_container_egress_checks
-from src.worker.remote.container_guest import ContainerGuest
+from src.worker.remote.container_guest import ContainerGuest, drop_failed_supervisor_privileges
 from src.worker.remote.control_connection import connect_control, load_control_headers
 from src.worker.remote.guest_diagnostics import GuestStage, guest_diagnostic_payload, guest_diagnostic_signature
+from src.worker.remote.guest_init import SupervisorPrivilegeError
 from src.worker.remote.identity import LauncherIdentity, load_launcher_identity
 from src.worker.remote.platform_stage_protocol import StageBinding
 from src.worker.remote.platform_stages import PlatformStages, StageProgram
@@ -280,6 +281,7 @@ class Launcher:
         container_idle_seconds: int | None = None,
         container_deadline: float | None = None,
         container_guest: ContainerGuest | None = None,
+        diagnostic_only: bool = False,
     ) -> None:
         self.socket = socket
         self.identity = identity
@@ -291,6 +293,7 @@ class Launcher:
         self.container_idle_seconds = container_idle_seconds
         self.container_deadline = container_deadline
         self.container_guest = container_guest
+        self.diagnostic_only = diagnostic_only
         self._guest_finished = False
         self._container_lease_until: float | None = None
         self._guest_stage: GuestStage = "hello"
@@ -549,6 +552,7 @@ class Launcher:
             "version": get_version(),
             "credential_protocol": CREDENTIAL_PROTOCOL,
             "handlers": (
+                () if self.diagnostic_only else
                 (CLOUDFLARE_WORKFLOW_HANDLER, (SOLUTION_GIT_CAPABILITY, 1))
                 if self.platform_stages is not None else
                 (CLOUDFLARE_WORKFLOW_HANDLER,) if self.containers else EXECUTION_HANDLERS
@@ -1217,6 +1221,7 @@ async def _run_launcher(
     remaining = None
     container_deadline = None
     container_guest = None
+    startup_failure = None
     if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1":
         container_release = os.environ.pop("BIFROST_CONTAINER_RELEASE", "")
         probe_nonce = os.environ.pop("BIFROST_CONTAINER_PROBE_NONCE", None)
@@ -1226,8 +1231,23 @@ async def _run_launcher(
             raise RuntimeError("Invalid Container qualification challenge")
         remaining, idle_seconds = _load_container_lifetime()
         container_deadline = time.monotonic() + remaining
-        container_guest = ContainerGuest.start_image(api_url)
-    secret = _load_containers_control_secret() if containers else os.environ["BIFROST_SECRET_KEY"]
+        try:
+            container_guest = ContainerGuest.start_image(api_url)
+        except SupervisorPrivilegeError as exc:
+            startup_failure = exc
+            logger.error("%s", startup_failure)
+            try:
+                drop_failed_supervisor_privileges()
+            except (OSError, SupervisorPrivilegeError, KeyError, ValueError):
+                logger.error("Managed Container could not enter the unprivileged diagnostic identity")
+                return 1
+    try:
+        secret = _load_containers_control_secret() if containers else os.environ["BIFROST_SECRET_KEY"]
+    except (OSError, RuntimeError, KeyError):
+        if startup_failure is None:
+            raise
+        logger.error("Managed Container could not protect its diagnostic credential")
+        return 1
     launcher: Launcher | None = None
     candidate: Launcher | None = None
     stopping = asyncio.Event()
@@ -1259,6 +1279,7 @@ async def _run_launcher(
                                 container_idle_seconds=idle_seconds,
                                 container_deadline=container_deadline,
                                 container_guest=container_guest,
+                                diagnostic_only=startup_failure is not None,
                             )
                         else:
                             # A lost welcome may follow a committed enrollment.
@@ -1269,6 +1290,13 @@ async def _run_launcher(
                         # keep the canonical row alive while it waits for the
                         # inventory below; no work is ready to route yet.
                         await candidate.hello({})
+                        if startup_failure is not None:
+                            # Never start requirements, advertise inventory, or
+                            # read work commands after failing physical setup.
+                            candidate.failed = True
+                            candidate._guest_stage = "guest-init"
+                            await candidate._close_failed_guest(startup_failure)
+                            return 1
                         launcher = candidate
                         try:
                             await candidate._send_guest_diagnostic()
@@ -1327,6 +1355,9 @@ async def _run_launcher(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if startup_failure is not None:
+                    logger.error("Managed Container could not establish its diagnostic session (%s)", type(exc).__name__)
+                    return 1
                 if (
                     candidate is not None and identity.form == "static" and not stopping.is_set()
                     and isinstance(exc, ConnectionClosed) and exc.rcvd is not None

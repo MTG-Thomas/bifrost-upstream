@@ -9,6 +9,7 @@ export const hostedCapabilityMarker = 'bifrost-local-hosted-capabilities: PID 1 
 export const guestInitFaults = [
   'identity', 'prctl', 'capabilities', 'ca-unreadable', 'scratch-unwritable',
   'runtime-import', 'settings', 'hook', 'ready-exit', 'ready-signal',
+  'supervisor-seccomp', 'supervisor-seccomp-partial',
 ];
 
 export function mountFaultHook(launch, {mode, image, source}) {

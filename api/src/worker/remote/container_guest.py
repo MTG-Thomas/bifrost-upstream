@@ -10,10 +10,11 @@ import os
 import signal
 import subprocess
 import sys
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from multiprocessing.connection import Connection
 from pathlib import Path
 from time import monotonic
+from typing import Iterator
 
 from src.services.execution.container_result import ContainerResultReader, ContainerResultWriter
 from src.services.execution.template_process import (
@@ -31,6 +32,8 @@ from src.worker.remote.guest_init import (
     GuestFacts,
     GuestInitError,
     GuestInitPhase,
+    SupervisorPrivilegeError,
+    SupervisorPrivilegeStep,
     collect_guest_facts,
     proc_status,
     valid_guest_facts,
@@ -41,8 +44,6 @@ GUEST_UID = 1001
 PR_SET_KEEPCAPS = 8
 PR_CAPBSET_DROP = 24
 PR_SET_NO_NEW_PRIVS = 38
-PR_CAP_AMBIENT = 47
-PR_CAP_AMBIENT_CLEAR_ALL = 4
 CAP_KILL = 1 << 5
 CAPS_V3 = 0x20080522
 FORCED_STOP_SECONDS = 2
@@ -59,51 +60,98 @@ class _CapabilitySet(ctypes.Structure):
 
 def _prctl(option: int, value: int) -> None:
     if ctypes.CDLL(None, use_errno=True).prctl(option, value, 0, 0, 0) != 0:
-        raise RuntimeError("Container privilege setup failed")
+        raise OSError(ctypes.get_errno(), "Container prctl failed")
+
+
+@contextmanager
+def _privilege_step(step: SupervisorPrivilegeStep, *, bit: int | None = None) -> Iterator[None]:
+    try:
+        yield
+    except OSError as exc:
+        raise SupervisorPrivilegeError(step, exc.errno, bit=bit) from None
 
 
 def _require_single_threaded_init() -> None:
-    if len(list(Path("/proc/self/task").iterdir())) != 1:
-        raise RuntimeError("Container supervisor must be single-threaded before dropping privileges")
+    with _privilege_step("single-thread"):
+        if len(list(Path("/proc/self/task").iterdir())) != 1:
+            raise SupervisorPrivilegeError("single-thread")
 
 
 def _set_capability_masks(masks: ctypes.Array[_CapabilitySet]) -> None:
     header = _CapabilityHeader(CAPS_V3, 0)
     if ctypes.CDLL(None, use_errno=True).capset(ctypes.byref(header), ctypes.byref(masks)) != 0:
-        raise RuntimeError("Container supervisor could not set capability masks")
+        raise OSError(ctypes.get_errno(), "Container capset failed")
 
 
 def _prepare_guest_capabilities() -> None:
     _require_single_threaded_init()
     header = _CapabilityHeader(CAPS_V3, 0)
     masks = (_CapabilitySet * 2)()
-    if ctypes.CDLL(None, use_errno=True).capget(ctypes.byref(header), ctypes.byref(masks)) != 0:
-        raise RuntimeError("Container supervisor could not read capability masks")
+    with _privilege_step("capget"):
+        if ctypes.CDLL(None, use_errno=True).capget(ctypes.byref(header), ctypes.byref(masks)) != 0:
+            raise OSError(ctypes.get_errno(), "Container capget failed")
     # The UID transition leaves inheritable capabilities intact. Dropping the
     # bounding set limits future execs but preserves the current permitted and
     # effective sets for setgroups, setgid, setuid, and the supervisor's drop.
+    # Clearing inheritable also clears ambient by the kernel invariant.
     # https://man7.org/linux/man-pages/man7/capabilities.7.html
     for mask in masks:
         mask.inheritable = 0
-    _set_capability_masks(masks)
-    _prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL)
-    bounding = int(proc_status()["CapBnd"], 16)
+    with _privilege_step("inheritable-clear"):
+        _set_capability_masks(masks)
+    with _privilege_step("bounding-read"):
+        try:
+            bounding = int(proc_status()["CapBnd"], 16)
+        except (KeyError, ValueError):
+            raise SupervisorPrivilegeError("bounding-read") from None
+        if not 0 <= bounding < 2**64:
+            raise SupervisorPrivilegeError("bounding-read")
     for capability in range(bounding.bit_length()):
         if bounding & (1 << capability):
-            _prctl(PR_CAPBSET_DROP, capability)
+            with _privilege_step("bounding-drop", bit=capability):
+                _prctl(PR_CAPBSET_DROP, capability)
+    with _privilege_step("no-new-privs"):
+        _prctl(PR_SET_NO_NEW_PRIVS, 1)
 
 
 def _drop_supervisor_privileges() -> None:
     _require_single_threaded_init()
-    _prctl(PR_SET_KEEPCAPS, 1)
-    os.setgroups([])
-    os.setresgid(SUPERVISOR_UID, SUPERVISOR_UID, SUPERVISOR_UID)
-    os.setresuid(SUPERVISOR_UID, SUPERVISOR_UID, SUPERVISOR_UID)
+    with _privilege_step("keepcaps-enable"):
+        _prctl(PR_SET_KEEPCAPS, 1)
+    with _privilege_step("setgroups"):
+        os.setgroups([])
+    with _privilege_step("setresgid"):
+        os.setresgid(SUPERVISOR_UID, SUPERVISOR_UID, SUPERVISOR_UID)
+    with _privilege_step("setresuid"):
+        os.setresuid(SUPERVISOR_UID, SUPERVISOR_UID, SUPERVISOR_UID)
     masks = (_CapabilitySet * 2)(_CapabilitySet(CAP_KILL, CAP_KILL, 0), _CapabilitySet())
-    _set_capability_masks(masks)
-    _prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL)
-    _prctl(PR_SET_KEEPCAPS, 0)
-    _prctl(PR_SET_NO_NEW_PRIVS, 1)
+    with _privilege_step("supervisor-capset"):
+        _set_capability_masks(masks)
+    with _privilege_step("keepcaps-disable"):
+        _prctl(PR_SET_KEEPCAPS, 0)
+
+
+def drop_failed_supervisor_privileges() -> None:
+    """Allow only the in-process diagnostic after proving an unprivileged identity."""
+    if os.getpid() != 1:
+        raise SupervisorPrivilegeError("supervisor-identity")
+    _require_single_threaded_init()
+    uid = (SUPERVISOR_UID,) * 3
+    if os.getgroups():
+        os.setgroups([])
+    if os.getresgid() != uid:
+        os.setgid(SUPERVISOR_UID)
+    if os.getresuid() != uid:
+        os.setuid(SUPERVISOR_UID)
+    capability_sets = ("CapEff", "CapPrm", "CapInh", "CapAmb")
+    status = proc_status()
+    if any(int(status[key], 16) for key in capability_sets):
+        _set_capability_masks((_CapabilitySet * 2)())
+        status = proc_status()
+    if os.getresuid() != uid or os.getresgid() != uid or os.getgroups() or any(
+        int(status[key], 16) for key in capability_sets
+    ):
+        raise SupervisorPrivilegeError("supervisor-identity")
 
 
 class ContainerGuest:
@@ -125,30 +173,40 @@ class ContainerGuest:
         # PID 1 reaps this dedicated guest's adopted descendants. Fail closed
         # if a provider does not expose the image's private PID namespace.
         if os.getuid() != 0 or os.getpid() != 1:
-            raise RuntimeError("Managed Container requires its image init and private PID namespace")
+            raise SupervisorPrivilegeError("supervisor-identity")
         _prepare_guest_capabilities()
         ready, ready_send = multiprocessing.Pipe(duplex=False)
         work_recv, work = multiprocessing.Pipe(duplex=False)
         result, result_send = multiprocessing.Pipe(duplex=False)
         fds = (ready_send.fileno(), work_recv.fileno(), result_send.fileno())
         try:
-            process = subprocess.Popen(
-                [sys.executable, "-m", __name__, *(str(fd) for fd in fds)],
-                pass_fds=fds, user=GUEST_UID, group=GUEST_UID, extra_groups=[], start_new_session=True,
-                cwd=GUEST_SCRATCH, stdin=subprocess.DEVNULL,
-                env={
-                    "PATH": "/usr/local/bin:/usr/bin:/bin",
-                    "HOME": GUEST_SCRATCH, "TMPDIR": GUEST_SCRATCH,
-                    "PYTHONPATH": "/app", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
-                    "SSL_CERT_FILE": str(GUEST_CA),
-                    "BIFROST_API_URL": ingress, "BIFROST_BAKED_WHEELS_ONLY": "1",
-                    "BIFROST_VERSION": os.environ.get("BIFROST_VERSION", ""),
-                },
-            )
+            with _privilege_step("guest-spawn"):
+                process = subprocess.Popen(
+                    [sys.executable, "-m", __name__, *(str(fd) for fd in fds)],
+                    pass_fds=fds, user=GUEST_UID, group=GUEST_UID, extra_groups=[], start_new_session=True,
+                    cwd=GUEST_SCRATCH, stdin=subprocess.DEVNULL,
+                    env={
+                        "PATH": "/usr/local/bin:/usr/bin:/bin",
+                        "HOME": GUEST_SCRATCH, "TMPDIR": GUEST_SCRATCH,
+                        "PYTHONPATH": "/app", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
+                        "SSL_CERT_FILE": str(GUEST_CA),
+                        "BIFROST_API_URL": ingress, "BIFROST_BAKED_WHEELS_ONLY": "1",
+                        "BIFROST_VERSION": os.environ.get("BIFROST_VERSION", ""),
+                    },
+                )
+            # The child waits on its work pipe before initializing. An error
+            # in the supervisor-only drop closes that pipe without a grant.
+            _drop_supervisor_privileges()
+            # wait_ready retains the child exit evidence if it already died.
+            with suppress(BrokenPipeError):
+                work.send_bytes(READY)
+        except BaseException:
+            for pipe in (ready, work, result):
+                pipe.close()
+            raise
         finally:
             for pipe in (ready_send, work_recv, result_send):
                 pipe.close()
-        _drop_supervisor_privileges()
         return cls(process, ready, work, result)
 
     def wait_ready(self) -> None:
@@ -323,10 +381,15 @@ def _initialize_guest(ready: Connection) -> bool:
 
 
 def _guest_main(ready_fd: int, work_fd: int, result_fd: int) -> int:
-    with Connection(ready_fd, readable=False) as ready:
-        if not _initialize_guest(ready):
-            return 1
     with Connection(work_fd, writable=False) as work, Connection(result_fd, readable=False) as result:
+        with Connection(ready_fd, readable=False) as ready:
+            try:
+                if work.recv_bytes(1) != READY:
+                    return 1
+            except (EOFError, OSError):
+                return 1
+            if not _initialize_guest(ready):
+                return 1
         _run_forked_child(work, ContainerResultWriter(result), "container-guest", False)
     return 0
 

@@ -365,6 +365,7 @@ async def deployment_evidence(db: AsyncSession, installation: CloudflareInstalla
         try:
             evidence.container_qualification = await container_qualification_evidence(db, installation.id)
         except ValidationError as exc:
+            evidence.container_qualification_evidence_error = "ValidationError"
             logger.warning("Cloudflare Container qualification evidence could not be read (%s)", type(exc).__name__)
     if installation.reachability_mode == "managed_tunnel":
         evidence.dns_verified_at = await db.scalar(select(func.max(CloudflareOwnedResource.observed_at)).where(

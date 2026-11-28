@@ -1871,6 +1871,7 @@ def exercise_image_preparation_failure(fixture, trial):
 GUEST_INIT_FAULTS = (
     "identity", "prctl", "capabilities", "ca-unreadable", "scratch-unwritable",
     "runtime-import", "settings", "hook", "ready-exit", "ready-signal",
+    "supervisor-seccomp", "supervisor-seccomp-partial",
 )
 
 
@@ -1892,7 +1893,14 @@ def exercise_guest_fatal(fixture, trial, *, reconnect=False, init_fault=None):
         result = state["result"]["container_qualification"]
         assert result["generation"] == result["fatal_generation"] == result["close_generation"] == (2 if reconnect else 1)
         assert result["stage"] == result["fatal_stage"] == ("guest-init" if init_fault else "requirements")
-        if init_fault:
+        supervisor_fault = init_fault in ("supervisor-seccomp", "supervisor-seccomp-partial")
+        if supervisor_fault:
+            assert result["exception_class"] == "SupervisorPrivilegeError"
+            assert (result["reason"], result["errno_class"]) == ("bounding-drop", "EPERM")
+            assert "startup_facts" not in result and "child_returncode" not in result
+            assert trial.sql(f"""SELECT w.supported_handlers FROM execution_workers w
+                JOIN cloudflare_worker_reservations r ON r.worker_id=w.id WHERE r.canary_job_id='{job}'""") == []
+        elif init_fault:
             assert result["exception_class"] == "GuestInitError" and result["reason"] == init_fault
             abrupt = {"ready-exit": 7, "ready-signal": -9}
             if init_fault in abrupt:
@@ -1925,6 +1933,12 @@ def exercise_guest_fatal(fixture, trial, *, reconnect=False, init_fault=None):
         assert image["hook_loaded_from_read_only_mount"] is True
         _, _, digest = fixture.cfg["containers"]["image"].partition("@")
         assert image["image_digest"] == (digest or None)
+        if supervisor_fault:
+            assert image["denied_bit"] == result["capability_bit"]
+            completed = image["completed_drops"]
+            assert bool(completed) == (init_fault == "supervisor-seccomp-partial")
+            assert all(bit < image["denied_bit"] for bit in completed)
+            evidence("supervisor-seccomp", {"denied_bit": image["denied_bit"], "completed_drops": completed})
         evidence("guest-fault-image", {"image_digest": image["image_digest"], "hook_loaded_from_read_only_mount": True})
         trial.record_enable_failure(state)
         evidence("guest-fatal-after-hello", result)

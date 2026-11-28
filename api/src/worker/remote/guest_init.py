@@ -1,10 +1,11 @@
 """Bounded, non-secret facts and readiness outcomes for the Linux guest."""
 
+import errno
 import os
 import re
 from contextlib import suppress
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 GUEST_CA = Path("/etc/cloudflare/certs/cloudflare-containers-ca.crt")
 GUEST_SCRATCH = "/workspace/guest"
@@ -35,6 +36,24 @@ INIT_REASONS = frozenset(INIT_CODES.values()) | {
     "ready-timeout", "ready-eof", "ready-length", "ready-unknown", "ready-io",
     "ready-exit", "ready-signal",
 }
+SupervisorPrivilegeStep = Literal[
+    "supervisor-identity", "single-thread", "capget", "inheritable-clear", "bounding-read", "bounding-drop",
+    "no-new-privs", "keepcaps-enable", "setgroups", "setresgid", "setresuid", "supervisor-capset",
+    "keepcaps-disable", "guest-spawn",
+]
+SUPERVISOR_PRIVILEGE_STEPS = get_args(SupervisorPrivilegeStep)
+SUPERVISOR_ERRNO_CLASSES = (
+    "EPERM", "EACCES", "EINVAL", "ENOSYS", "EAGAIN", "ENOMEM", "EIO", "ENOENT", "none", "other",
+)
+
+
+class SupervisorPrivilegeError(RuntimeError):
+    def __init__(self, step: SupervisorPrivilegeStep, code: int | None = None, *, bit: int | None = None):
+        name = errno.errorcode.get(code) if code is not None else "none"
+        self.errno_class = name if name is not None and name in SUPERVISOR_ERRNO_CLASSES else "other"
+        self.step = step
+        self.bit = bit
+        super().__init__(f"Managed Container supervisor setup failed: {step} ({self.errno_class})")
 
 
 class GuestInitError(RuntimeError):

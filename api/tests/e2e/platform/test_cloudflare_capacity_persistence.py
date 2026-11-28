@@ -3799,6 +3799,7 @@ async def test_capacity_http_serializes_container_startup_facts(db_session, inst
     assert response.status_code == 200, response.text
     if state == "incompatible-facts":
         assert response.json()["deployment"]["container_qualification"] is None
+        assert response.json()["deployment"]["container_qualification_evidence_error"] == "ValidationError"
         assert "qualification evidence could not be read (ValidationError)" in caplog.text
         assert "sensitive-invalid-fact" not in response.text + caplog.text
     else:
