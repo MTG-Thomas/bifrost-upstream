@@ -27,16 +27,34 @@ focused API and contract selection passed 185 tests. The full unit run
 passed 14,813 tests and 148 subtests. API quality, 27 runner tests, and 26
 Node tests passed.
 
-The full backend E2E gate is incomplete. Its only run on this candidate
+The original full backend E2E run on this candidate
 recorded 2,446 passes, 35 skips, two failures, and 19 setup errors before
 pytest timed out in the service-owner takeover test. PostgreSQL had reported
 a backend `SIGPIPE` and a crash recovery at 03:41:35 UTC. The final timeout
 followed repeated service fork refusals at the 85% memory-pressure threshold.
 The separate filtered platform run reported 390 passes and two static remote
-workflow start/result timeouts. The guest capability initialization path is
-not exercised by those static workflow tests. The underlying causes of the
-database signal and the static dispatch delays remain unconfirmed. Preserve
-the failed results as release evidence and hold publication for disposition.
+workflow start/result timeouts.
+
+The attempt-7 teardown log and `attempt-7-local-teardown.json` record eight
+containers before cleanup and zero remaining Compose resources by 01:26:26 UTC
+on November 28. The full backend, filtered backend, and browser runs started
+at 02:22:42, 03:50:59, and 04:56:31 UTC. The hosted project had already been
+removed. Docker's retained event history had no entries for the older window.
+The cause of the PostgreSQL signal remains unconfirmed.
+
+The isolated static comparison reproduced the pressure condition on both
+release candidates. `test_remote_reconnect_preserves_cancellation_of_the_original_child`
+timed out on both. `test_mixed_key_locals_complete_and_worker_accepts_next_execution`
+timed out on rc07 and passed on rc06 after a delay. On both runs the static
+executor reported `memory_pressured=true` while work remained pending. The
+unbounded nested Docker runners (`memory.max=max`) read the Proxmox host's
+65,552,580 kB total from `/proc/meminfo`, while CT128 itself reported its 12 GiB
+allocation. During the rc07 timeout, the runner had 9,548,480 kB available,
+which is 85.43% pressure. During the rc06 cancellation timeout it sampled as
+low as 8,832,468 kB available, or 86.53% pressure. The static test fixture
+constructs `Launcher` directly and does not call the baked-wheels, root PID 1
+Container startup or its capability helpers. The comparison did not require
+a product change or a timeout adjustment.
 
 TypeScript, lint, 4,516 Vitest tests, and 18 browser smoke tests passed.
 The full browser run completed with 223 passes and four failures. The
