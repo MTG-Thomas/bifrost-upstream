@@ -14,6 +14,25 @@ pins the commit before this documentation receipt. Its copy of this file
 therefore names the earlier candidate `25cfa4549`. Use this receipt for the
 exact tag target and commands.
 
+## CT128 Verification Hold
+
+The local Container startup comparison reproduced rc06’s failure with
+PID 1’s inheritable mask equal to its nonzero Docker bounding mask. Rc07
+reached READY with all five child masks at zero. The hosted-shaped run
+verified injection on three Docker placements, two settled canaries, the
+overflow workflow, and Disconnect with no owned resources remaining.
+
+The full backend E2E gate is incomplete. Its only run on this candidate
+recorded 2,446 passes, 35 skips, two failures, and 19 setup errors before
+pytest timed out in the service-owner takeover test. PostgreSQL had reported
+a backend `SIGPIPE` and a crash recovery at 03:41:35 UTC. The final timeout
+followed repeated service fork refusals at the 85% memory-pressure threshold.
+The separate filtered platform run reported 390 passes and two static remote
+workflow start/result timeouts. The guest capability initialization path is
+not exercised by those static workflow tests. The underlying causes of the
+database signal and the static dispatch delays remain unconfirmed. Preserve
+the failed results as release evidence and hold publication for disposition.
+
 ## Fork, workflow and tag
 
 - `git ls-remote --symref personal HEAD refs/heads/main` reported that the
