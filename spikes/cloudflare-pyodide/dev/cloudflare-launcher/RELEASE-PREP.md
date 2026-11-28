@@ -21,6 +21,11 @@ PID 1’s inheritable mask equal to its nonzero Docker bounding mask. Rc07
 reached READY with all five child masks at zero. The hosted-shaped run
 verified injection on three Docker placements, two settled canaries, the
 overflow workflow, and Disconnect with no owned resources remaining.
+All 14 hosted-shaped rehearsals and 14 Docker startup checks passed,
+including the deliberately injected post-scrub capability failure. The
+focused API and contract selection passed 185 tests. The full unit run
+passed 14,813 tests and 148 subtests. API quality, 27 runner tests, and 26
+Node tests passed.
 
 The full backend E2E gate is incomplete. Its only run on this candidate
 recorded 2,446 passes, 35 skips, two failures, and 19 setup errors before
@@ -32,6 +37,14 @@ workflow start/result timeouts. The guest capability initialization path is
 not exercised by those static workflow tests. The underlying causes of the
 database signal and the static dispatch delays remain unconfirmed. Preserve
 the failed results as release evidence and hold publication for disposition.
+
+TypeScript, lint, 4,516 Vitest tests, and 18 browser smoke tests passed.
+The full browser run completed with 223 passes and four failures. The
+Workers-only Capacity test waited five seconds for token rotation to show
+`CF_MANAGEMENT_CREDENTIAL`. The job recorded that result after 5.544 seconds.
+The other failures were an impersonation logout timeout, a realtime-policy
+fixture setup timeout, and a Solution activation job still running at the
+test deadline.
 
 ## Fork, workflow and tag
 
