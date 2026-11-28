@@ -210,6 +210,7 @@ def test_prepare_guest_capabilities_clears_both_inheritable_words(monkeypatch) -
     kernel.capget.side_effect = capget
     kernel.capset.side_effect = capset
     monkeypatch.setattr(guest.ctypes, "CDLL", Mock(return_value=kernel))
+    monkeypatch.setattr(guest, "_require_single_threaded_init", Mock())
     monkeypatch.setattr(guest, "proc_status", lambda: {"CapBnd": "0000001000000020"})
 
     guest._prepare_guest_capabilities()
@@ -221,13 +222,18 @@ def test_prepare_guest_capabilities_clears_both_inheritable_words(monkeypatch) -
     assert [call[0] for call in kernel.mock_calls] == ["capget", "capset", "prctl", "prctl", "prctl"]
 
 
-@pytest.mark.parametrize("failure", ["capget", "capset", "prctl"])
-def test_prepare_guest_capabilities_fails_closed_on_kernel_error(monkeypatch, failure) -> None:
+@pytest.mark.parametrize(("failure", "message"), [
+    ("capget", "could not read capability masks"),
+    ("capset", "could not set capability masks"),
+    ("prctl", "privilege setup failed"),
+])
+def test_prepare_guest_capabilities_fails_closed_on_kernel_error(monkeypatch, failure, message) -> None:
     guest = container_guest
     kernel = Mock()
     kernel.capget.return_value = kernel.capset.return_value = kernel.prctl.return_value = 0
     getattr(kernel, failure).return_value = -1
     monkeypatch.setattr(guest.ctypes, "CDLL", Mock(return_value=kernel))
+    monkeypatch.setattr(guest, "_require_single_threaded_init", Mock())
 
-    with pytest.raises(RuntimeError, match="Container"):
+    with pytest.raises(RuntimeError, match=message):
         guest._prepare_guest_capabilities()
