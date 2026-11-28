@@ -11,7 +11,7 @@ The approved release body remains byte-identical to rc06. Push the pinned candid
 `trial/cloudflare-containers-20261124` on `personal`
 (`MTG-Thomas/bifrost-upstream`). Keep the fork's `main` unchanged. The tag
 pins the commit before this documentation receipt. Its copy of this file
-therefore names the earlier candidate `e5421ff73`. Use this receipt for the
+therefore names the earlier candidate `d00658491`. Use this receipt for the
 exact tag target and commands.
 
 ## Fork, workflow and tag
