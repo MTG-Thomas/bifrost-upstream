@@ -1,5 +1,6 @@
 """Container guest identity, readiness and process retirement contracts."""
 
+import ctypes
 import json
 import os
 import signal
@@ -186,3 +187,47 @@ def test_supervisor_refuses_capability_changes_with_multiple_threads(monkeypatch
     with pytest.raises(RuntimeError, match="single-threaded"):
         container_guest._drop_supervisor_privileges()
     prctl.assert_not_called()
+
+
+def test_prepare_guest_capabilities_clears_both_inheritable_words(monkeypatch) -> None:
+    guest = container_guest
+    kernel = Mock()
+    kernel.capset.return_value = kernel.prctl.return_value = 0
+
+    def capget(_header, masks):
+        words = ctypes.cast(masks, ctypes.POINTER(guest._CapabilitySet * 2)).contents
+        words[0] = guest._CapabilitySet(0x1E0, 0x1F0, 0x20)
+        words[1] = guest._CapabilitySet(0x10, 0x30, 0x10)
+        return 0
+
+    written = []
+
+    def capset(_header, masks):
+        words = ctypes.cast(masks, ctypes.POINTER(guest._CapabilitySet * 2)).contents
+        written.extend((mask.effective, mask.permitted, mask.inheritable) for mask in words)
+        return 0
+
+    kernel.capget.side_effect = capget
+    kernel.capset.side_effect = capset
+    monkeypatch.setattr(guest.ctypes, "CDLL", Mock(return_value=kernel))
+    monkeypatch.setattr(guest, "proc_status", lambda: {"CapBnd": "0000001000000020"})
+
+    guest._prepare_guest_capabilities()
+
+    assert written == [(0x1E0, 0x1F0, 0), (0x10, 0x30, 0)]
+    assert [call.args for call in kernel.prctl.call_args_list] == [
+        (47, 4, 0, 0, 0), (24, 5, 0, 0, 0), (24, 36, 0, 0, 0),
+    ]
+    assert [call[0] for call in kernel.mock_calls] == ["capget", "capset", "prctl", "prctl", "prctl"]
+
+
+@pytest.mark.parametrize("failure", ["capget", "capset", "prctl"])
+def test_prepare_guest_capabilities_fails_closed_on_kernel_error(monkeypatch, failure) -> None:
+    guest = container_guest
+    kernel = Mock()
+    kernel.capget.return_value = kernel.capset.return_value = kernel.prctl.return_value = 0
+    getattr(kernel, failure).return_value = -1
+    monkeypatch.setattr(guest.ctypes, "CDLL", Mock(return_value=kernel))
+
+    with pytest.raises(RuntimeError, match="Container"):
+        guest._prepare_guest_capabilities()

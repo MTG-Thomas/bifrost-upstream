@@ -1,9 +1,22 @@
-"""Inject one failure in the local rehearsal after signed hello and bootstrap."""
+"""Set up a local Container startup condition or inject one guest failure."""
 
 import os
 import sys
 from functools import lru_cache
 from pathlib import Path
+
+
+def set_init_inheritable(value, container_guest):
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    header = container_guest._CapabilityHeader(container_guest.CAPS_V3, 0)
+    masks = (container_guest._CapabilitySet * 2)()
+    assert libc.capget(ctypes.byref(header), ctypes.byref(masks)) == 0
+    for index, mask in enumerate(masks):
+        mask.inheritable = (value >> (32 * index)) & 0xffffffff
+    assert libc.capset(ctypes.byref(header), ctypes.byref(masks)) == 0
+    assert int(container_guest.proc_status()["CapInh"], 16) == value
 
 
 def install_startup_fault(mode):
@@ -17,6 +30,11 @@ def install_startup_fault(mode):
         raise error
 
     if os.getpid() == 1:
+        if mode == "hosted-capabilities":
+            bounding = int(container_guest.proc_status()["CapBnd"], 16)
+            assert bounding
+            set_init_inheritable(bounding, container_guest)
+            print("bifrost-local-hosted-capabilities: PID 1 inheritable equals nonzero bounding", flush=True)
         # Modify only the disposable guest's view. The supervisor still uses
         # the real injected CA for its signed control connection.
         if mode == "ca-unreadable":
@@ -24,22 +42,26 @@ def install_startup_fault(mode):
         if mode == "scratch-unwritable":
             os.chmod(container_guest.GUEST_SCRATCH, 0o500)
         if mode == "capabilities":
-            import ctypes
+            # Preserve one bounding bit so the fixture can inject an inheritable
+            # capability immediately before the UID transition, after cleanup.
+            prctl = container_guest._prctl
 
-            libc = ctypes.CDLL(None, use_errno=True)
-            header = container_guest._CapabilityHeader(container_guest.CAPS_V3, 0)
-            mask = (container_guest._CapabilitySet * 2)()
-            assert libc.capget(ctypes.byref(header), ctypes.byref(mask)) == 0
-            assert mask[0].permitted & container_guest.CAP_KILL
-            mask[0].inheritable |= container_guest.CAP_KILL
-            assert libc.capset(ctypes.byref(header), ctypes.byref(mask)) == 0
+            def keep_kill(option, value):
+                if (option, value) != (container_guest.PR_CAPBSET_DROP, container_guest.CAP_KILL.bit_length() - 1):
+                    prctl(option, value)
+
+            container_guest._prctl = keep_kill
         popen = container_guest.subprocess.Popen
 
         def start_child(args, **kwargs):
             if args[1:3] == ["-m", container_guest.__name__]:
+                if mode == "capabilities":
+                    assert int(container_guest.proc_status()["CapInh"], 16) == 0
+                    set_init_inheritable(container_guest.CAP_KILL, container_guest)
                 env = kwargs["env"]
                 env["PYTHONPATH"] = fault_dir + ":" + env["PYTHONPATH"]
-                env["REHEARSAL_GUEST_INIT_FAULT"] = mode
+                if mode != "hosted-capabilities":
+                    env["REHEARSAL_GUEST_INIT_FAULT"] = mode
                 if mode == "identity":
                     kwargs["group"] = 1002
             return popen(args, **kwargs)

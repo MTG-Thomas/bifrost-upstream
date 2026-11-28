@@ -39,7 +39,10 @@ from src.worker.remote.guest_init import (
 SUPERVISOR_UID = 1000
 GUEST_UID = 1001
 PR_SET_KEEPCAPS = 8
+PR_CAPBSET_DROP = 24
 PR_SET_NO_NEW_PRIVS = 38
+PR_CAP_AMBIENT = 47
+PR_CAP_AMBIENT_CLEAR_ALL = 4
 CAP_KILL = 1 << 5
 CAPS_V3 = 0x20080522
 FORCED_STOP_SECONDS = 2
@@ -59,17 +62,46 @@ def _prctl(option: int, value: int) -> None:
         raise RuntimeError("Container privilege setup failed")
 
 
-def _drop_supervisor_privileges() -> None:
+def _require_single_threaded_init() -> None:
     if len(list(Path("/proc/self/task").iterdir())) != 1:
         raise RuntimeError("Container supervisor must be single-threaded before dropping privileges")
+
+
+def _set_capability_masks(masks: ctypes.Array[_CapabilitySet]) -> None:
+    header = _CapabilityHeader(CAPS_V3, 0)
+    if ctypes.CDLL(None, use_errno=True).capset(ctypes.byref(header), ctypes.byref(masks)) != 0:
+        raise RuntimeError("Container supervisor could not set capability masks")
+
+
+def _prepare_guest_capabilities() -> None:
+    _require_single_threaded_init()
+    header = _CapabilityHeader(CAPS_V3, 0)
+    masks = (_CapabilitySet * 2)()
+    if ctypes.CDLL(None, use_errno=True).capget(ctypes.byref(header), ctypes.byref(masks)) != 0:
+        raise RuntimeError("Container supervisor could not read capability masks")
+    # The UID transition leaves inheritable capabilities intact. Dropping the
+    # bounding set limits future execs but preserves the current permitted and
+    # effective sets for setgroups, setgid, setuid, and the supervisor's drop.
+    # https://man7.org/linux/man-pages/man7/capabilities.7.html
+    for mask in masks:
+        mask.inheritable = 0
+    _set_capability_masks(masks)
+    _prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL)
+    bounding = int(proc_status()["CapBnd"], 16)
+    for capability in range(bounding.bit_length()):
+        if bounding & (1 << capability):
+            _prctl(PR_CAPBSET_DROP, capability)
+
+
+def _drop_supervisor_privileges() -> None:
+    _require_single_threaded_init()
     _prctl(PR_SET_KEEPCAPS, 1)
     os.setgroups([])
     os.setresgid(SUPERVISOR_UID, SUPERVISOR_UID, SUPERVISOR_UID)
     os.setresuid(SUPERVISOR_UID, SUPERVISOR_UID, SUPERVISOR_UID)
-    header = _CapabilityHeader(CAPS_V3, 0)
     masks = (_CapabilitySet * 2)(_CapabilitySet(CAP_KILL, CAP_KILL, 0), _CapabilitySet())
-    if ctypes.CDLL(None, use_errno=True).capset(ctypes.byref(header), ctypes.byref(masks)) != 0:
-        raise RuntimeError("Container supervisor could not restrict its signal capability")
+    _set_capability_masks(masks)
+    _prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL)
     _prctl(PR_SET_KEEPCAPS, 0)
     _prctl(PR_SET_NO_NEW_PRIVS, 1)
 
@@ -94,6 +126,7 @@ class ContainerGuest:
         # if a provider does not expose the image's private PID namespace.
         if os.getuid() != 0 or os.getpid() != 1:
             raise RuntimeError("Managed Container requires its image init and private PID namespace")
+        _prepare_guest_capabilities()
         ready, ready_send = multiprocessing.Pipe(duplex=False)
         work_recv, work = multiprocessing.Pipe(duplex=False)
         result, result_send = multiprocessing.Pipe(duplex=False)

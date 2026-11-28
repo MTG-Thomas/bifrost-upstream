@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
+from pydantic import ValidationError
 from shared.models import (
     CloudflareCapacityPolicy,
     CloudflareDeploymentEvidence,
@@ -361,7 +362,10 @@ async def deployment_evidence(db: AsyncSession, installation: CloudflareInstalla
     stored = installation.deployment_evidence or {}
     evidence = CloudflareDeploymentEvidence.model_validate(stored)
     if installation.containers_policy.get("enabled") is True:
-        evidence.container_qualification = await container_qualification_evidence(db, installation.id)
+        try:
+            evidence.container_qualification = await container_qualification_evidence(db, installation.id)
+        except ValidationError as exc:
+            logger.warning("Cloudflare Container qualification evidence could not be read (%s)", type(exc).__name__)
     if installation.reachability_mode == "managed_tunnel":
         evidence.dns_verified_at = await db.scalar(select(func.max(CloudflareOwnedResource.observed_at)).where(
             CloudflareOwnedResource.installation_id == installation.id,

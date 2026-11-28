@@ -1586,7 +1586,7 @@ class HostedContainers(ContainerRehearsal):
         counts = application["health"]["instances"]
         assert all(type(counts.get(key)) is int and counts[key] == 0 for key in ("active", "starting"))
 
-    def run(self, plan=None):
+    def run(self, plan=None, *, verify_guest_capabilities=False):
         if plan is None:
             plan = self.plan_activation()
         baseline = self.opening_inventory(plan)
@@ -1597,9 +1597,25 @@ class HostedContainers(ContainerRehearsal):
         def owned_namespaces():
             return {row["id"] for row in self.inventory(namespace_path) if row.get("script") in scripts}
 
+        def verify_qualification_capabilities():
+            if not verify_guest_capabilities:
+                return
+            status = self.send("/api/capacity/cloudflare", method="GET")
+            qualification = status["deployment"]["container_qualification"]
+            assert "fatal_generation" not in qualification or qualification["fatal_generation"] is None
+            facts = qualification["startup_facts"]
+            masks = ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
+            assert facts["child"]["uid"] == 1001 and facts["child"]["NoNewPrivs"] is True
+            assert all(int(facts["child"][name], 16) == 0 for name in masks)
+            assert facts["supervisor"]["uid"] == 1000 and facts["supervisor"]["NoNewPrivs"] is True
+            assert [int(facts["supervisor"][name], 16) for name in masks] == [0, 32, 32, 0, 0]
+            evidence("hosted-capabilities-ready", {role: {name: values[name] for name in masks}
+                                                  for role, values in facts.items() if values is not None})
+
         app_path = None
         try:
             self.enable()
+            verify_qualification_capabilities()
             self.preflight()
             self.observe_scheduler("enabled", settled=True)
             installation = self.install()
@@ -1640,6 +1656,7 @@ class HostedContainers(ContainerRehearsal):
             self.verify_empty_application(self.provider(app_path))
             self.observe_scheduler("scale-in", settled=True)
             self.enable()
+            verify_qualification_capabilities()
             assert self.install()["desired_revision"] == revision and scripts <= self.scripts()
             assert owned_namespaces() == namespaces
             assert self.provider(app_path)["id"] == app["id"] and self.canaries() == 2
@@ -1938,14 +1955,18 @@ def main():
                         help="Locally drop bootstrap once, then rehearse a fatal Docker guest exit and Disconnect")
     exercises.add_argument("--exercise-guest-init-fault", choices=GUEST_INIT_FAULTS,
                         help="Locally exercise a classified child startup failure and Disconnect")
+    exercises.add_argument("--exercise-hosted-capabilities", action="store_true",
+                        help="Start Docker PID 1 with inheritable capabilities equal to its bounding set")
     args = parser.parse_args()
     if args.hosted_containers_config and not args.containers_hosted_shape:
         parser.error("--hosted-containers-config requires --containers-hosted-shape")
     if args.exercise_image_preparation_failure and (not args.containers_hosted_shape or args.hosted_containers_config):
         parser.error("--exercise-image-preparation-failure requires the local hosted-shaped fixture")
     guest_fatal = args.exercise_guest_fatal or args.exercise_guest_fatal_after_reconnect or bool(args.exercise_guest_init_fault)
-    if guest_fatal and (not args.containers_hosted_shape or args.hosted_containers_config):
-        parser.error("Guest failure exercises require the local hosted-shaped fixture")
+    if (guest_fatal or args.exercise_hosted_capabilities) and (
+        not args.containers_hosted_shape or args.hosted_containers_config
+    ):
+        parser.error("Guest startup exercises require the local hosted-shaped fixture")
     if args.hosted_upgrade_config:
         HostedUpgrade(args.hosted_upgrade_config).run()
         return
@@ -1975,6 +1996,8 @@ def main():
                 return
             if args.exercise_image_preparation_failure:
                 exercise_image_preparation_failure(fixture, trial)
+            if args.exercise_hosted_capabilities:
+                fixture.provider("/local/guest-fatal-mode", "POST", {"mode": "hosted-capabilities"})
             if fixture.cfg.get("foreignInventory"):
                 plan = trial.plan_activation()
                 fixture.provider("/local/foreign-inventory", "POST", {
@@ -1992,9 +2015,13 @@ def main():
                     raise AssertionError("The trial accepted an occupied script name")
                 finally:
                     fixture.provider("/local/trial-script-collision", "DELETE", collision)
-                trial.run(plan)
+                trial.run(plan, verify_guest_capabilities=args.exercise_hosted_capabilities)
             else:
-                trial.run()
+                trial.run(verify_guest_capabilities=args.exercise_hosted_capabilities)
+            if args.exercise_hosted_capabilities:
+                events = [row for row in fixture.provider("/local/evidence") if row["kind"] == "hosted-capabilities"]
+                assert len(events) == 3 and all(row["hook_loaded_from_read_only_mount"] for row in events)
+                evidence("hosted-capabilities-injected", {"placements": len(events)})
             if fixture.cfg["workerNamespaceLagMs"]:
                 assert trial.enable_attempts[0] > 1
             if args.exercise_image_preparation_failure:

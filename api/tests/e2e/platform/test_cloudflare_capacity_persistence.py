@@ -3751,8 +3751,8 @@ async def test_container_guest_diagnostics_are_fenced_and_redacted(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fatal", [False, True], ids=["ready", "fatal-without-returncode"])
-async def test_capacity_http_serializes_container_startup_facts(db_session, installation, monkeypatch, fatal) -> None:
+@pytest.mark.parametrize("state", ["ready", "fatal-without-returncode", "incompatible-facts"])
+async def test_capacity_http_serializes_container_startup_facts(db_session, installation, monkeypatch, caplog, state) -> None:
     from src.worker.remote.guest_init import collect_guest_facts
 
     role = RoleGrant(uuid4(), frozenset({"platform.read"}), (Boundary(BoundaryKind.PLATFORM),))
@@ -3771,12 +3771,14 @@ async def test_capacity_http_serializes_container_startup_facts(db_session, inst
         "supervisor": {**collect_guest_facts(supervisor=True), "uid": 1000, "NoNewPrivs": True},
         "child": {**collect_guest_facts(supervisor=False), "uid": 1001, "CapInh": None},
     }
-    diagnostic = {"stage": "guest-init" if fatal else "ready", "generation": 1, "startup_facts": facts}
-    if fatal:
+    diagnostic = {"stage": "ready", "generation": 1, "startup_facts": facts}
+    if state == "fatal-without-returncode":
         diagnostic.update(
-            fatal_stage="guest-init", fatal_generation=1, exception_class="GuestInitError",
+            stage="guest-init", fatal_stage="guest-init", fatal_generation=1, exception_class="GuestInitError",
             reason="settings", child_returncode=None,
         )
+    elif state == "incompatible-facts":
+        facts["child"]["NoNewPrivs"] = "sensitive-invalid-fact"
     db_session.add(CloudflareWorkerReservation(
         worker_id=worker.id, installation_id=installation.id, scope="containers", deployment_revision=1,
         control_root_version=installation.control_root_version, container_release="a" * 64,
@@ -3795,7 +3797,12 @@ async def test_capacity_http_serializes_container_startup_facts(db_session, inst
             warnings.filterwarnings("error", message=r"Pydantic serializer warnings:")
             response = await http.get("/api/capacity/cloudflare")
     assert response.status_code == 200, response.text
-    assert response.json()["deployment"]["container_qualification"] == diagnostic
+    if state == "incompatible-facts":
+        assert response.json()["deployment"]["container_qualification"] is None
+        assert "qualification evidence could not be read (ValidationError)" in caplog.text
+        assert "sensitive-invalid-fact" not in response.text + caplog.text
+    else:
+        assert response.json()["deployment"]["container_qualification"] == diagnostic
 
 
 @pytest.mark.asyncio

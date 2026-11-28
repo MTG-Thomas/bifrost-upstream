@@ -10,7 +10,8 @@ import {BlockList, createConnection, isIPv4} from 'node:net';
 import {dirname, join} from 'node:path';
 import {buffer} from 'node:stream/consumers';
 import {fileURLToPath} from 'node:url';
-import {faultDirectory, faultMarker, guestInitFaults, listenFaultDocker} from './local-guest-fault.mjs';
+import {faultDirectory, faultMarker, guestInitFaults, hostedCapabilityMarker, hostedCapabilityMode, listenFaultDocker}
+  from './local-guest-fault.mjs';
 import {relayHeaders} from './relay-http.mjs';
 import {useOfflineWorkerd, verifyOfflinePyodide} from './offline-pyodide.mjs';
 
@@ -168,7 +169,8 @@ function containerRuntime(item) {
                     }
                     native.start({...options, image: native.images["bifrost-linux"],
                         env: {...options.env, ...${JSON.stringify(item.guestFatalMode === 'off' ? {}
-                          : guestInitFaults.includes(item.guestFatalMode) ? {REHEARSAL_GUEST_INIT_FAULT: item.guestFatalMode} : {
+                          : guestInitFaults.includes(item.guestFatalMode) || item.guestFatalMode === hostedCapabilityMode
+                            ? {REHEARSAL_GUEST_INIT_FAULT: item.guestFatalMode} : {
                             REHEARSAL_FAIL_GUEST_AFTER_HELLO: item.guestFatalMode === 'reconnect' ? '2' : '1',
                         })}}});
                 },
@@ -230,7 +232,8 @@ function placementInventory(application) {
       if (!guest.State.Running && Date.parse(guest.State.FinishedAt) > 0) {
         record.stoppedAt ??= guest.State.FinishedAt;
         record.exitCode ??= guest.State.ExitCode;
-        if (guestFatalMode !== 'off' && record.exitCode && !record.faultEvidence) {
+        const hostedCapabilities = guestFatalMode === hostedCapabilityMode;
+        if ((hostedCapabilities || (guestFatalMode !== 'off' && record.exitCode)) && !record.faultEvidence) {
           const matches = guest.Mounts.filter(({Destination}) => Destination === faultDirectory);
           assert.equal(matches.length, 1);
           assert.equal(matches[0].RW, false);
@@ -238,11 +241,14 @@ function placementInventory(application) {
           assert.ok(guest.Config.Env.some(value => value.startsWith('PYTHONPATH=' + faultDirectory + ':')));
           const logs = execFileSync('docker', ['logs', guest.Id], {encoding: 'utf8'});
           assert.ok(logs.split('\n').includes(faultMarker), 'Fault hook did not load from the bind mount');
+          if (hostedCapabilities) assert.ok(logs.split('\n').includes(hostedCapabilityMarker));
           const info = JSON.parse(execFileSync('docker', ['image', 'inspect', guest.Image], {encoding: 'utf8'}))[0];
           const image = config.containers.image;
           if (image.includes('@sha256:')) assert.ok(info.RepoDigests.includes(image));
           record.faultEvidence = true;
-          event('guest-fault-image', {image_digest: image.split('@')[1] ?? null, hook_loaded_from_read_only_mount: true});
+          event(hostedCapabilities ? hostedCapabilityMode : 'guest-fault-image', {
+            image_digest: image.split('@')[1] ?? null, hook_loaded_from_read_only_mount: true,
+          });
         }
       }
     } else if (record.startedAt) {
@@ -506,7 +512,7 @@ async function provider(req, res) {
   if (config.containers) {
     if (path === '/local/guest-fatal-mode' && method === 'POST') {
       const {mode} = await json();
-      assert.ok(['off', 'fatal', 'reconnect', ...guestInitFaults].includes(mode));
+      assert.ok(['off', 'fatal', 'reconnect', hostedCapabilityMode, ...guestInitFaults].includes(mode));
       if (mode !== 'off' && faultDocker === null) {
         faultDocker = await listenFaultDocker(join(dirname(config.ready), 'fault-docker.sock'),
           () => ({mode: guestFatalMode, image: config.containers.image, source: faultSource}));

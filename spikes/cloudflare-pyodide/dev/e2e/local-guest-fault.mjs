@@ -4,6 +4,8 @@ import {createServer, request} from 'node:http';
 
 export const faultDirectory = '/opt/bifrost-fault-hook';
 export const faultMarker = 'bifrost-local-fault-hook: ' + faultDirectory + '/sitecustomize.py';
+export const hostedCapabilityMode = 'hosted-capabilities';
+export const hostedCapabilityMarker = 'bifrost-local-hosted-capabilities: PID 1 inheritable equals nonzero bounding';
 export const guestInitFaults = [
   'identity', 'prctl', 'capabilities', 'ca-unreadable', 'scratch-unwritable',
   'runtime-import', 'settings', 'hook', 'ready-exit', 'ready-signal',
@@ -11,7 +13,7 @@ export const guestInitFaults = [
 
 export function mountFaultHook(launch, {mode, image, source}) {
   if (mode === 'off' || launch.Image !== image) return false;
-  const fault = guestInitFaults.includes(mode)
+  const fault = (guestInitFaults.includes(mode) || mode === hostedCapabilityMode)
     ? 'REHEARSAL_GUEST_INIT_FAULT=' + mode
     : 'REHEARSAL_FAIL_GUEST_AFTER_HELLO=' + (mode === 'reconnect' ? '2' : '1');
   assert.ok(launch.Env.includes(fault));
