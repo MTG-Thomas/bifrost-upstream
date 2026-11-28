@@ -332,7 +332,8 @@ function upgrade(req, socket, head) {
               // Successful instances can disappear before the next placement
               // inventory. Witness the init hook while hello proves it is live.
               const matched = nativePlacements().filter(({Config, Image, State}) => State.Running
-                && Image === config.containers.imageId && Config.Env.includes('BIFROST_WORKER_RESOURCE_UID=' + identity));
+                && Image === config.containers.imageId
+                && Config.Env.includes('BIFROST_WORKER_INCARNATION_ID=' + identity));
               assert.equal(matched.length, 1);
               witnessGuestHook(matched[0], hostedCapabilityMode, hostedCapabilityMarker);
               hostedCapabilityHellos.add(identity);
